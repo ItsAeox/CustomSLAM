@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WebAR VIO</title>
+  <style>
+    html,body { margin:0; height:100%; background:#000; }
+    #bgVideo {
+      position: fixed; inset: 0; width:100%; height:100%;
+      object-fit: cover; z-index: 0; background:#000;
+    }
+    #view {
+      position: fixed; inset: 0; width:100%; height:100%;
+      display:block; z-index: 1; pointer-events:none; /* taps go through */
+    }
+    #log { position:fixed; left:8px; bottom:8px; color:#0f0; font:12px monospace; z-index:2; }
+  </style>
+</head>
+<body>
+  <video id="bgVideo" playsinline muted autoplay></video>
+  <canvas id="view" width="1280" height="720"></canvas>
+  <div id="log"></div>
+  <div id="hud" style="position:fixed;right:8px;top:8px;color:#0f0;font:12px monospace;z-index:2;text-align:right"></div>
+    <script type="importmap">
+        {
+        "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/examples/jsm/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

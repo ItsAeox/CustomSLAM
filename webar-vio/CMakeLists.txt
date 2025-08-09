@@ -6,34 +6,70 @@ option(BUILD_WASM "Build for WebAssembly" OFF)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# OpenCV minimal: core imgproc features2d calib3d
-find_package(OpenCV REQUIRED COMPONENTS core imgproc features2d calib3d videoio highgui)
+# -------- OpenCV per-target --------
+if (BUILD_WASM)
+  message(STATUS "Configuring for WASM; minimal OpenCV modules")
+  # If you built OpenCV for WASM in a custom prefix, allow passing OpenCV_DIR from cmd line
+  # emcmake cmake ... -DOpenCV_DIR=/abs/path/to/build_opencv_wasm/install/lib/cmake/opencv4
+  find_package(OpenCV REQUIRED COMPONENTS core imgproc features2d calib3d)
+else()
+  message(STATUS "Configuring for native; add videoio/highgui")
+  find_package(OpenCV REQUIRED COMPONENTS core imgproc features2d calib3d videoio highgui)
+endif()
 
-# Library with a few stub .cc files so it compiles
+# -------- Library --------
 add_library(vio
   src/common/camera.cc
   src/frontend/feature_tracker.cc
   src/system.cc
 )
 
-# Public headers live here:
+# Headers
 target_include_directories(vio PUBLIC
   src
   third_party/eigen
-  third_party/sophus            # repo root; headers are under sophus/
+  third_party/sophus    # if your checkout is Sophus/ with include inside it
+  # if headers are actually in sophus/include, use: third_party/sophus/include
 )
 
-target_link_libraries(vio PUBLIC
-  ${OpenCV_LIBS}
-)
+target_link_libraries(vio PUBLIC ${OpenCV_LIBS})
 
+# -------- Executables --------
 if (BUILD_WASM)
   add_executable(vio_wasm src/wasm/bindings.cpp)
   target_link_libraries(vio_wasm PRIVATE vio)
+
+  # Embind + runtime flags (MODULARIZE so you can `import createVioModule`)
+  # You can use target_link_options (newer CMake) instead of LINK_FLAGS if you prefer.
   set_target_properties(vio_wasm PROPERTIES
-    LINK_FLAGS "-s WASM=1 -s ALLOW_MEMORY_GROWTH=1 -s EXPORTED_FUNCTIONS='[_malloc,_free]' -s EXPORTED_RUNTIME_METHODS=['ccall','cwrap'] -s FILESYSTEM=1"
+    LINK_FLAGS
+      "--bind \
+      -s WASM=1 \
+      -s ALLOW_MEMORY_GROWTH=1 \
+      -s FILESYSTEM=1 \
+      -s MODULARIZE=1 \
+      -s EXPORT_ES6=1 \
+      -s EXPORT_NAME=createVioModule \
+      -s EXPORTED_FUNCTIONS=['_malloc','_free'] \
+      -s EXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','lengthBytesUTF8'] \
+      -s ENVIRONMENT=web"
   )
+
+  # Make sure headers are visible even if propagation ever changes
+  target_include_directories(vio_wasm PRIVATE src)
+
+  # Copy wasm
+  add_custom_command(TARGET vio_wasm POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      $<TARGET_FILE_DIR:vio_wasm>/vio_wasm.wasm
+      ${CMAKE_SOURCE_DIR}/web/vio_wasm.wasm)
+  # Copy js
+  add_custom_command(TARGET vio_wasm POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      $<TARGET_FILE:vio_wasm>
+      ${CMAKE_SOURCE_DIR}/web/vio_wasm.js)
 else()
   add_executable(vio_app src/main_native.cpp)
   target_link_libraries(vio_app PRIVATE vio)
 endif()
+
