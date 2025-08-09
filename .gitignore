@@ -1,3 +1,6 @@
 .vscode/
 build/
+webar-vio/third_party
+emsdk/
 Makefile
+build_wasm/
