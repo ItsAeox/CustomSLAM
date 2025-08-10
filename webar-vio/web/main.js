@@ -2,31 +2,51 @@ import createVioModule from './vio_wasm.js';
 import {
   initRenderer,
   configureCameraFromIntrinsics,
-  updateFromPose_Twc_threeBasis
+  updateFromPose_Twc_threeBasis,
+  placeAnchorAtScreen,
+  debugWobbleCamera,
 } from './renderer.js';
 
-const log = (...a)=>{ const el=document.getElementById('log'); el.textContent=a.join(' '); console.log(...a); };
-
-async function getCameraStream() {
-  const nav = navigator;
-  if (nav.mediaDevices?.getUserMedia) {
-    return nav.mediaDevices.getUserMedia({
-      video: { facingMode:'environment', width:{ideal:1280}, height:{ideal:720} },
-      audio: false
-    });
+// ----- onscreen logger so you can see logs on phone -----
+function ensureLogEl() {
+  let d = document.getElementById('log');
+  if (!d) {
+    d = document.createElement('div');
+    d.id = 'log';
+    d.style.cssText =
+      'position:fixed;left:8px;bottom:48px;max-width:92%;max-height:40%;' +
+      'overflow:auto;background:#000a;color:#0f0;font:12px monospace;' +
+      'padding:6px;white-space:pre-wrap;z-index:9999;';
+    document.body.appendChild(d);
   }
-  const legacy = nav.getUserMedia || nav.webkitGetUserMedia || nav.mozGetUserMedia || nav.msGetUserMedia;
-  if (legacy) return new Promise((res, rej)=>legacy.call(nav, {video:true,audio:false}, res, rej));
-  throw new Error(`getUserMedia not supported. Secure:${window.isSecureContext} Host:${location.host}`);
+  return d;
+}
+const _logEl = ensureLogEl();
+function logMsg(...args) {
+  const line = args.map(x => (typeof x === 'object' ? JSON.stringify(x) : String(x))).join(' ');
+  console.log(...args);
+  _logEl.textContent += line + '\n';
+  _logEl.scrollTop = _logEl.scrollHeight;
 }
 
-// HUD
+// ----- make sure video is behind canvas & doesn’t eat taps -----
+(function injectOverlayCSS(){
+  const css = `
+    #bgVideo{position:fixed;left:0;top:0;z-index:0;pointer-events:none;}
+    #view{position:fixed;left:0;top:0;z-index:10;touch-action:manipulation;}
+    #hud{z-index:20;}
+    #placeBtn{position:fixed;right:8px;bottom:8px;z-index:20;}
+  `;
+  const s = document.createElement('style'); s.textContent = css; document.head.appendChild(s);
+})();
+
+// ---- HUD ----
 const hudEl = (() => {
   let el = document.getElementById('hud');
   if (!el) {
     el = document.createElement('div');
     el.id = 'hud';
-    el.style.cssText = 'position:fixed;right:8px;top:8px;color:#0f0;font:12px monospace;z-index:2;text-align:right';
+    el.style.cssText = 'position:fixed;right:8px;top:8px;color:#0f0;font:12px monospace;z-index:20;text-align:right';
     document.body.appendChild(el);
   }
   return el;
@@ -39,60 +59,105 @@ function updateHUD(extra='') {
   hudEl.textContent = `FPS: ${fps.toFixed(1)} | pose: ${p ? 'ok' : 'none'} ${poseStr}${extra}`;
 }
 
+// ---- robust camera getter ----
+async function getCameraStream() {
+  const md = navigator.mediaDevices;
+  if (!md?.getUserMedia) throw new Error('getUserMedia not supported');
+
+  // Probe once to unlock labels on some phones
+  try {
+    const tmp = await md.getUserMedia({ video: true, audio: false });
+    tmp.getTracks().forEach(t => t.stop());
+  } catch (e) {
+    // continue; some browsers allow enumerate without this
+  }
+
+  const devices = (await md.enumerateDevices()).filter(d => d.kind === 'videoinput');
+  const back = devices.find(d => /back|rear|environment/i.test(d.label || '')) || devices[0];
+
+  const constraints = {
+    video: back ? { deviceId: { exact: back.deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+                : { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+    audio: false
+  };
+  return md.getUserMedia(constraints);
+}
+
 (async function boot() {
   try {
     const canvas = document.getElementById('view');
     const bgVideo = document.getElementById('bgVideo');
 
-    // Init three.js (camera intrinsics will be configured after video is ready)
+    // Optional place button (fallback)
+    let btn = document.getElementById('placeBtn');
+    if (!btn) {
+      btn = document.createElement('button');
+      btn.id = 'placeBtn';
+      btn.textContent = 'Place Cactus';
+      document.body.appendChild(btn);
+    }
+
     await initRenderer(canvas);
+
+    // Tap / click to place the cactus
+    function onTap(ev) {
+      const t = ev.changedTouches ? ev.changedTouches[0] : ev;
+      logMsg('tap at', t.clientX, t.clientY);
+      placeAnchorAtScreen(t.clientX, t.clientY);
+      ev.preventDefault();
+    }
+    canvas.addEventListener('click', onTap, { passive: false });
+    canvas.addEventListener('touchend', onTap, { passive: false });
+    btn.addEventListener('click', () => {
+      const r = canvas.getBoundingClientRect();
+      const cx = r.left + r.width/2, cy = r.top + r.height/2;
+      logMsg('button place center', cx, cy);
+      placeAnchorAtScreen(cx, cy);
+    });
 
     // Camera stream
     const stream = await getCameraStream();
-    // Show camera behind WebGL
+    // Show camera behind WebGL (ensure autoplay/muted/inline)
+    bgVideo.setAttribute('playsinline',''); bgVideo.setAttribute('muted','');
+    bgVideo.muted = true; bgVideo.autoplay = true;
     bgVideo.srcObject = stream;
-    bgVideo.play?.();
+    await bgVideo.play().catch(()=>{});
+    bgVideo.addEventListener('canplay', ()=>logMsg('bgVideo canplay; size=', bgVideo.videoWidth, 'x', bgVideo.videoHeight), { once:true });
+    logMsg('bgVideo readyState=', bgVideo.readyState);
 
-    // A hidden/secondary <video> used for pixel reads (avoids CSS scaling issues)
+    // Hidden <video> for pixel reads (avoids CSS scaling)
     const video = document.createElement('video');
-    video.playsInline = true; video.autoplay = true; video.muted = true;
+    video.setAttribute('playsinline',''); video.setAttribute('muted','');
+    video.muted = true; video.autoplay = true;
     video.srcObject = stream;
     await video.play();
-    if (video.readyState < 2) {
-      await new Promise(r => (video.onloadedmetadata = r));
-    }
+    if (video.readyState < 2) await new Promise(r => (video.onloadedmetadata = r));
 
     const W = video.videoWidth  || 1280;
     const H = video.videoHeight || 720;
 
     // Match elements to pixel size to avoid stretch
     canvas.width = W; canvas.height = H;
-    canvas.style.width  = `${W}px`;
-    canvas.style.height = `${H}px`;
+    canvas.style.width  = `${W}px`; canvas.style.height = `${H}px`;
     bgVideo.width = W; bgVideo.height = H;
-    bgVideo.style.width  = `${W}px`;
-    bgVideo.style.height = `${H}px`;
+    bgVideo.style.width  = `${W}px`; bgVideo.style.height = `${H}px`;
 
     // Load WASM
     const Module = await createVioModule();
-    window.Module = Module; // for console debugging
+    window.Module = Module;
 
-    // --- Intrinsics ---
-    // If you have calibrated values, use them here.
-    // For now we keep your 60° guess, but three.js camera is configured to match it exactly.
+    // Intrinsics (use real calibration if you have it)
     const fovDeg = 60;
     const fx = W / (2 * Math.tan((fovDeg * Math.PI/180) / 2));
     const fy = fx;
     const cx = W * 0.5;
     const cy = H * 0.5;
 
-    // Configure three.js camera with the SAME intrinsics
+    // Configure renderer camera + init SLAM with SAME intrinsics
     configureCameraFromIntrinsics({ fx, fy, cx, cy, width: W, height: H });
-
-    // Init SLAM with the SAME intrinsics
     Module.initSystem(W, H, fx, fy, cx, cy);
 
-    // Offscreen for RGBA readback
+    // Offscreen for RGBA
     let off, ctx;
     if ('OffscreenCanvas' in window) {
       off = new OffscreenCanvas(W, H);
@@ -103,28 +168,31 @@ function updateHUD(extra='') {
     }
 
     async function loop() {
-      // timing & FPS
+      //debugWobbleCamera();
+      // FPS
       const now = performance.now();
       const dt = Math.max(1, now - lastTick);
       fps = 0.9 * fps + 0.1 * (1000 / dt);
       lastTick = now;
 
-      // Feed current frame to WASM (RGBA)
+      // Feed current frame (RGBA) to WASM
       ctx.drawImage(video, 0, 0, W, H);
       const img = ctx.getImageData(0, 0, W, H);
       const u8 = new Uint8Array(img.data.buffer);
       Module.feedFrameJS(u8, now * 1e-3, W, H, true);
 
-      // Get pose: world-from-camera in three.js basis (column-major 4x4)
+      // Pull pose and move the camera
       const pose = Module.getPose();
       if (pose && pose.length === 16) {
-        lastPose = pose; // keep as Float64 from Embind; three.js accepts number[]
+        lastPose = pose;
         updateFromPose_Twc_threeBasis(pose);
+        const tx = +pose[12], ty = +pose[13], tz = +pose[14];
+        logMsg('T_cam world tx ty tz:', tx.toFixed(3), ty.toFixed(3), tz.toFixed(3));
       } else if (lastPose) {
-        updateFromPose_Twc_threeBasis(lastPose); // hold last good pose to avoid flicker
+        updateFromPose_Twc_threeBasis(lastPose);
       }
 
-      // HUD counters (optional)
+      // HUD extras
       let extra = '';
       try {
         const kps = Module.getNumKeypoints?.();
@@ -133,23 +201,23 @@ function updateHUD(extra='') {
         if (typeof kps === 'number' && typeof inl === 'number' && typeof st === 'number') {
           extra = ` | kps:${kps} inl:${inl} state:${st}`;
         }
-      } catch (_) {}
+      } catch {}
       updateHUD(extra);
 
       requestAnimationFrame(loop);
     }
     requestAnimationFrame(loop);
 
-    // iOS motion permission placeholder (IMU fusion later)
+    // iOS motion permission (later for IMU)
     if (window.DeviceMotionEvent?.requestPermission) {
       document.body.addEventListener('click', async () => {
         try { await DeviceMotionEvent.requestPermission(); } catch {}
       }, { once: true });
     }
 
-    log(`Ready ${W}x${H}`);
+    logMsg(`Ready ${W}x${H}`);
   } catch (e) {
     console.error(e);
-    log('Error:', e?.message || e);
+    logMsg('Error:', e?.message || e);
   }
 })();

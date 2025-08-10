@@ -5,3 +5,4 @@ emsdk/
 Makefile
 build_wasm/
 build_opencv_wasm/
+*.pem

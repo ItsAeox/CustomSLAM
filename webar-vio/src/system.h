@@ -53,19 +53,20 @@ public:
             return;
         }
 
+        // --- build matched points from prev -> cur (you already have matches) ---
         std::vector<cv::Point2f> p_prev, p_cur;
         p_prev.reserve(matches.size());
         p_cur.reserve(matches.size());
         for (const auto& m : matches) {
-            p_prev.push_back(prev_.kps[m.queryIdx].pt); // x_{k-1}
-            p_cur .push_back(cur .kps[m.trainIdx].pt); // x_k
+            p_prev.push_back(prev_.kps[m.queryIdx].pt); // prev
+            p_cur .push_back(cur .kps[m.trainIdx].pt);  // cur
         }
 
-        // Estimate Essential matrix with RANSAC (pixel threshold ~1.0–1.5 is OK for 720p)
+        // --- estimate Essential (looser threshold on mobile) ---
         cv::Mat inlierMask;
         const double prob = 0.999;
-        const double ransac_thresh = 1.2; // pixels
-        cv::Mat E = cv::findEssentialMat(p_cur, p_prev, Kcv_, cv::RANSAC, prob, ransac_thresh, inlierMask);
+        const double ransac_thresh = 2.0; // px
+        cv::Mat E = cv::findEssentialMat(p_prev, p_cur, Kcv_, cv::RANSAC, prob, ransac_thresh, inlierMask);
 
         if (E.empty()) {
             num_inliers_ = 0;
@@ -74,25 +75,24 @@ public:
             return;
         }
 
+        // --- recoverPose RETURNS motion that maps prev -> cur ---
         cv::Mat R, t;
-        int inl = cv::recoverPose(E, p_cur, p_prev, Kcv_, R, t, inlierMask);
+        int inl = cv::recoverPose(E, p_prev, p_cur, Kcv_, R, t, inlierMask);
         num_inliers_ = inl;
 
-        // update state if robust enough
         if (inl >= 25) {
-            // Build T_c2_c1 (cur->prev), then invert to get motion prev->cur
             Eigen::Matrix3d Re; cv::cv2eigen(R, Re);
             Eigen::Vector3d te; cv::cv2eigen(t, te);
-            Sophus::SE3d T_c2c1(Re, te);
-            Sophus::SE3d T_c1c2 = T_c2c1.inverse();
+
+            // Motion from prev to cur in CAMERA frame
+            Sophus::SE3d T_c1c2(Re, te);
 
             // Accumulate world pose: T_wc(new) = T_wc(prev) * T_cprev_cnew
             T_wc_ = T_wc_ * T_c1c2;
 
-            tracking_state_ = 2; // tracking
-            last_inlier_count_ = inl;
+            tracking_state_ = 2;
         } else {
-            tracking_state_ = 1; // still initializing/weak
+            tracking_state_ = 1;
         }
 
         prev_ = std::move(cur);
@@ -113,23 +113,17 @@ public:
         return a;
     }
 
-    // Column-major 4x4 for three.js (CV -> three basis fix)
-    // Returns current T_wc (world-from-camera) already converted for three.js.
     std::array<double,16> CurrentPoseGLThree() const {
-        // S changes basis from OpenCV (camera +Z forward, X right, Y down)
-        // to three.js (camera -Z forward, X right, Y up).
         Eigen::Matrix4d S = Eigen::Matrix4d::Identity();
         S(1,1) = -1.0; // flip Y
         S(2,2) = -1.0; // flip Z
-
-        Eigen::Matrix4d Tcv = T_wc_.matrix();        // world-from-camera in CV basis
-        Eigen::Matrix4d Tthree = S * Tcv * S;        // convert to three.js basis
+        Eigen::Matrix4d Tthree = S * T_wc_.matrix() * S;
 
         std::array<double,16> a{};
         int k=0;
         for (int c=0;c<4;++c)
-            for (int r=0;r<4;++r)
-                a[k++] = Tthree(r,c); // column-major
+        for (int r=0;r<4;++r)
+            a[k++] = Tthree(r,c);
         return a;
     }
 
