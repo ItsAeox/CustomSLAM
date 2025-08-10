@@ -30,7 +30,7 @@ export async function initRenderer(canvas) {
   const loader = new GLTFLoader();
   const glb = await loader.loadAsync(`./cactus.glb?v=${Date.now()}`);
   const cactus = glb.scene;
-  cactus.scale.setScalar(0.1); // ~10 cm to start
+  cactus.scale.setScalar(0.4); // ~10 cm to start
 
   cactusAnchor = new THREE.Object3D();
   cactusAnchor.matrixAutoUpdate = false;
@@ -81,8 +81,9 @@ export function configureCameraFromIntrinsics({ fx, fy, cx, cy, width, height })
 export function updateFromPose_Twc_threeBasis(T_wc_array) {
   if (!T_wc_array || T_wc_array.length !== 16) return;
 
-  // Apply world-from-camera directly
-  camera.matrix.fromArray(T_wc_array);
+  const M = new THREE.Matrix4().fromArray(T_wc_array);
+
+  camera.matrix.copy(M).invert(); 
   camera.matrixWorld.copy(camera.matrix);
   camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
   camera.matrixAutoUpdate = false;

@@ -133,29 +133,50 @@ async function getCameraStream() {
     await video.play();
     if (video.readyState < 2) await new Promise(r => (video.onloadedmetadata = r));
 
+    // 1) Video size known
     const W = video.videoWidth  || 1280;
     const H = video.videoHeight || 720;
 
-    // Match elements to pixel size to avoid stretch
+    // 2) Match elements to pixel size
     canvas.width = W; canvas.height = H;
     canvas.style.width  = `${W}px`; canvas.style.height = `${H}px`;
     bgVideo.width = W; bgVideo.height = H;
     bgVideo.style.width  = `${W}px`; bgVideo.style.height = `${H}px`;
 
-    // Load WASM
-    const Module = await createVioModule();
-    window.Module = Module;
-
-    // Intrinsics (use real calibration if you have it)
+    // 3) Intrinsics (compute BEFORE initSystem)
     const fovDeg = 60;
     const fx = W / (2 * Math.tan((fovDeg * Math.PI/180) / 2));
     const fy = fx;
     const cx = W * 0.5;
     const cy = H * 0.5;
 
-    // Configure renderer camera + init SLAM with SAME intrinsics
+    // 4) Load fresh WASM glue + .wasm (cache-busted)
+    const ts = Date.now();
+    const { default: createModule } = await import(`./vio_wasm.js?v=${ts}`);
+    const Module = await createModule({
+      locateFile: (path) => path.endsWith('.wasm')
+        ? `./vio_wasm.wasm?v=${ts}`
+        : path
+    });
+    window.Module = Module;
+
+    // Sanity: do we have the bindings we expect?
+    logMsg('Module keys:', Object.keys(Module).slice(0,20).join(', '));
+
+    // 5) Configure three.js camera FIRST
     configureCameraFromIntrinsics({ fx, fy, cx, cy, width: W, height: H });
+
+    // 6) Now init SLAM with SAME intrinsics
     Module.initSystem(W, H, fx, fy, cx, cy);
+
+    // optional: immediate probe
+    const pv = Module.getPose?.();
+    if (pv && typeof pv.size === 'function') {
+      logMsg('After init, pose size =', pv.size());
+      pv.delete?.();
+    } else {
+      logMsg('After init, pose is not a Vector; type =', typeof pv);
+    }
 
     // Offscreen for RGBA
     let off, ctx;
@@ -181,15 +202,28 @@ async function getCameraStream() {
       const u8 = new Uint8Array(img.data.buffer);
       Module.feedFrameJS(u8, now * 1e-3, W, H, true);
 
-      // Pull pose and move the camera
-      const pose = Module.getPose();
-      if (pose && pose.length === 16) {
-        lastPose = pose;
-        updateFromPose_Twc_threeBasis(pose);
-        const tx = +pose[12], ty = +pose[13], tz = +pose[14];
-        logMsg('T_cam world tx ty tz:', tx.toFixed(3), ty.toFixed(3), tz.toFixed(3));
-      } else if (lastPose) {
-        updateFromPose_Twc_threeBasis(lastPose);
+      try {
+        const pv = Module.getPose?.();         // Embind VectorDouble
+        if (pv && typeof pv.size === 'function') {
+          const n = pv.size();
+          if (n === 16) {
+            const pose = new Float64Array(16);
+            for (let i = 0; i < 16; i++) pose[i] = pv.get(i);
+            pv.delete?.();                     // free Embind vector
+
+            lastPose = pose;
+            const tx = pose[12], ty = pose[13], tz = pose[14];
+            if ((performance.now()|0) % 500 < 16) logMsg('Twc t=', tx.toFixed(3), ty.toFixed(3), tz.toFixed(3));
+            updateFromPose_Twc_threeBasis(pose);
+          } else {
+            pv.delete?.();
+            if (lastPose) updateFromPose_Twc_threeBasis(lastPose);
+          }
+        } else if (lastPose) {
+          updateFromPose_Twc_threeBasis(lastPose);
+        }
+      } catch (e) {
+        logMsg('getPose error:', e?.message || e);
       }
 
       // HUD extras
