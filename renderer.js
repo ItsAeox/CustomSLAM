@@ -30,7 +30,7 @@ export async function initRenderer(canvas) {
   const loader = new GLTFLoader();
   const glb = await loader.loadAsync(`./cactus.glb?v=${Date.now()}`);
   const cactus = glb.scene;
-  cactus.scale.setScalar(0.4); // ~10 cm to start
+  cactus.scale.setScalar(0.8);
 
   cactusAnchor = new THREE.Object3D();
   cactusAnchor.matrixAutoUpdate = false;
