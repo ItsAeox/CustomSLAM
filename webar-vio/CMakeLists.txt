@@ -58,16 +58,21 @@ if (BUILD_WASM)
   # Make sure headers are visible even if propagation ever changes
   target_include_directories(vio_wasm PRIVATE src)
 
-  # Copy wasm
+  # One level above webar-vio (i.e., .../CustomSLAM)
+  get_filename_component(ROOT_DIR "${CMAKE_SOURCE_DIR}" DIRECTORY)
+
+  # Ensure it exists (harmless if it already does)
   add_custom_command(TARGET vio_wasm POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${ROOT_DIR}"
+    # Copy .wasm sidecar
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      $<TARGET_FILE_DIR:vio_wasm>/vio_wasm.wasm
-      ${CMAKE_SOURCE_DIR}/web/vio_wasm.wasm)
-  # Copy js
-  add_custom_command(TARGET vio_wasm POST_BUILD
+      "$<TARGET_FILE_DIR:vio_wasm>/$<TARGET_FILE_BASE_NAME:vio_wasm>.wasm"
+      "${ROOT_DIR}/$<TARGET_FILE_BASE_NAME:vio_wasm>.wasm"
+    # Copy the main target file (usually .js for Emscripten)
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      $<TARGET_FILE:vio_wasm>
-      ${CMAKE_SOURCE_DIR}/web/vio_wasm.js)
+      "$<TARGET_FILE:vio_wasm>"
+      "${ROOT_DIR}/$<TARGET_FILE_NAME:vio_wasm>"
+  )
 else()
   add_executable(vio_app src/main_native.cpp)
   target_link_libraries(vio_app PRIVATE vio)

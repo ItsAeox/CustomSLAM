@@ -8,6 +8,7 @@ import {
   updatePointCloud,        
   setPointCloudVisible,    
   debugWobbleCamera,
+  updatePlaneFromParams,
 } from './renderer.js';
 
 // ----- onscreen logger so you can see logs on phone -----
@@ -107,7 +108,7 @@ async function getCameraStream() {
     // Tap / click to place the cactus
     function onTap(ev) {
       const t = ev.changedTouches ? ev.changedTouches[0] : ev;
-      logMsg('tap at', t.clientX, t.clientY);
+      //logMsg('tap at', t.clientX, t.clientY);
       placeAnchorAtScreen(t.clientX, t.clientY);
       ev.preventDefault();
     }
@@ -116,7 +117,7 @@ async function getCameraStream() {
     btn.addEventListener('click', () => {
       const r = canvas.getBoundingClientRect();
       const cx = r.left + r.width/2, cy = r.top + r.height/2;
-      logMsg('button place center', cx, cy);
+      //logMsg('button place center', cx, cy);
       placeAnchorAtScreen(cx, cy);
     });
 
@@ -149,9 +150,9 @@ async function getCameraStream() {
     bgVideo.style.width  = `${W}px`; bgVideo.style.height = `${H}px`;
 
     // 3) Intrinsics (compute BEFORE initSystem)
-    const fovDeg = 60;
-    const fx = W / (2 * Math.tan((fovDeg * Math.PI/180) / 2));
-    const fy = fx;
+    const fovYdeg = 54;
+    const fy = H / (2 * Math.tan((fovYdeg * Math.PI/180) / 2));
+    const fx = fy * (W / H);
     const cx = W * 0.5;
     const cy = H * 0.5;
 
@@ -166,7 +167,7 @@ async function getCameraStream() {
     window.Module = Module;
 
     // Sanity: do we have the bindings we expect?
-    logMsg('Module keys:', Object.keys(Module).slice(0,20).join(', '));
+    //logMsg('Module keys:', Object.keys(Module).slice(0,20).join(', '));
 
     // 5) Configure three.js camera FIRST
     configureCameraFromIntrinsics({ fx, fy, cx, cy, width: W, height: H });
@@ -177,10 +178,10 @@ async function getCameraStream() {
     // optional: immediate probe
     const pv = Module.getPose?.();
     if (pv && typeof pv.size === 'function') {
-      logMsg('After init, pose size =', pv.size());
+      //logMsg('After init, pose size =', pv.size());
       pv.delete?.();
     } else {
-      logMsg('After init, pose is not a Vector; type =', typeof pv);
+      //logMsg('After init, pose is not a Vector; type =', typeof pv);
     }
 
     // Offscreen for RGBA
@@ -194,6 +195,7 @@ async function getCameraStream() {
     }
 
     let lastPC = 0;
+    let lastPlane = 0;
 
     async function loop() {
       //debugWobbleCamera();
@@ -219,8 +221,8 @@ async function getCameraStream() {
             pv.delete?.();                     // free Embind vector
 
             lastPose = pose;
-            const tx = pose[12], ty = pose[13], tz = pose[14];
-            if ((performance.now()|0) % 500 < 16) logMsg('Twc t=', tx.toFixed(3), ty.toFixed(3), tz.toFixed(3));
+            //const tx = pose[12], ty = pose[13], tz = pose[14];
+            //if ((performance.now()|0) % 500 < 16) logMsg('Twc t=', tx.toFixed(3), ty.toFixed(3), tz.toFixed(3));
             updateFromPose_Twc_threeBasis(pose);
           } else {
             pv.delete?.();
@@ -246,7 +248,7 @@ async function getCameraStream() {
       } catch {}
       updateHUD(extra);
 
-            // --- point cloud update (every ~400 ms) ---
+      // --- point cloud update (every ~400 ms) ---
       const now2 = performance.now();
       if (now2 - lastPC > 400 && Module.getPointsXYZ) {
         try {
@@ -267,6 +269,31 @@ async function getCameraStream() {
         lastPC = now2;
       }
 
+      // --- plane update ---
+      if (now2 - lastPlane > 500 && Module.getPlaneParams) {
+        try {
+          const p = Module.getPlaneParams(); // VectorDouble
+          if (p && typeof p.size === 'function') {
+            const m = p.size();
+            if (m >= 8) {
+              const arr = new Float64Array(m);
+              for (let i = 0; i < m; ++i) arr[i] = p.get(i);
+              updatePlaneFromParams(arr);
+
+              // ✅ log AFTER we copy values in
+              //logMsg('plane params len=', arr.length, 'inliers=', arr[7].toFixed(0));
+            } else {
+              //logMsg('plane: vector too small, m=', m);
+            }
+            p.delete?.();
+          } else {
+            //logMsg('plane: getPlaneParams returned non-vector');
+          }
+        } catch (e) {
+          logMsg('getPlaneParams error:', e?.message || e);
+        }
+        lastPlane = now2;
+      }
       requestAnimationFrame(loop);
     }
     requestAnimationFrame(loop);

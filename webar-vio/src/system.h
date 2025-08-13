@@ -9,6 +9,10 @@
 #include "map/mappoint.h"
 #include "frontend/feature_tracker.h"
 #include <deque>
+#include <algorithm>
+#include <vector>
+#include <cstdlib>   // for rand()
+
 
 struct IMUSample {
     double t;                 // seconds, same clock as ProcessFrame ts
@@ -105,6 +109,7 @@ class System {
                         inlVec[i] = (v != 0);
                     }
                     triangulateInliers(p_prev, p_cur, inlVec, prevIdxForMatch, R_vo, t_vo, prev_, cur);
+                    fitPlaneViaHomography(p_prev, p_cur, R_vo, t_vo);
 
                     // 3) Convert VO relative [R,t] (cam1->cam2) to absolute world-from-camera T_wc
                     // P2 = K[R|t] => R_cw = R^T, t_cw = -R^T t
@@ -117,13 +122,16 @@ class System {
                     double w_pred = imu_started_ ? 0.25 : 0.0;
                     Eigen::Quaterniond q_blend = q_pred.slerp(w_pred, q_vo_world).normalized();
                     T_wc_ = Sophus::SE3d(Sophus::SO3d(q_blend), t_wc);
-
-                                        if (have_gravity_ && !did_world_align_) {
+                    
+                    if (have_gravity_ && !did_world_align_) {
                         Eigen::Vector3d up_cam = -g_est_.normalized();
                         Eigen::Vector3d up_world(0, 1, 0);
                         Eigen::Quaterniond q_align = Eigen::Quaterniond::FromTwoVectors(up_cam, up_world);
                         Sophus::SO3d R_align(q_align.normalized());
+                        // rotate camera pose
                         T_wc_ = Sophus::SE3d(R_align, Eigen::Vector3d::Zero()) * T_wc_;
+                        // rotate existing map points into the aligned world
+                        for (auto& mp : map_points_) mp.Xw = R_align * mp.Xw;
                         did_world_align_ = true;
                     }
 
@@ -136,6 +144,8 @@ class System {
                     // --- Tracking via PnP on map points ---
                     if (!trackWithPnP(cur)) {
                         // Use world-from-camera increment (inverse of [R|t])
+                        bool planeOK = fitPlaneViaHomography(p_prev, p_cur, R_vo, t_vo);
+
                         Eigen::Matrix3d R_wc_inc = R_vo.transpose();
                         Eigen::Vector3d t_wc_inc = -R_wc_inc * t_vo;
 
@@ -161,6 +171,11 @@ class System {
             } else {
                 tracking_state_ = 1;
             }
+            // frame_counter_++;
+            // if ((frame_counter_ % 10) == 0 && (int)map_points_.size() >= 30) {
+            //     fitDominantPlaneRansac();
+            // }
+            T_w_c_prev_ = T_wc_;   // cam2 becomes cam1 for the next iteration
             prev_ = std::move(cur);
         }
 
@@ -260,6 +275,28 @@ class System {
             return out;
         }
 
+        // Export plane as [nx,ny,nz, d, cx,cy,cz, inliers] in THREE basis (x,-y,-z)
+        // Returns empty if no plane
+        std::vector<double> ExportPlaneThree() const {
+            std::vector<double> out;
+            if (!has_plane_ || !plane_.valid) return out;
+
+            // Flip to Three basis: x' =  x, y' = -y, z' = -z
+            auto flip = [](const Eigen::Vector3d& v){
+                return Eigen::Vector3d(v.x(), -v.y(), -v.z());
+            };
+            Eigen::Vector3d n3 = flip(plane_.n).normalized();
+            double d3 = plane_.d; // linear reflection about origin keeps d the same
+            Eigen::Vector3d c3 = flip(plane_.centroid);
+
+            out.reserve(8);
+            out.push_back(n3.x()); out.push_back(n3.y()); out.push_back(n3.z());
+            out.push_back(d3);
+            out.push_back(c3.x()); out.push_back(c3.y()); out.push_back(c3.z());
+            out.push_back((double)plane_.inliers);
+            return out;
+        }
+
         int lastInliers() const { return last_inlier_count_; }
         int NumMapPoints() const { return (int)map_points_.size(); }
 
@@ -290,6 +327,20 @@ class System {
         cv::Mat map_desc_;                   // Nx32 CV_8U (stack of descriptors)
         cv::BFMatcher map_matcher_{cv::NORM_HAMMING, /*crossCheck=*/false};
 
+        Sophus::SE3d T_w_c_prev_{Sophus::SE3d()};
+
+        // ---- Plane model (dominant plane from map points) ----
+        struct PlaneModel {
+            Eigen::Vector3d n = Eigen::Vector3d::UnitY(); // unit normal
+            double d = 0.0;                                // plane: n·X + d = 0
+            int inliers = 0;
+            Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
+            bool valid = false;
+        };
+        PlaneModel plane_;
+        bool has_plane_{false};
+        int frame_counter_{0};
+
         // Build projection matrix K*[R|t] from Sophus pose T_wc (world-from-camera)
         inline cv::Matx34d projectionFromPose(const Sophus::SE3d& T_wc) const {
             Eigen::Matrix3d Rw = T_wc.rotationMatrix();
@@ -319,10 +370,15 @@ class System {
                                 const Eigen::Matrix3d& R12,
                                 const Eigen::Vector3d& t12,
                                 const Frame& f1, const Frame& /*f2*/) {
-            Sophus::SE3d T_w_c1; // identity
-            Sophus::SE3d T_c1_c2(R12, t12);
-            Sophus::SE3d T_w_c2 = T_w_c1 * T_c1_c2;
+            Sophus::SE3d T_w_c1; // identity (world == cam1)
 
+            // recoverPose gives cam1 -> cam2
+            Sophus::SE3d T_c1_c2(R12, t12);
+
+            // We need world-from-cam2 (cam2 -> world == cam1) = inverse of cam1->cam2
+            Sophus::SE3d T_w_c2(R12.transpose(), -R12.transpose() * t12);
+
+            // Build projection matrices K [R_cw | t_cw]
             cv::Matx34d P1 = projectionFromPose(T_w_c1);
             cv::Matx34d P2 = projectionFromPose(T_w_c2);
 
@@ -444,4 +500,154 @@ class System {
             num_inliers_ = inliers.rows;
             return true;
         }
+
+        // Fit dominant plane with simple RANSAC over map_points_ (world frame)
+        void fitDominantPlaneRansac() {
+            const int N = (int)map_points_.size();
+            if (N < 50) { has_plane_ = false; plane_ = PlaneModel(); return; }
+
+            // Gather points to a simple vector for cache locality
+            std::vector<Eigen::Vector3d> pts; pts.reserve(N);
+            for (const auto& mp : map_points_) pts.push_back(mp.Xw);
+
+            // Robust distance scale: use median radius to set threshold (~2%)
+            std::vector<double> radii; radii.reserve(N);
+            for (auto& p : pts) radii.push_back(p.norm());
+            std::nth_element(radii.begin(), radii.begin()+radii.size()/2, radii.end());
+            const double med = radii[radii.size()/2];
+            const double dist_thresh = std::max(1e-3, 0.06 * med); // ~6% of scene scale
+
+            auto planeFrom3 = [](const Eigen::Vector3d& a,
+                                const Eigen::Vector3d& b,
+                                const Eigen::Vector3d& c,
+                                Eigen::Vector3d& n, double& d)->bool {
+                Eigen::Vector3d nraw = (b - a).cross(c - a);
+                double nn = nraw.norm();
+                if (nn < 1e-9) return false;
+                n = nraw / nn;
+                d = -n.dot(a);
+                return true;
+            };
+
+            // Simple RANSAC
+            int best_inl = 0;
+            Eigen::Vector3d best_n(0,1,0), best_c = Eigen::Vector3d::Zero();
+            double best_d = 0;
+            const int iters = 200;
+            for (int it = 0; it < iters; ++it) {
+                // sample 3 distinct indices
+                int i = rand() % N, j = rand() % N, k = rand() % N;
+                if (i==j || i==k || j==k) { --it; continue; }
+
+                Eigen::Vector3d n; double d;
+                if (!planeFrom3(pts[i], pts[j], pts[k], n, d)) continue;
+
+                // count inliers
+                int cnt = 0;
+                Eigen::Vector3d csum(0,0,0);
+                for (int t = 0; t < N; ++t) {
+                    double dist = std::abs(n.dot(pts[t]) + d);
+                    if (dist < dist_thresh) { ++cnt; csum += pts[t]; }
+                }
+                if (cnt > best_inl) {
+                    best_inl = cnt;
+                    best_n = n;
+                    best_d = d;
+                    // best_c = (cnt>0) ? (csum / (double)cnt) : Eigen::Vector3d::Zero();  // <-- remove this
+                    if (cnt > 0) best_c = csum / double(cnt);
+                    else         best_c.setZero();
+                }
+            }
+
+            // Accept if enough inliers
+            if (best_inl >= 50) {
+                // Re-orient normal to point roughly "up" (optional)
+                Eigen::Vector3d world_up(0,1,0);
+                if (best_n.dot(world_up) < 0) { best_n = -best_n; best_d = -best_d; }
+
+                plane_.n = best_n.normalized();
+                plane_.d = best_d;
+                plane_.inliers = best_inl;
+                plane_.centroid = best_c;
+                plane_.valid = true;
+                has_plane_ = true;
+            } else {
+                has_plane_ = false;
+                plane_ = PlaneModel();
+            }
+        }
+
+        bool fitPlaneViaHomography(const std::vector<cv::Point2f>& p1,
+                                const std::vector<cv::Point2f>& p2,
+                                const Eigen::Matrix3d& R12,
+                                const Eigen::Vector3d& t12) {
+            if (p1.size() < 40 || p2.size() < 40) return false;
+
+            // 1) Robust homography in pixel coords
+            cv::Mat inlH;
+            cv::Mat H = cv::findHomography(p1, p2, cv::RANSAC, 3.0, inlH, 2000, 0.995);
+            if (H.empty()) return false;
+
+            int hinl = cv::countNonZero(inlH);
+            // Require a meaningful planar consensus
+            //if (hinl < 80 || hinl < (int)p1.size() * 0.25) return false;
+            int need = std::max(30, int(p1.size()*0.30));   // was 80 / 25%
+            if (hinl < need) return false;
+
+            // 2) Normalize by intrinsics
+            Eigen::Matrix3d K;  cv::cv2eigen(Kcv_, K);
+            Eigen::Matrix3d He; cv::cv2eigen(H, He);
+            Eigen::Matrix3d Hn = K.inverse() * He * K;      // ~ R + t n^T / d
+
+            // 3) Compute v = n/d from A = Hn - R = t v^T  (rank-1)
+            Eigen::Matrix3d R = R12;
+            Eigen::Vector3d t = t12;
+            double t2 = t.squaredNorm();
+            if (t2 < 1e-10) return false;
+
+            Eigen::Matrix3d A = Hn - R;
+            Eigen::Vector3d v = A.transpose() * t / t2;     // least squares
+            double vnorm = v.norm();
+            if (vnorm < 1e-9 || !std::isfinite(vnorm)) return false;
+
+            Eigen::Vector3d n_cam1 = v / vnorm;            // unit normal in cam1
+            double d_cam1 = 1.0 / vnorm;                    // distance in cam1
+
+            // Fix sign so normal roughly points "up" if we have gravity
+            if (have_gravity_) {
+                Eigen::Vector3d up_cam = -g_est_.normalized();
+                if (n_cam1.dot(up_cam) < 0) { n_cam1 = -n_cam1; d_cam1 = -d_cam1; }
+            }
+
+            // 4) Convert plane from cam1 to world using stored T_w_c_prev_
+            Eigen::Matrix3d Rwc = T_w_c_prev_.rotationMatrix();
+            Eigen::Vector3d twc = T_w_c_prev_.translation();
+
+            Eigen::Vector3d n_w = Rwc * n_cam1;
+            Eigen::Vector3d c_cam1 = -d_cam1 * n_cam1;          // centroid point on plane in cam1
+            Eigen::Vector3d c_w = Rwc * c_cam1 + twc;
+
+            // Optional: EMA smoothing to reduce jitter
+            const double alpha = 0.2;
+            if (has_plane_ && plane_.valid) {
+                n_w = (1.0 - alpha) * plane_.n + alpha * n_w; n_w.normalize();
+                c_w = (1.0 - alpha) * plane_.centroid + alpha * c_w;
+            }
+
+            // Pack model
+            // Recompute d from n·X + d = 0 using centroid
+            double d_w = -n_w.dot(c_w);
+
+            // Ensure normal upright if we know gravity (flip if needed)
+            if (have_gravity_ && n_w.dot(Eigen::Vector3d(0,1,0)) < 0) { n_w = -n_w; d_w = -d_w; }
+
+            plane_.n = n_w.normalized();
+            plane_.d = d_w;
+            plane_.centroid = c_w;
+            plane_.inliers = hinl;
+            plane_.valid = true;
+            has_plane_ = true;
+            return true;
+        }
+
 };

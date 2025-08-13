@@ -53,6 +53,11 @@ std::vector<double> getPointsXYZ(int maxN = 500) {
   return g_sys->ExportPointsXYZ(maxN);
 }
 
+std::vector<double> getPlaneParams() {
+  if (!g_sys) return {};
+  return g_sys->ExportPlaneThree(); // [nx,ny,nz,d, cx,cy,cz, inliers] in THREE basis
+}
+
 int getNumMapPoints() { return g_sys ? g_sys->NumMapPoints() : 0; }
 int getNumKeypoints() { return g_sys ? g_sys->num_keypoints_  : -1; }
 int getNumInliers()   { return g_sys ? g_sys->num_inliers_    : -1; }
@@ -74,4 +79,6 @@ EMSCRIPTEN_BINDINGS(vio_module) {
   function("getUpHint", &getUpHint);
   function("getPointsXYZ", &getPointsXYZ);
   function("getNumMapPoints", &getNumMapPoints);
+  function("getPlaneParams", &getPlaneParams);
+
 }

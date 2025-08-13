@@ -10,6 +10,8 @@ const tapPlane  = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0); // y=0 plane
 
 export async function initRenderer(canvas) {
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(window.devicePixelRatio || 1);
+  renderer.setSize(W, H, false);
   renderer.setClearColor(0x000000, 0); // transparent
   renderer.domElement.style.backgroundColor = 'transparent';
 
@@ -29,7 +31,7 @@ export async function initRenderer(canvas) {
   const loader = new GLTFLoader();
   const glb = await loader.loadAsync(`./cactus.glb?v=${Date.now()}`);
   const cactus = glb.scene;
-  cactus.scale.setScalar(0.8);
+  cactus.scale.setScalar(0.2);
 
   cactusAnchor = new THREE.Object3D();
   cactusAnchor.matrixAutoUpdate = false;
@@ -41,7 +43,86 @@ export async function initRenderer(canvas) {
   cactusAnchor.matrix.copy(place);
 
   renderer.render(scene, camera);
+  initPlaneGizmo(0.7);
 }
+
+// --- Dominant plane gizmo ---
+let planeGroup = null;        // parent group (so we can scale/rotate together)
+let planeMesh = null;         // translucent filled quad
+let planeGrid = null;         // grid overlay (very visible)
+let planeDot  = null;         // centroid marker
+let planeEq   = null;         // THREE.Plane for raycast (n·x + c = 0)
+
+export function initPlaneGizmo(size = 1) {
+  if (planeGroup) return;
+
+  planeGroup = new THREE.Group();
+  planeGroup.visible = false;
+  scene.add(planeGroup);
+
+  // Quad (faces +Z in local space)
+  const geo = new THREE.PlaneGeometry(size, size, 1, 1);
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0x00ff88,
+    opacity: 0.35,
+    transparent: true,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  planeMesh = new THREE.Mesh(geo, mat);
+  planeGroup.add(planeMesh);
+
+  // Grid helper lives in XZ; rotate it so its normal is +Z (same as PlaneGeometry)
+  planeGrid = new THREE.GridHelper(size, 10, 0x66ffff, 0x66ffff);
+  planeGrid.rotation.x = Math.PI / 2;
+  planeGroup.add(planeGrid);
+
+  // Centroid marker
+  planeDot = new THREE.Mesh(
+    new THREE.SphereGeometry(0.03, 16, 12),
+    new THREE.MeshBasicMaterial({ color: 0xff00ff })
+  );
+  planeGroup.add(planeDot);
+
+  planeEq = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
+}
+
+/**
+ * params: [nx,ny,nz, d, cx,cy,cz, inliers] already in THREE basis (x,-y,-z) from WASM
+ */
+export function updatePlaneFromParams(params) {
+  if (!planeGroup || !params || params.length < 8) return;
+
+  const n = new THREE.Vector3(params[0], params[1], params[2]).normalize();
+  const d = params[3];
+  const c = new THREE.Vector3(params[4], params[5], params[6]);
+  const inliers = params[7] | 0;
+
+  // Rotate local +Z to the plane normal n
+  const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1), n);
+  planeGroup.quaternion.copy(q);
+  planeGroup.position.copy(c);
+  planeDot.position.set(0,0,0); // centered in the group
+
+  // 🔎 Auto-scale plane size to distance from camera so you can always see it
+  const dist = c.distanceTo(camera.position);
+  const s = Math.min(Math.max(dist * 1.5, 0.4), 8.0); // clamp [0.4, 8] world units
+  planeMesh.scale.set(s, s, 1);
+  planeGrid.scale.set(s, s, 1);
+
+  // Show when we have enough support
+  planeGroup.visible = inliers >= 35;
+
+  // ✅ Update the infinite raycast plane for taps: THREE.Plane uses n·x + constant = 0
+  // Our exported 'd' is in the same form, so do NOT negate it.
+  if (!planeEq) planeEq = new THREE.Plane();
+  planeEq.set(n, d);
+
+  // Force a render in case camera pose didn't change this frame
+  renderer.render(scene, camera);
+}
+
+export function setPlaneVisible(v) { if (planeGroup) planeGroup.visible = !!v; }
 
 // --- Point cloud debug (Three.js) ---
 let pcObj = null;
@@ -172,14 +253,21 @@ export function placeAnchorAtScreen(clientX, clientY) {
     ((clientX - rect.left) / rect.width) * 2 - 1,
     -(((clientY - rect.top) / rect.height) * 2 - 1)
   );
-
   raycaster.setFromCamera(ndc, camera);
 
+  // If we have a detected plane, intersect that; else fall back to 0.6m along the ray
   const hit = new THREE.Vector3();
-  if (raycaster.ray.intersectPlane(tapPlane, hit)) {
-    const M = new THREE.Matrix4().makeTranslation(hit.x, hit.y, hit.z);
-    cactusAnchor.matrix.copy(M);
-  } else {
+  let placed = false;
+
+  if (planeEq && planeMesh?.visible) {
+    if (raycaster.ray.intersectPlane(planeEq, hit)) {
+      const M = new THREE.Matrix4().makeTranslation(hit.x, hit.y, hit.z);
+      cactusAnchor.matrix.copy(M);
+      placed = true;
+    }
+  }
+
+  if (!placed) {
     const p = new THREE.Vector3()
       .copy(raycaster.ray.origin)
       .addScaledVector(raycaster.ray.direction, 0.6);
@@ -189,6 +277,7 @@ export function placeAnchorAtScreen(clientX, clientY) {
   cactusAnchor.matrixAutoUpdate = false;
   renderer.render(scene, camera);
 }
+
 
 let t = 0;
 export function debugWobbleCamera() {
