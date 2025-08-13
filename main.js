@@ -4,6 +4,9 @@ import {
   configureCameraFromIntrinsics,
   updateFromPose_Twc_threeBasis,
   placeAnchorAtScreen,
+  initPointCloud,          
+  updatePointCloud,        
+  setPointCloudVisible,    
   debugWobbleCamera,
 } from './renderer.js';
 
@@ -98,6 +101,8 @@ async function getCameraStream() {
     }
 
     await initRenderer(canvas);
+    initPointCloud(2000, 3); 
+    setPointCloudVisible(true);
 
     // Tap / click to place the cactus
     function onTap(ev) {
@@ -188,6 +193,8 @@ async function getCameraStream() {
       ctx = off.getContext('2d', { willReadFrequently: true });
     }
 
+    let lastPC = 0;
+
     async function loop() {
       //debugWobbleCamera();
       // FPS
@@ -232,22 +239,143 @@ async function getCameraStream() {
         const kps = Module.getNumKeypoints?.();
         const inl = Module.getNumInliers?.();
         const st  = Module.getTrackState?.();
-        if (typeof kps === 'number' && typeof inl === 'number' && typeof st === 'number') {
-          extra = ` | kps:${kps} inl:${inl} state:${st}`;
+        const pts = Module.getNumMapPoints?.();
+        if (typeof kps === 'number' && typeof inl === 'number' && typeof st === 'number' && typeof pts === 'number') {
+          extra = ` | kps:${kps} inl:${inl} state:${st} pts:${pts}`;
         }
       } catch {}
       updateHUD(extra);
+
+            // --- point cloud update (every ~400 ms) ---
+      const now2 = performance.now();
+      if (now2 - lastPC > 400 && Module.getPointsXYZ) {
+        try {
+          const vec = Module.getPointsXYZ(3000);   // up to N points (3*N doubles)
+          if (vec && typeof vec.size === 'function') {
+            const n = vec.size();
+            if (n > 0) {
+              // Pull into a typed array for faster transfer
+              const tmp = new Float32Array(n);
+              for (let i = 0; i < n; ++i) tmp[i] = vec.get(i);
+              updatePointCloud(tmp);
+            }
+            vec.delete?.(); // free Embind vector
+          }
+        } catch (e) {
+          logMsg('getPointsXYZ error:', e?.message || e);
+        }
+        lastPC = now2;
+      }
 
       requestAnimationFrame(loop);
     }
     requestAnimationFrame(loop);
 
-    // iOS motion permission (later for IMU)
+    // ---- IMU streaming to WASM: Generic Sensor API (Android) + fallback (iOS) ----
+    let imuHz = 0;
+    let _imuCount = 0, _imuLast = performance.now();
+
+    async function startIMU() {
+      const hasGenericSensors =
+        'Gyroscope' in window && 'Accelerometer' in window;
+
+      if (hasGenericSensors) {
+        // These are in SI units: Gyro = rad/s, Accel = m/s^2
+        const gyro = new Gyroscope({ frequency: 200 });
+        const accel = new Accelerometer({ frequency: 200 });
+
+        let gx=0, gy=0, gz=0;
+        let ax=0, ay=0, az=0;
+
+        gyro.addEventListener('reading', () => {
+          // Gyro event rate is high; use this as the driver
+          gx = gyro.x || 0; gy = gyro.y || 0; gz = gyro.z || 0;
+
+          const now = performance.now();
+          if (window.Module?.feedIMU) {
+            Module.feedIMU(now * 1e-3, ax, ay, az, gx, gy, gz);
+          }
+
+          _imuCount++;
+          const dt = now - _imuLast;
+          if (dt >= 500) {
+            imuHz = (_imuCount * 1000) / dt;
+            _imuCount = 0;
+            _imuLast = now;
+          }
+        });
+
+        accel.addEventListener('reading', () => {
+          ax = accel.x || 0; ay = accel.y || 0; az = accel.z || 0;
+        });
+
+        try {
+          gyro.start();
+          accel.start();
+          logMsg('Generic Sensor API started (gyro+accel)');
+          return;
+        } catch (e) {
+          logMsg('Generic Sensor start failed, falling back:', e?.message || e);
+          // Fall through to DeviceMotion below
+        }
+      }
+
+      // ---- Fallback: DeviceMotion (iOS / older Android) ----
+      const deg2rad = Math.PI / 180;
+      let firstEventLogged = false;
+
+      window.addEventListener('devicemotion', (e) => {
+        const now = performance.now();
+        const acc = e.acceleration || e.accelerationIncludingGravity || {x:0,y:0,z:0};
+        const rr  = e.rotationRate || {alpha:0,beta:0,gamma:0};
+
+        const ax = acc.x || 0, ay = acc.y || 0, az = acc.z || 0;
+        const gx = (rr.beta  || 0) * deg2rad;  // x
+        const gy = (rr.gamma || 0) * deg2rad;  // y
+        const gz = (rr.alpha || 0) * deg2rad;  // z
+
+        if (window.Module?.feedIMU) {
+          Module.feedIMU(now * 1e-3, ax, ay, az, gx, gy, gz);
+        }
+
+        if (!firstEventLogged) {
+          firstEventLogged = true;
+          logMsg('devicemotion active (fallback)');
+        }
+
+        _imuCount++;
+        const dt = now - _imuLast;
+        if (dt >= 500) {
+          imuHz = (_imuCount * 1000) / dt;
+          _imuCount = 0;
+          _imuLast  = now;
+        }
+      }, { passive: true });
+
+      logMsg('DeviceMotion listener attached (fallback)');
+    }
+
+    // Permission flow: iOS needs a tap; Android typically doesn’t
     if (window.DeviceMotionEvent?.requestPermission) {
       document.body.addEventListener('click', async () => {
-        try { await DeviceMotionEvent.requestPermission(); } catch {}
+        try {
+          const s = await DeviceMotionEvent.requestPermission();
+          logMsg('motion perm:', s);
+          await startIMU();
+        } catch (e) {
+          logMsg('motion perm error:', e?.message || e);
+        }
       }, { once: true });
+    } else {
+      // Android path
+      startIMU();
     }
+
+    // Patch HUD to show IMU Hz
+    const _origUpdateHUD = updateHUD;
+    updateHUD = function(extra='') {
+      _origUpdateHUD(`${extra} | imu:${imuHz.toFixed(0)}Hz`);
+    };
 
     logMsg(`Ready ${W}x${H}`);
   } catch (e) {
@@ -255,3 +383,4 @@ async function getCameraStream() {
     logMsg('Error:', e?.message || e);
   }
 })();
+

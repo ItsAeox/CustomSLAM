@@ -42,6 +42,18 @@ std::vector<double> getPoseVec() {
   return std::vector<double>(T.begin(), T.end());
 }
 
+std::vector<double> getUpHint() {
+  if (!g_sys) return {};
+  Eigen::Vector3d u = g_sys->UpHintCam();
+  return { u.x(), u.y(), u.z() };
+}
+
+std::vector<double> getPointsXYZ(int maxN = 500) {
+  if (!g_sys) return {};
+  return g_sys->ExportPointsXYZ(maxN);
+}
+
+int getNumMapPoints() { return g_sys ? g_sys->NumMapPoints() : 0; }
 int getNumKeypoints() { return g_sys ? g_sys->num_keypoints_  : -1; }
 int getNumInliers()   { return g_sys ? g_sys->num_inliers_    : -1; }
 int getTrackState()   { return g_sys ? g_sys->tracking_state_ : 0; }
@@ -59,4 +71,7 @@ EMSCRIPTEN_BINDINGS(vio_module) {
   register_vector<double>("VectorDouble");
 
   function("getPose", &getPoseVec);
+  function("getUpHint", &getUpHint);
+  function("getPointsXYZ", &getPointsXYZ);
+  function("getNumMapPoints", &getNumMapPoints);
 }

@@ -6,128 +6,262 @@
 #include <opencv2/core/eigen.hpp>
 #include "common/camera.h"
 #include "map/frame.h"
+#include "map/mappoint.h"
 #include "frontend/feature_tracker.h"
+#include <deque>
+
+struct IMUSample {
+    double t;                 // seconds, same clock as ProcessFrame ts
+    Eigen::Vector3d acc;      // m/s^2 (device frame, may include gravity)
+    Eigen::Vector3d gyro;     // rad/s  (device frame)
+};
 
 class System {
-public:
-    // HUD counters (read via bindings)
-    int num_keypoints_   = 0;   // detected features this frame
-    int num_inliers_     = 0;   // E-matrix inliers from recoverPose
-    int tracking_state_  = 0;   // 0=idle/no prev, 1=initializing, 2=tracking
+    public:
+        // HUD counters (read via bindings)
+        int num_keypoints_   = 0;   // detected features this frame
+        int num_inliers_     = 0;   // E-matrix inliers from recoverPose
+        int tracking_state_  = 0;   // 0=idle/no prev, 1=initializing, 2=tracking
 
-    explicit System(const Camera& cam) : cam_(cam) {
-        T_wc_ = Sophus::SE3d(); // identity
-        Kcv_  = (cv::Mat_<double>(3,3) << cam_.fx,0,cam_.cx, 0,cam_.fy,cam_.cy, 0,0,1);
-    }
-
-    // RGBA or grayscale accepted; we convert to gray
-    void ProcessFrame(const uint8_t* img, double ts, int strideRGBAorGray, bool isRGBA=true) {
-        cv::Mat gray;
-        if (isRGBA) {
-            cv::Mat rgba(cam_.height, cam_.width, CV_8UC4, const_cast<uint8_t*>(img), strideRGBAorGray);
-            cv::cvtColor(rgba, gray, cv::COLOR_RGBA2GRAY);
-        } else {
-            gray = cv::Mat(cam_.height, cam_.width, CV_8UC1, const_cast<uint8_t*>(img), strideRGBAorGray).clone();
+        explicit System(const Camera& cam) : cam_(cam) {
+            T_wc_ = Sophus::SE3d(); // identity
+            Kcv_  = (cv::Mat_<double>(3,3) << cam_.fx,0,cam_.cx, 0,cam_.fy,cam_.cy, 0,0,1);
         }
 
-        Frame cur; cur.timestamp = ts; cur.gray = gray;
-        tracker_.detectAndDescribe(cur.gray, cur.kps, cur.desc);
-        num_keypoints_ = static_cast<int>(cur.kps.size());
+        // RGBA or grayscale accepted; we convert to gray
+        void ProcessFrame(const uint8_t* img, double ts, int strideRGBAorGray, bool isRGBA=true) {
+            cv::Mat gray;
+            if (isRGBA) {
+                cv::Mat rgba(cam_.height, cam_.width, CV_8UC4, const_cast<uint8_t*>(img), strideRGBAorGray);
+                cv::cvtColor(rgba, gray, cv::COLOR_RGBA2GRAY);
+            } else {
+                gray = cv::Mat(cam_.height, cam_.width, CV_8UC1, const_cast<uint8_t*>(img), strideRGBAorGray).clone();
+            }
 
-        // no previous frame -> stash and wait
-        if (!has_prev_) {
+            Frame cur; cur.timestamp = ts; cur.gray = gray;
+            tracker_.detectAndDescribe(cur.gray, cur.kps, cur.desc);
+            num_keypoints_ = static_cast<int>(cur.kps.size());
+
+            // no previous frame -> stash and wait
+            if (!has_prev_) {
+                prev_ = std::move(cur);
+                has_prev_ = true;
+                tracking_state_ = 1;        // initializing (need a baseline)
+                num_inliers_ = 0;
+                return;
+            }
+
+            // match to previous
+            auto matches = tracker_.match(prev_.desc, cur.desc);
+            if (matches.size() < 20) {
+                // not enough for a robust E
+                num_inliers_ = 0;
+                tracking_state_ = 1;
+                prev_ = std::move(cur);
+                return;
+            }
+            // --- build matched points from prev -> cur ---
+            std::vector<cv::Point2f> p_prev, p_cur;
+            std::vector<int> prevIdxForMatch;             // 👈 NEW
+            p_prev.reserve(matches.size());
+            p_cur.reserve(matches.size());
+            prevIdxForMatch.reserve(matches.size());
+            for (const auto& m : matches) {
+                p_prev.push_back(prev_.kps[m.queryIdx].pt);   // prev
+                p_cur .push_back(cur .kps[m.trainIdx].pt);    // cur
+                prevIdxForMatch.push_back(m.queryIdx);        // 👈 remember original row in prev_.desc
+            }
+
+            // --- estimate Essential (looser threshold on mobile) ---
+            cv::Mat inlierMask;
+            const double prob = 0.999;
+            const double ransac_thresh = 2.0; // px
+            cv::Mat E = cv::findEssentialMat(p_prev, p_cur, Kcv_, cv::RANSAC, prob, ransac_thresh, inlierMask);
+
+            if (E.empty()) {
+                num_inliers_ = 0;
+                tracking_state_ = 1;
+                prev_ = std::move(cur);
+                return;
+            }
+
+            // --- recoverPose RETURNS motion that maps prev -> cur ---
+            cv::Mat Rcv, tcv;
+            int inl = cv::recoverPose(E, p_prev, p_cur, Kcv_, Rcv, tcv, inlierMask);
+            num_inliers_ = inl;
+
+            if (inl >= 25) {
+                Eigen::Matrix3d R_vo; cv::cv2eigen(Rcv, R_vo);
+                Eigen::Vector3d t_vo; cv::cv2eigen(tcv, t_vo);
+
+                if (!initialized_) {
+                    // --- Two-view initialize ---
+                    // 2) Triangulate inliers between prev (cam1) and cur (cam2)
+                    // Build a char mask from inlierMask (CV_8U) for our helper
+                    std::vector<char> inlVec(inlierMask.rows ? inlierMask.rows : inlierMask.cols, 0);
+                    for (int i = 0; i < (int)inlVec.size(); ++i) {
+                        unsigned char v = inlierMask.rows ? inlierMask.at<unsigned char>(i,0)
+                                                        : inlierMask.at<unsigned char>(0,i);
+                        inlVec[i] = (v != 0);
+                    }
+                    triangulateInliers(p_prev, p_cur, inlVec, prevIdxForMatch, R_vo, t_vo, prev_, cur);
+
+                    // 3) Convert VO relative [R,t] (cam1->cam2) to absolute world-from-camera T_wc
+                    // P2 = K[R|t] => R_cw = R^T, t_cw = -R^T t
+                    Eigen::Matrix3d R_wc = R_vo.transpose();
+                    Eigen::Vector3d t_wc = -R_wc * t_vo;
+
+                    // Blend IMU on WORLD rotation
+                    Eigen::Quaterniond q_vo_world(R_wc);
+                    Eigen::Quaterniond q_pred = R_imu_pred_.unit_quaternion();
+                    double w_pred = imu_started_ ? 0.25 : 0.0;
+                    Eigen::Quaterniond q_blend = q_pred.slerp(w_pred, q_vo_world).normalized();
+                    T_wc_ = Sophus::SE3d(Sophus::SO3d(q_blend), t_wc);
+
+                                        if (have_gravity_ && !did_world_align_) {
+                        Eigen::Vector3d up_cam = -g_est_.normalized();
+                        Eigen::Vector3d up_world(0, 1, 0);
+                        Eigen::Quaterniond q_align = Eigen::Quaterniond::FromTwoVectors(up_cam, up_world);
+                        Sophus::SO3d R_align(q_align.normalized());
+                        T_wc_ = Sophus::SE3d(R_align, Eigen::Vector3d::Zero()) * T_wc_;
+                        did_world_align_ = true;
+                    }
+
+                    // Optional: re-anchor IMU prediction
+                    R_imu_pred_ = Sophus::SO3d(q_blend);
+
+                    initialized_ = (map_points_.size() >= 40); // need some points
+                    tracking_state_ = 2;
+                } else {
+                    // --- Tracking via PnP on map points ---
+                    if (!trackWithPnP(cur)) {
+                        // Use world-from-camera increment (inverse of [R|t])
+                        Eigen::Matrix3d R_wc_inc = R_vo.transpose();
+                        Eigen::Vector3d t_wc_inc = -R_wc_inc * t_vo;
+
+                        // Blend IMU on WORLD rotation
+                        Eigen::Quaterniond q_vo_world(R_wc_inc);
+                        Eigen::Quaterniond q_pred = R_imu_pred_.unit_quaternion();
+                        double w_pred = imu_started_ ? 0.25 : 0.0;
+                        Eigen::Quaterniond q_blend = q_pred.slerp(w_pred, q_vo_world).normalized();
+
+                        Sophus::SE3d T_inc(Sophus::SO3d(q_blend), t_wc_inc);
+                        T_wc_ = T_wc_ * T_inc;
+
+                        // Optional: re-anchor IMU prediction after successful visual step
+                        R_imu_pred_ = Sophus::SO3d(q_blend);
+
+                        tracking_state_ = 2;
+                        num_inliers_ = inl;
+                    } else {
+                        // re‑anchor IMU prediction around successful update
+                        R_imu_pred_ = Sophus::SO3d(T_wc_.so3().unit_quaternion());
+                    }
+                }
+            } else {
+                tracking_state_ = 1;
+            }
             prev_ = std::move(cur);
-            has_prev_ = true;
-            tracking_state_ = 1;        // initializing (need a baseline)
-            num_inliers_ = 0;
-            return;
         }
 
-        // match to previous
-        auto matches = tracker_.match(prev_.desc, cur.desc);
-        if (matches.size() < 20) {
-            // not enough for a robust E
-            num_inliers_ = 0;
-            tracking_state_ = 1;
-            prev_ = std::move(cur);
-            return;
+
+        void ProcessIMU(double ts, double ax, double ay, double az,
+                        double gx, double gy, double gz) {
+            // 1) push into buffer (unchanged from before)
+            IMUSample s;
+            s.t    = ts;
+            s.acc  = Eigen::Vector3d(ax, ay, az);
+            s.gyro = Eigen::Vector3d(gx, gy, gz);
+            imu_buf_.push_back(s);
+            const double tmin = ts - imu_keep_seconds_;
+            while (!imu_buf_.empty() && imu_buf_.front().t < tmin) imu_buf_.pop_front();
+
+            // 2) gravity LPF (when magnitude is plausible)
+            const double anorm = s.acc.norm();
+            if (anorm > 4.0 && anorm < 15.0) { // ~[0.4g,1.5g]
+                const double alpha = 0.02;     // smooth; ~0.02 @100Hz ~ 0.5s time constant
+                if (!have_gravity_) {
+                    g_est_ = s.acc;
+                    have_gravity_ = true;
+                } else {
+                    g_est_ = (1.0 - alpha) * g_est_ + alpha * s.acc;
+                }
+            }
+
+            // 3) gyro integration for short‑term orientation prediction
+            if (!imu_started_) {
+                imu_last_t_ = ts;
+                imu_started_ = true;
+                return;
+            }
+            double dt = ts - imu_last_t_;
+            imu_last_t_ = ts;
+            if (dt <= 0.0 || dt > 0.1) return; // guard
+
+            // NOTE: assume device frame ≈ camera frame for now; we’ll refine mapping later
+            Eigen::Vector3d w = s.gyro; // rad/s
+            Sophus::SO3d dR = Sophus::SO3d::exp(w * dt);
+            R_imu_pred_ = R_imu_pred_ * dR;
         }
 
-        // --- build matched points from prev -> cur (you already have matches) ---
-        std::vector<cv::Point2f> p_prev, p_cur;
-        p_prev.reserve(matches.size());
-        p_cur.reserve(matches.size());
-        for (const auto& m : matches) {
-            p_prev.push_back(prev_.kps[m.queryIdx].pt); // prev
-            p_cur .push_back(cur .kps[m.trainIdx].pt);  // cur
+        // Column-major 4x4 for WebGL (always returns something: current T_wc_)
+        std::array<double,16> CurrentPoseGL() const {
+            Eigen::Matrix4d T = T_wc_.matrix();
+            std::array<double,16> a{};
+            int k=0;
+            for (int c=0;c<4;++c)
+                for (int r=0;r<4;++r)
+                    a[k++] = T(r,c);
+            return a;
         }
 
-        // --- estimate Essential (looser threshold on mobile) ---
-        cv::Mat inlierMask;
-        const double prob = 0.999;
-        const double ransac_thresh = 2.0; // px
-        cv::Mat E = cv::findEssentialMat(p_prev, p_cur, Kcv_, cv::RANSAC, prob, ransac_thresh, inlierMask);
+        std::array<double,16> CurrentPoseGLThree() const {
+            Eigen::Matrix4d S = Eigen::Matrix4d::Identity();
+            S(1,1) = -1.0; // flip Y
+            S(2,2) = -1.0; // flip Z
+            Eigen::Matrix4d Tthree = S * T_wc_.matrix() * S;
 
-        if (E.empty()) {
-            num_inliers_ = 0;
-            tracking_state_ = 1;
-            prev_ = std::move(cur);
-            return;
-        }
-
-        // --- recoverPose RETURNS motion that maps prev -> cur ---
-        cv::Mat R, t;
-        int inl = cv::recoverPose(E, p_prev, p_cur, Kcv_, R, t, inlierMask);
-        num_inliers_ = inl;
-
-        if (inl >= 25) {
-            Eigen::Matrix3d Re; cv::cv2eigen(R, Re);
-            Eigen::Vector3d te; cv::cv2eigen(t, te);
-
-            // Motion from prev to cur in CAMERA frame
-            Sophus::SE3d T_c1c2(Re, te);
-
-            // Accumulate world pose: T_wc(new) = T_wc(prev) * T_cprev_cnew
-            T_wc_ = T_wc_ * T_c1c2;
-
-            tracking_state_ = 2;
-        } else {
-            tracking_state_ = 1;
-        }
-
-        prev_ = std::move(cur);
-    }
-
-    // IMU stub (we'll fuse at M1)
-    void ProcessIMU(double /*ts*/, double /*ax*/, double /*ay*/, double /*az*/,
-                    double /*gx*/, double /*gy*/, double /*gz*/) {}
-
-    // Column-major 4x4 for WebGL (always returns something: current T_wc_)
-    std::array<double,16> CurrentPoseGL() const {
-        Eigen::Matrix4d T = T_wc_.matrix();
-        std::array<double,16> a{};
-        int k=0;
-        for (int c=0;c<4;++c)
+            std::array<double,16> a{};
+            int k=0;
+            for (int c=0;c<4;++c)
             for (int r=0;r<4;++r)
-                a[k++] = T(r,c);
-        return a;
-    }
+                a[k++] = Tthree(r,c);
+            return a;
+        }
 
-    std::array<double,16> CurrentPoseGLThree() const {
-        Eigen::Matrix4d S = Eigen::Matrix4d::Identity();
-        S(1,1) = -1.0; // flip Y
-        S(2,2) = -1.0; // flip Z
-        Eigen::Matrix4d Tthree = S * T_wc_.matrix() * S;
+        // fetch IMU samples in [t0, t1]; inclusive at the ends
+        std::vector<IMUSample> getIMUSpan(double t0, double t1) const {
+            std::vector<IMUSample> out;
+            if (imu_buf_.empty() || t1 <= t0) return out;
+            for (const auto& s : imu_buf_) {
+                if (s.t + 1e-6 >= t0 && s.t - 1e-6 <= t1) out.push_back(s);
+            }
+            return out;
+        }
 
-        std::array<double,16> a{};
-        int k=0;
-        for (int c=0;c<4;++c)
-        for (int r=0;r<4;++r)
-            a[k++] = Tthree(r,c);
-        return a;
-    }
+        // Returns current device "up" in camera/device frame (unit vector).
+        Eigen::Vector3d UpHintCam() const {
+            if (!have_gravity_) return Eigen::Vector3d(0,1,0);
+            return (-g_est_).normalized(); // accel measures +g down; -g ≈ up
+        }
 
-    int lastInliers() const { return last_inlier_count_; }
+        // Export up to maxN map points as [x0,y0,z0, x1,y1,z1, ...]
+        std::vector<double> ExportPointsXYZ(int maxN = 500) const {
+            std::vector<double> out;
+            if (map_points_.empty()) return out;
+            const int N = std::min<int>(maxN, (int)map_points_.size());
+            out.reserve(N * 3);
+            for (int i = 0; i < N; ++i) {
+                const auto& X = map_points_[i].Xw;
+                out.push_back(X.x());
+                out.push_back(X.y());
+                out.push_back(X.z());
+            }
+            return out;
+        }
+
+        int lastInliers() const { return last_inlier_count_; }
+        int NumMapPoints() const { return (int)map_points_.size(); }
 
     private:
         Camera cam_;
@@ -137,4 +271,177 @@ public:
         Sophus::SE3d T_wc_;
         cv::Mat Kcv_;
         int last_inlier_count_{0};
+        std::deque<IMUSample> imu_buf_;
+        double imu_keep_seconds_ = 5.0; // keep last 5s of IMU for preintegration
+        // --- IMU fusion (step 2A) ---
+        Eigen::Vector3d g_est_{0, -9.81, 0};   // running accel low‑pass (m/s^2), device frame
+        bool have_gravity_{false};
+
+        Sophus::SO3d R_imu_pred_{Sophus::SO3d()}; // integrated gyro orientation since last reset
+        double imu_last_t_{0.0};
+        bool imu_started_{false};
+
+        // one‑time world "up" alignment
+        bool did_world_align_{false};
+
+        // ---- Minimal map / initializer state ----
+        bool initialized_{false};
+        std::vector<MapPoint> map_points_;   // compact point cloud
+        cv::Mat map_desc_;                   // Nx32 CV_8U (stack of descriptors)
+        cv::BFMatcher map_matcher_{cv::NORM_HAMMING, /*crossCheck=*/false};
+
+        // Build projection matrix K*[R|t] from Sophus pose T_wc (world-from-camera)
+        inline cv::Matx34d projectionFromPose(const Sophus::SE3d& T_wc) const {
+            Eigen::Matrix3d Rw = T_wc.rotationMatrix();
+            Eigen::Vector3d tw = T_wc.translation();
+            // We need P = K * [R_cw | t_cw] where R_cw,t_cw transform world->cam.
+            // If T_wc is world-from-cam, then [R_cw|t_cw] = [R_w c^T | -R_w c^T * t_w c]
+            Eigen::Matrix3d Rcw = Rw.transpose();
+            Eigen::Vector3d tcw = -Rcw * tw;
+
+            cv::Matx34d Rt;
+            Rt(0,0)=Rcw(0,0); Rt(0,1)=Rcw(0,1); Rt(0,2)=Rcw(0,2); Rt(0,3)=tcw(0);
+            Rt(1,0)=Rcw(1,0); Rt(1,1)=Rcw(1,1); Rt(1,2)=Rcw(1,2); Rt(1,3)=tcw(1);
+            Rt(2,0)=Rcw(2,0); Rt(2,1)=Rcw(2,1); Rt(2,2)=Rcw(2,2); Rt(2,3)=tcw(2);
+
+            cv::Matx33d K;
+            K(0,0)=cam_.fx; K(0,1)=0;      K(0,2)=cam_.cx;
+            K(1,0)=0;      K(1,1)=cam_.fy; K(1,2)=cam_.cy;
+            K(2,0)=0;      K(2,1)=0;      K(2,2)=1;
+            return K * Rt;
+        }
+
+        // Triangulate inliers between two views with known relative pose
+        void triangulateInliers(const std::vector<cv::Point2f>& p1,
+                                const std::vector<cv::Point2f>& p2,
+                                const std::vector<char>& inlMask,
+                                const std::vector<int>& prevIdxForMatch,   // 👈 NEW
+                                const Eigen::Matrix3d& R12,
+                                const Eigen::Vector3d& t12,
+                                const Frame& f1, const Frame& /*f2*/) {
+            Sophus::SE3d T_w_c1; // identity
+            Sophus::SE3d T_c1_c2(R12, t12);
+            Sophus::SE3d T_w_c2 = T_w_c1 * T_c1_c2;
+
+            cv::Matx34d P1 = projectionFromPose(T_w_c1);
+            cv::Matx34d P2 = projectionFromPose(T_w_c2);
+
+            // Collect inlier correspondences (pixel coords)
+            std::vector<cv::Point2f> x1, x2;
+            std::vector<int> idxMatch; idxMatch.reserve(inlMask.size());
+            x1.reserve(inlMask.size()); x2.reserve(inlMask.size());
+            for (size_t i = 0; i < inlMask.size(); ++i) {
+                if (!inlMask[i]) continue;
+                x1.push_back(p1[i]);
+                x2.push_back(p2[i]);
+                idxMatch.push_back((int)i);   // index into p1/p2 arrays
+            }
+            if ((int)x1.size() < 20) return;
+
+            cv::Mat pts4; // 4xN (float)
+            cv::triangulatePoints(P1, P2, x1, x2, pts4);
+
+            auto proj = [&](const Eigen::Vector3d& Xc) {
+                double u = cam_.fx*Xc.x()/Xc.z() + cam_.cx;
+                double v = cam_.fy*Xc.y()/Xc.z() + cam_.cy;
+                return cv::Point2f((float)u,(float)v);
+            };
+
+            for (int i = 0; i < pts4.cols; ++i) {
+                // Robustly read homogeneous point (float or double)
+                double X = (pts4.depth()==CV_64F) ? pts4.at<double>(0,i) : pts4.at<float>(0,i);
+                double Y = (pts4.depth()==CV_64F) ? pts4.at<double>(1,i) : pts4.at<float>(1,i);
+                double Z = (pts4.depth()==CV_64F) ? pts4.at<double>(2,i) : pts4.at<float>(2,i);
+                double W = (pts4.depth()==CV_64F) ? pts4.at<double>(3,i) : pts4.at<float>(3,i);
+                if (std::abs(W) < 1e-9) continue;
+                Eigen::Vector3d Xc1(X/W, Y/W, Z/W);      // in cam1/world frame
+
+                // Cheirality
+                if (Xc1.z() <= 0) continue;
+                Eigen::Vector3d Xc2 = R12 * Xc1 + t12;
+                if (Xc2.z() <= 0) continue;
+
+                // Reprojection filter (px)
+                cv::Point2f u1 = x1[i], u2 = x2[i];
+                if (cv::norm(u1 - proj(Xc1)) > 3.0 || cv::norm(u2 - proj(Xc2)) > 3.0) continue;
+
+                // ✅ Correct descriptor row from the original prev frame
+                const int matchIdx = idxMatch[i];                 // index into p1/p2
+                if (matchIdx < 0 || matchIdx >= (int)prevIdxForMatch.size()) continue;
+                const int kpIdx = prevIdxForMatch[matchIdx];      // row in f1.desc
+                if (kpIdx < 0 || kpIdx >= f1.desc.rows) continue;
+
+                MapPoint mp;
+                mp.Xw  = Xc1;                         // world == cam1
+                mp.desc = f1.desc.row(kpIdx).clone(); // descriptor from prev frame
+                map_points_.push_back(std::move(mp));
+            }
+
+            // Rebuild descriptor matrix
+            if (!map_points_.empty()) {
+                map_desc_.release();
+                const int D = f1.desc.cols;              // descriptor length (usually 32 for ORB)
+                map_desc_ = cv::Mat((int)map_points_.size(), D, CV_8U);
+                for (int r = 0; r < (int)map_points_.size(); ++r) {
+                    map_points_[r].desc.copyTo(map_desc_.row(r));
+                }
+            }
+        }  
+
+
+        // Match map points to current descriptors and run PnP
+        bool trackWithPnP(const Frame& cur) {
+            if (map_points_.empty() || map_desc_.empty() || cur.desc.empty()) return false;
+
+            // KNN + ratio test
+            std::vector<std::vector<cv::DMatch>> knn;
+            map_matcher_.knnMatch(map_desc_, cur.desc, knn, 2);
+            std::vector<cv::DMatch> good;
+            good.reserve(knn.size());
+            for (auto& v : knn) {
+                if (v.size()==2 && v[0].distance < 0.8f * v[1].distance) good.push_back(v[0]);
+            }
+            if (good.size() < 12) return false;
+
+            std::vector<cv::Point3f> pts3;
+            std::vector<cv::Point2f> pts2;
+            pts3.reserve(good.size());
+            pts2.reserve(good.size());
+            for (const auto& m : good) {
+                const MapPoint& mp = map_points_[m.queryIdx]; // queryIdx indexes map_desc_ rows
+                pts3.emplace_back((float)mp.Xw.x(), (float)mp.Xw.y(), (float)mp.Xw.z());
+                pts2.emplace_back(cur.kps[m.trainIdx].pt);
+            }
+
+            cv::Mat rvec, tvec, inliers;
+            cv::Mat K = Kcv_;
+            bool ok = cv::solvePnPRansac(pts3, pts2, K, cv::noArray(),
+                                        rvec, tvec, /*useExtrinsicGuess=*/false,
+                                        100, 3.0, 0.99, inliers, cv::SOLVEPNP_EPNP);
+            if (!ok || inliers.rows < 12) return false;
+
+            // Convert to Sophus SE3
+            cv::Mat Rcv;
+            cv::Rodrigues(rvec, Rcv);
+
+            // OpenCV returns R_cw, t_cw (world->camera)
+            Eigen::Matrix3d R_cw; cv::cv2eigen(Rcv, R_cw);
+            Eigen::Vector3d t_cw; cv::cv2eigen(tvec, t_cw);
+
+            // Convert to world-from-camera: T_wc = [R_cw^T, -R_cw^T * t_cw]
+            Eigen::Matrix3d R_wc = R_cw.transpose();
+            Eigen::Vector3d t_wc = -R_wc * t_cw;
+
+            // Blend IMU on *world* rotation
+            Eigen::Quaterniond q_vo(R_wc);
+            Eigen::Quaterniond q_pred = R_imu_pred_.unit_quaternion();
+            double w_pred = imu_started_ ? 0.25 : 0.0;
+            Eigen::Quaterniond q_blend = q_pred.slerp(w_pred, q_vo).normalized();
+
+            T_wc_ = Sophus::SE3d(Sophus::SO3d(q_blend), t_wc);  // ✅ correct frame
+            R_imu_pred_ = Sophus::SO3d(T_wc_.so3().unit_quaternion());
+            tracking_state_ = 2;
+            num_inliers_ = inliers.rows;
+            return true;
+        }
 };

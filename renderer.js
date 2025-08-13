@@ -8,7 +8,6 @@ let W = 0, H = 0;
 const raycaster = new THREE.Raycaster();
 const tapPlane  = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0); // y=0 plane
 
-
 export async function initRenderer(canvas) {
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
   renderer.setClearColor(0x000000, 0); // transparent
@@ -41,17 +40,79 @@ export async function initRenderer(canvas) {
   const place = new THREE.Matrix4().makeTranslation(0, 0, -0.6);
   cactusAnchor.matrix.copy(place);
 
-  // Sanity helpers
-  scene.add(new THREE.AxesHelper(0.2));
-  const proofCube = new THREE.Mesh(
-    new THREE.BoxGeometry(0.05,0.05,0.05),
-    new THREE.MeshNormalMaterial()
-  );
-  proofCube.position.set(0,0,-0.6);
-  scene.add(proofCube);
-
   renderer.render(scene, camera);
 }
+
+// --- Point cloud debug (Three.js) ---
+let pcObj = null;
+let pcGeom = null;
+let pcMat  = null;
+const BASIS_FLIP = new THREE.Vector3(1, -1, -1); // SLAM -> Three basis (x, -y, -z)
+
+/**
+ * Create the point cloud object (once).
+ * @param {number} maxPoints - initial capacity; can grow automatically.
+ * @param {number} sizePx - point size in pixels (screen-space).
+ */
+export function initPointCloud(maxPoints = 2000, sizePx = 3) {
+  if (pcObj) return;
+
+  pcGeom = new THREE.BufferGeometry();
+  // preallocate; we'll adjust drawRange each update
+  pcGeom.setAttribute('position', new THREE.Float32BufferAttribute(maxPoints * 3, 3));
+  pcGeom.setDrawRange(0, 0);
+
+  // sizeAttenuation=false => size in pixels, steady for debugging
+  pcMat = new THREE.PointsMaterial({ size: sizePx, sizeAttenuation: false });
+  pcObj = new THREE.Points(pcGeom, pcMat);
+  pcObj.frustumCulled = false; // tiny points can be culled too aggressively
+
+  scene.add(pcObj);
+}
+
+/**
+ * Update the point cloud from a flat array/TypedArray of [x0,y0,z0, x1,y1,z1, ...]
+ * Coordinates are assumed in SLAM world; we flip to Three basis internally.
+ * @param {Array|Float32Array|Float64Array} xyz
+ */
+export function updatePointCloud(xyz) {
+  if (!xyz) return;
+  if (!pcObj) initPointCloud(Math.max(2000, Math.floor((xyz.length / 3) * 1.2)));
+
+  const arr = (xyz.length !== undefined && xyz.BYTES_PER_ELEMENT)
+    ? xyz
+    : Float32Array.from(xyz);
+
+  const wantN = (arr.length / 3) | 0;
+  let buf = pcGeom.getAttribute('position');
+
+  // Grow buffer if needed
+  if (wantN * 3 > buf.array.length) {
+    const newCap = Math.ceil(wantN * 1.5) * 3;
+    const newAttr = new THREE.Float32BufferAttribute(newCap, 3);
+    // no need to copy old data; we'll refill below
+    pcGeom.setAttribute('position', newAttr);
+    buf = newAttr;
+  }
+
+  // Fill with basis flip (x, -y, -z)
+  const dst = buf.array;
+  for (let i = 0, j = 0; i < wantN; ++i) {
+    const x = arr[j++], y = arr[j++], z = arr[j++];
+    dst[i * 3 + 0] = x * BASIS_FLIP.x;
+    dst[i * 3 + 1] = y * BASIS_FLIP.y;
+    dst[i * 3 + 2] = z * BASIS_FLIP.z;
+  }
+
+  pcGeom.setDrawRange(0, wantN);
+  buf.needsUpdate = true;
+  pcGeom.computeBoundingSphere?.();
+}
+
+/** Optional utilities */
+export function setPointCloudVisible(v) { if (pcObj) pcObj.visible = !!v; }
+export function setPointSize(px) { if (pcMat) pcMat.size = px; }
+
 
 // Configure three.js camera from intrinsics used by SLAM
 export function configureCameraFromIntrinsics({ fx, fy, cx, cy, width, height }) {
@@ -83,15 +144,17 @@ export function updateFromPose_Twc_threeBasis(T_wc_array) {
 
   const M = new THREE.Matrix4().fromArray(T_wc_array);
 
-  camera.matrix.copy(M).invert(); 
-  camera.matrixWorld.copy(camera.matrix);
-  camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
-  camera.matrixAutoUpdate = false;
+  // Use the same pattern as your debugWobble: set both local and world
+  camera.matrix.copy(M);                 // local
+  camera.matrixWorld.copy(M);            // world (no parent, so same)
+  camera.matrixWorldInverse.copy(M).invert();  // view = T_cw
 
-  // Mark dirty and render
+  camera.matrixAutoUpdate = false;
   camera.matrixWorldNeedsUpdate = true;
+
   renderer.render(scene, camera);
 }
+
 
 // Place anchor by explicit world matrix (rarely needed externally)
 export function placeAnchorAtWorldMatrix(mat4Array) {
