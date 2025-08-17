@@ -2,7 +2,6 @@
 build/
 webar-vio/third_party
 emsdk/
-Makefile
 build_wasm/
 build_opencv_wasm/
 *.pem
