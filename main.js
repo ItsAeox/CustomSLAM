@@ -121,6 +121,28 @@ async function getCameraStream() {
       placeAnchorAtScreen(cx, cy);
     });
 
+    function fitRectContain(frameW, frameH, viewW, viewH) {
+      const scale = Math.min(viewW / frameW, viewH / frameH);
+      const cssW = Math.round(frameW * scale);
+      const cssH = Math.round(frameH * scale);
+      const left = Math.round((viewW - cssW) / 2);
+      const top  = Math.round((viewH - cssH) / 2);
+      return { cssW, cssH, left, top, scale };
+    }
+
+    function layoutVideoAndCanvas(bgVideo, canvas, frameW, frameH) {
+      const vw = window.innerWidth, vh = window.innerHeight;
+      const r = fitRectContain(frameW, frameH, vw, vh);
+
+      // Let CSS size the video (object-fit:contain) — nothing to set on bgVideo.
+
+      // Size/position the canvas to the same display rect
+      canvas.style.left = r.left + "px";
+      canvas.style.top  = r.top  + "px";
+      canvas.style.width  = r.cssW + "px";
+      canvas.style.height = r.cssH + "px";
+    }
+
     // Camera stream
     const stream = await getCameraStream();
     // Show camera behind WebGL (ensure autoplay/muted/inline)
@@ -143,14 +165,18 @@ async function getCameraStream() {
     const W = video.videoWidth  || 1280;
     const H = video.videoHeight || 720;
 
-    // 2) Match elements to pixel size
-    canvas.width = W; canvas.height = H;
-    canvas.style.width  = `${W}px`; canvas.style.height = `${H}px`;
-    bgVideo.width = W; bgVideo.height = H;
-    bgVideo.style.width  = `${W}px`; bgVideo.style.height = `${H}px`;
+    // 2) Backing store resolution
+    canvas.width = W;
+    canvas.height = H;
 
-    // 3) Intrinsics (compute BEFORE initSystem)
-    const fovYdeg = 54;
+    // 3) Align canvas CSS rect to match bgVideo display rect
+    layoutVideoAndCanvas(bgVideo, canvas, W, H);
+
+    // Also re-apply on window resize (viewport may change)
+    window.addEventListener('resize', () => layoutVideoAndCanvas(bgVideo, canvas, W, H));
+
+    // 4) Intrinsics (compute BEFORE initSystem)
+    const fovYdeg = 85;
     const fy = H / (2 * Math.tan((fovYdeg * Math.PI/180) / 2));
     const fx = fy * (W / H);
     const cx = W * 0.5;

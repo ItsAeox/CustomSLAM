@@ -4,6 +4,28 @@
 #include <sophus/se3.hpp>
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/eigen.hpp>
+// OpenGV
+#include <opengv/absolute_pose/CentralAbsoluteAdapter.hpp>
+#include <opengv/absolute_pose/methods.hpp>
+#include <opengv/sac/Ransac.hpp>
+#include <opengv/sac_problems/absolute_pose/AbsolutePoseSacProblem.hpp>
+
+// Ceres
+#include <ceres/ceres.h>
+#include <ceres/rotation.h>  // if you ever use angle-axis; not used below but handy
+
+// (Optional) absl for logging — safe to remove if you don't want it
+#ifdef __has_include
+# if __has_include(<absl/log/log.h>)
+#  include <absl/log/log.h>
+#  define VLOGI(x) ABSL_LOG(INFO) << x
+# else
+#  define VLOGI(x) do{}while(0)
+# endif
+#else
+# define VLOGI(x) do{}while(0)
+#endif
+
 #include "common/camera.h"
 #include "map/frame.h"
 #include "map/mappoint.h"
@@ -27,9 +49,17 @@ class System {
         int num_inliers_     = 0;   // E-matrix inliers from recoverPose
         int tracking_state_  = 0;   // 0=idle/no prev, 1=initializing, 2=tracking
 
+        Eigen::Matrix3d K_eig_{Eigen::Matrix3d::Identity()};
+        Eigen::Matrix3d Kinv_{Eigen::Matrix3d::Identity()};
+
         explicit System(const Camera& cam) : cam_(cam) {
             T_wc_ = Sophus::SE3d(); // identity
             Kcv_  = (cv::Mat_<double>(3,3) << cam_.fx,0,cam_.cx, 0,cam_.fy,cam_.cy, 0,0,1);
+            K_eig_ << cam_.fx, 0, cam_.cx,
+                    0, cam_.fy, cam_.cy,
+                    0, 0, 1;
+            Kinv_ = K_eig_.inverse();
+
         }
 
         // RGBA or grayscale accepted; we convert to gray
@@ -100,6 +130,9 @@ class System {
 
                 if (!initialized_) {
                     // --- Two-view initialize ---
+                    t_vo.normalize();                   
+                    const double scaleBootstrap = 0.12;        
+                    t_vo = t_vo * scaleBootstrap;
                     // 2) Triangulate inliers between prev (cam1) and cur (cam2)
                     // Build a char mask from inlierMask (CV_8U) for our helper
                     std::vector<char> inlVec(inlierMask.rows ? inlierMask.rows : inlierMask.cols, 0);
@@ -171,10 +204,10 @@ class System {
             } else {
                 tracking_state_ = 1;
             }
-            // frame_counter_++;
-            // if ((frame_counter_ % 10) == 0 && (int)map_points_.size() >= 30) {
-            //     fitDominantPlaneRansac();
-            // }
+            frame_counter_++;
+            if ((frame_counter_ % 10) == 0 && (int)map_points_.size() >= 30) {
+                fitDominantPlaneRansac();
+            }
             T_w_c_prev_ = T_wc_;   // cam2 becomes cam1 for the next iteration
             prev_ = std::move(cur);
         }
@@ -295,6 +328,71 @@ class System {
             out.push_back(c3.x()); out.push_back(c3.y()); out.push_back(c3.z());
             out.push_back((double)plane_.inliers);
             return out;
+        }
+
+        // ---------- Pose-only BA with Ceres (refines R_cw, t_cw) ----------
+        struct ReprojCost {
+            Eigen::Vector3d Xw;
+            double fx, fy, cx, cy;
+            Eigen::Vector2d uv;
+            template<typename T>
+            bool operator()(const T* const q_cw, const T* const t_cw, T* residuals) const {
+                // q_cw = [qw,qx,qy,qz] mapping world->cam
+                Eigen::Quaternion<T> q(q_cw[0], q_cw[1], q_cw[2], q_cw[3]);
+                Eigen::Matrix<T,3,1> t(t_cw[0], t_cw[1], t_cw[2]);
+                Eigen::Matrix<T,3,1> Xc = q * Xw.cast<T>() + t;
+
+                // Guard against behind-camera
+                const T eps = T(1e-12);
+                T invz = T(1) / (Xc.z() + eps);
+
+                T uhat = T(fx) * Xc.x() * invz + T(cx);
+                T vhat = T(fy) * Xc.y() * invz + T(cy);
+
+                residuals[0] = uhat - T(uv.x());
+                residuals[1] = vhat - T(uv.y());
+                return true;
+            }
+        };
+
+        void refinePoseCeres_Rcw_tcw(Eigen::Quaterniond& q_cw,
+                                    Eigen::Vector3d& t_cw,
+                                    const std::vector<Eigen::Vector3d>& pts3,
+                                    const std::vector<Eigen::Vector2d>& pts2,
+                                    int max_iters = 15) const
+        {
+            if (pts3.size() < 12 || pts3.size() != pts2.size()) return;
+
+        double q_param[4] = { q_cw.w(), q_cw.x(), q_cw.y(), q_cw.z() };
+        double t_param[3] = { t_cw.x(), t_cw.y(), t_cw.z() };
+
+        ceres::Problem problem;
+        auto* quat_manifold = new ceres::QuaternionManifold();
+        problem.AddParameterBlock(q_param, 4, quat_manifold);
+        problem.AddParameterBlock(t_param, 3);
+
+            ceres::LossFunction* loss = new ceres::HuberLoss(1.0); // px
+
+            for (size_t i = 0; i < pts3.size(); ++i) {
+                ReprojCost cost{ pts3[i], cam_.fx, cam_.fy, cam_.cx, cam_.cy, pts2[i] };
+                problem.AddResidualBlock(
+                    new ceres::AutoDiffCostFunction<ReprojCost, 2, 4, 3>(new ReprojCost(cost)),
+                    loss, q_param, t_param
+                );
+            }
+
+            ceres::Solver::Options opts;
+            opts.linear_solver_type = ceres::DENSE_QR; // fine for few parameters
+            opts.max_num_iterations = max_iters;
+            opts.num_threads = 1;                      // WASM-friendly
+            opts.minimizer_progress_to_stdout = false;
+
+            ceres::Solver::Summary sum;
+            ceres::Solve(opts, &problem, &sum);
+            (void)sum; // suppress unused warning if logging disabled
+
+            q_cw = Eigen::Quaterniond(q_param[0], q_param[1], q_param[2], q_param[3]).normalized();
+            t_cw = Eigen::Vector3d(t_param[0], t_param[1], t_param[2]);
         }
 
         int lastInliers() const { return last_inlier_count_; }
@@ -445,11 +543,10 @@ class System {
         }  
 
 
-        // Match map points to current descriptors and run PnP
         bool trackWithPnP(const Frame& cur) {
             if (map_points_.empty() || map_desc_.empty() || cur.desc.empty()) return false;
 
-            // KNN + ratio test
+            // --- Match map points to current ---
             std::vector<std::vector<cv::DMatch>> knn;
             map_matcher_.knnMatch(map_desc_, cur.desc, knn, 2);
             std::vector<cv::DMatch> good;
@@ -459,45 +556,94 @@ class System {
             }
             if (good.size() < 12) return false;
 
-            std::vector<cv::Point3f> pts3;
-            std::vector<cv::Point2f> pts2;
-            pts3.reserve(good.size());
-            pts2.reserve(good.size());
+            // --- Build OpenGV data (bearings + points) aligned by index ---
+            opengv::bearingVectors_t f_cam;    f_cam.reserve(good.size());
+            opengv::points_t        pts3_ogv;  pts3_ogv.reserve(good.size());
+            std::vector<Eigen::Vector3d> pts3; pts3.reserve(good.size());
+            std::vector<Eigen::Vector2d> pts2; pts2.reserve(good.size());
+
             for (const auto& m : good) {
                 const MapPoint& mp = map_points_[m.queryIdx]; // queryIdx indexes map_desc_ rows
-                pts3.emplace_back((float)mp.Xw.x(), (float)mp.Xw.y(), (float)mp.Xw.z());
-                pts2.emplace_back(cur.kps[m.trainIdx].pt);
+
+                // 3D point in world
+                Eigen::Vector3d Xw = mp.Xw;
+                pts3.push_back(Xw);
+                pts3_ogv.push_back(Xw);
+
+                // Pixel -> bearing (camera)
+                const cv::KeyPoint& kp = cur.kps[m.trainIdx];
+                Eigen::Vector3d pix(kp.pt.x, kp.pt.y, 1.0);
+                Eigen::Vector3d f = Kinv_ * pix;
+                f.normalize();
+                f_cam.push_back(f);
+
+                // For Ceres refine
+                pts2.emplace_back(kp.pt.x, kp.pt.y);
             }
 
-            cv::Mat rvec, tvec, inliers;
-            cv::Mat K = Kcv_;
-            bool ok = cv::solvePnPRansac(pts3, pts2, K, cv::noArray(),
-                                        rvec, tvec, /*useExtrinsicGuess=*/false,
-                                        100, 3.0, 0.99, inliers, cv::SOLVEPNP_EPNP);
-            if (!ok || inliers.rows < 12) return false;
+            if (f_cam.size() < 12) return false;
 
-            // Convert to Sophus SE3
-            cv::Mat Rcv;
-            cv::Rodrigues(rvec, Rcv);
+            // --- OpenGV adapter ---
+            opengv::absolute_pose::CentralAbsoluteAdapter adapter(f_cam, pts3_ogv);
 
-            // OpenCV returns R_cw, t_cw (world->camera)
-            Eigen::Matrix3d R_cw; cv::cv2eigen(Rcv, R_cw);
-            Eigen::Vector3d t_cw; cv::cv2eigen(tvec, t_cw);
+            // --- RANSAC P3P (Kneip) ---
+            using AbsPoseProblem = opengv::sac_problems::absolute_pose::AbsolutePoseSacProblem;
+            std::shared_ptr<AbsPoseProblem> problem(
+                new AbsPoseProblem(adapter, AbsPoseProblem::KNEIP)
+            );
 
-            // Convert to world-from-camera: T_wc = [R_cw^T, -R_cw^T * t_cw]
+            opengv::sac::Ransac<AbsPoseProblem> ransac;
+            ransac.sac_model_     = problem;
+            // Angular threshold: 2.0 deg → OpenGV uses "1 - cos(theta)" as error
+            const double th_deg = 2.0;
+            const double th     = 1.0 - std::cos(th_deg * M_PI / 180.0);
+            ransac.threshold_    = th;
+            ransac.max_iterations_ = 200;
+
+            bool ransac_ok = ransac.computeModel();
+            if (!ransac_ok || ransac.inliers_.size() < 12) return false;
+
+            // --- Nonlinear refine using OpenGV on inliers ---
+            opengv::transformation_t opengv_T =
+                opengv::absolute_pose::optimize_nonlinear(adapter, ransac.inliers_);
+
+            Eigen::Matrix3d R_cw_ogv = opengv_T.block<3,3>(0,0);
+            Eigen::Vector3d t_cw_ogv = opengv_T.block<3,1>(0,3);
+
+            // --- Ceres pose-only BA (Huber) on the same inliers ---
+            std::vector<Eigen::Vector3d> inl_pts3; inl_pts3.reserve(ransac.inliers_.size());
+            std::vector<Eigen::Vector2d> inl_pts2; inl_pts2.reserve(ransac.inliers_.size());
+            for (int idx : ransac.inliers_) {
+                inl_pts3.push_back(pts3[idx]);
+                inl_pts2.push_back(pts2[idx]);
+            }
+            Eigen::Quaterniond q_cw(R_cw_ogv);
+            Eigen::Vector3d    t_cw(t_cw_ogv);
+
+            refinePoseCeres_Rcw_tcw(q_cw, t_cw, inl_pts3, inl_pts2, /*max_iters=*/15);
+
+            // --- Convert to world-from-camera and blend IMU rotation (your logic) ---
+            Eigen::Matrix3d R_cw = q_cw.normalized().toRotationMatrix();
             Eigen::Matrix3d R_wc = R_cw.transpose();
             Eigen::Vector3d t_wc = -R_wc * t_cw;
 
             // Blend IMU on *world* rotation
-            Eigen::Quaterniond q_vo(R_wc);
+            Eigen::Quaterniond q_vo_world(R_wc);
             Eigen::Quaterniond q_pred = R_imu_pred_.unit_quaternion();
-            double w_pred = imu_started_ ? 0.25 : 0.0;
-            Eigen::Quaterniond q_blend = q_pred.slerp(w_pred, q_vo).normalized();
 
-            T_wc_ = Sophus::SE3d(Sophus::SO3d(q_blend), t_wc);  // ✅ correct frame
+            double w_pred = 0.0;
+            if (imu_started_) {
+                // map inliers ∈ [12,200]  →  w_pred ∈ [0.35, 0.05]
+                double ninl = std::clamp((double)inl_pts3.size(), 12.0, 200.0);
+                w_pred = 0.35 - 0.30 * ((ninl - 12.0) / (200.0 - 12.0));
+            }
+            Eigen::Quaterniond q_blend = q_pred.slerp(w_pred, q_vo_world).normalized();
+
+            T_wc_ = Sophus::SE3d(Sophus::SO3d(q_blend), t_wc);
             R_imu_pred_ = Sophus::SO3d(T_wc_.so3().unit_quaternion());
+
             tracking_state_ = 2;
-            num_inliers_ = inliers.rows;
+            num_inliers_    = (int)inl_pts3.size();
             return true;
         }
 
@@ -637,6 +783,25 @@ class System {
             // Pack model
             // Recompute d from n·X + d = 0 using centroid
             double d_w = -n_w.dot(c_w);
+
+            // Gate A: enough support
+            int minHInl = std::max(35, (int)(0.30 * (int)std::max(p1.size(), p2.size())));
+            if (hinl < minHInl) return false;
+
+            // Gate B: near-horizontal bias if you expect ground/table (gravity)
+            if (have_gravity_) {
+                if (std::abs(n_w.dot(Eigen::Vector3d(0,1,0))) < 0.6) {
+                    // normal > ~53° from up → likely not your dominant “ground-like” plane
+                    return false;
+                }
+            }
+
+            // If a 3D plane already exists, require agreement (normal within ~15°, centroid near)
+            if (has_plane_ && plane_.valid) {
+                double ang = std::acos(std::clamp(plane_.n.dot(n_w), -1.0, 1.0)) * 180.0/M_PI;
+                if (ang > 15.0) return false;
+                if ((plane_.centroid - c_w).norm() > 0.25) return false; // >25 cm jump
+            }
 
             // Ensure normal upright if we know gravity (flip if needed)
             if (have_gravity_ && n_w.dot(Eigen::Vector3d(0,1,0)) < 0) { n_w = -n_w; d_w = -d_w; }

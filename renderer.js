@@ -39,7 +39,7 @@ export async function initRenderer(canvas) {
   scene.add(cactusAnchor);
 
   // Initial placement ~60 cm forward from world origin
-  const place = new THREE.Matrix4().makeTranslation(0, 0, -0.6);
+  const place = new THREE.Matrix4().makeTranslation(0, 0, -2);
   cactusAnchor.matrix.copy(place);
 
   renderer.render(scene, camera);
@@ -208,7 +208,7 @@ export function configureCameraFromIntrinsics({ fx, fy, cx, cy, width, height })
   // Principal point offset
   camera.setViewOffset(
     W, H,
-    (W * 0.5 - cx),
+    (W * 0.5 - cx),  
     (H * 0.5 - cy),
     W, H
   );
