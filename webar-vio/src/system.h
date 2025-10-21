@@ -34,13 +34,9 @@
 #include <algorithm>
 #include <vector>
 #include <cstdlib>   // for rand()
+#include "slam/imu_initializer.h"
+#include "slam/imu_types.h"
 
-
-struct IMUSample {
-    double t;                 // seconds, same clock as ProcessFrame ts
-    Eigen::Vector3d acc;      // m/s^2 (device frame, may include gravity)
-    Eigen::Vector3d gyro;     // rad/s  (device frame)
-};
 
 class System {
     public:
@@ -131,8 +127,45 @@ class System {
                 if (!initialized_) {
                     // --- Two-view initialize ---
                     t_vo.normalize();                   
-                    const double scaleBootstrap = 0.12;        
-                    t_vo = t_vo * scaleBootstrap;
+                    // 1) Extract visual poses (T_wc from prev and current VO)
+                    Sophus::SE3d T0_wc = Sophus::SE3d(Eigen::Quaterniond::Identity(), Eigen::Vector3d::Zero());
+                    Sophus::SE3d T1_wc(R_vo.transpose(), -R_vo.transpose() * t_vo);
+
+                    // 2) Pull IMU span
+                    const double t0 = prev_.timestamp;
+                    const double t1 = cur.timestamp;
+                    std::vector<IMUSample> span = getIMUSpan(t0, t1);
+
+                    // 3) Estimate scale + gravity
+                    auto result = ScaleInitializer::EstimateScaleAndGravity(T0_wc, T1_wc, span);
+                    if (!result.success) {
+                        std::cout << "[ScaleInit] failed, using default scale." << std::endl;
+                        t_vo *= 0.12;  // fallback
+                    } else {
+                        std::cout << "[ScaleInit] scale=" << result.scale
+                                << " gravity=" << result.gravity.transpose() << std::endl;
+                        t_vo *= result.scale;
+                        g_est_ = result.gravity;
+                        have_gravity_ = true;
+                    }
+
+                    // ---- INIT GATE: require enough inliers + enough baseline (after t_vo is scaled) ----
+                    const int    kMinInitInliers = 50;   // stricter than recoverPose threshold
+                    const double kMinBaselineM   = 0.10; // >= 10 cm
+                    if (inl < kMinInitInliers) {
+                        num_inliers_ = inl;
+                        tracking_state_ = 1;
+                        prev_ = std::move(cur);
+                        return;
+                    }
+                    double baseline = t_vo.norm();
+                    if (baseline < kMinBaselineM) {
+                        std::cout << "[Init] Baseline too small (" << baseline << " m), delaying init.\n";
+                        tracking_state_ = 1;
+                        prev_ = std::move(cur);
+                        return;
+                    }
+
                     // 2) Triangulate inliers between prev (cam1) and cur (cam2)
                     // Build a char mask from inlierMask (CV_8U) for our helper
                     std::vector<char> inlVec(inlierMask.rows ? inlierMask.rows : inlierMask.cols, 0);
@@ -143,6 +176,7 @@ class System {
                     }
                     triangulateInliers(p_prev, p_cur, inlVec, prevIdxForMatch, R_vo, t_vo, prev_, cur);
                     fitPlaneViaHomography(p_prev, p_cur, R_vo, t_vo);
+
 
                     // 3) Convert VO relative [R,t] (cam1->cam2) to absolute world-from-camera T_wc
                     // P2 = K[R|t] => R_cw = R^T, t_cw = -R^T t
@@ -177,7 +211,8 @@ class System {
                     // --- Tracking via PnP on map points ---
                     if (!trackWithPnP(cur)) {
                         // Use world-from-camera increment (inverse of [R|t])
-                        bool planeOK = fitPlaneViaHomography(p_prev, p_cur, R_vo, t_vo);
+                        // bool planeOK = fitPlaneViaHomography(p_prev, p_cur, R_vo, t_vo);
+                        fitDominantPlaneRansac();
 
                         Eigen::Matrix3d R_wc_inc = R_vo.transpose();
                         Eigen::Vector3d t_wc_inc = -R_wc_inc * t_vo;
@@ -205,7 +240,7 @@ class System {
                 tracking_state_ = 1;
             }
             frame_counter_++;
-            if ((frame_counter_ % 10) == 0 && (int)map_points_.size() >= 30) {
+            if ((frame_counter_ % 3) == 0 && (int)map_points_.size() >= 30) {
                 fitDominantPlaneRansac();
             }
             T_w_c_prev_ = T_wc_;   // cam2 becomes cam1 for the next iteration
@@ -305,6 +340,20 @@ class System {
                 out.push_back(X.y());
                 out.push_back(X.z());
             }
+            return out;
+        }
+
+        std::vector<double> DebugStaticPose() const {
+            Eigen::Matrix4d T = Eigen::Matrix4d::Identity();
+            T(2,3) = -2.0;  // translate 2m forward
+            T(1,1) = -1.0;  // flip Y
+            T(2,2) = -1.0;  // flip Z
+
+            std::vector<double> out;
+            out.reserve(16);
+            for (int c = 0; c < 4; ++c)
+                for (int r = 0; r < 4; ++r)
+                    out.push_back(T(r,c));
             return out;
         }
 
@@ -464,35 +513,30 @@ class System {
         void triangulateInliers(const std::vector<cv::Point2f>& p1,
                                 const std::vector<cv::Point2f>& p2,
                                 const std::vector<char>& inlMask,
-                                const std::vector<int>& prevIdxForMatch,   // 👈 NEW
+                                const std::vector<int>& prevIdxForMatch,
                                 const Eigen::Matrix3d& R12,
                                 const Eigen::Vector3d& t12,
                                 const Frame& f1, const Frame& /*f2*/) {
-            Sophus::SE3d T_w_c1; // identity (world == cam1)
-
-            // recoverPose gives cam1 -> cam2
-            Sophus::SE3d T_c1_c2(R12, t12);
-
-            // We need world-from-cam2 (cam2 -> world == cam1) = inverse of cam1->cam2
+            // world == cam1 during init
+            Sophus::SE3d T_w_c1; 
             Sophus::SE3d T_w_c2(R12.transpose(), -R12.transpose() * t12);
 
-            // Build projection matrices K [R_cw | t_cw]
+            // Projection matrices K [R_cw|t_cw]
             cv::Matx34d P1 = projectionFromPose(T_w_c1);
             cv::Matx34d P2 = projectionFromPose(T_w_c2);
 
-            // Collect inlier correspondences (pixel coords)
+            // Gather inlier correspondences
             std::vector<cv::Point2f> x1, x2;
             std::vector<int> idxMatch; idxMatch.reserve(inlMask.size());
-            x1.reserve(inlMask.size()); x2.reserve(inlMask.size());
             for (size_t i = 0; i < inlMask.size(); ++i) {
                 if (!inlMask[i]) continue;
                 x1.push_back(p1[i]);
                 x2.push_back(p2[i]);
-                idxMatch.push_back((int)i);   // index into p1/p2 arrays
+                idxMatch.push_back((int)i);
             }
             if ((int)x1.size() < 20) return;
 
-            cv::Mat pts4; // 4xN (float)
+            cv::Mat pts4; // 4xN
             cv::triangulatePoints(P1, P2, x1, x2, pts4);
 
             auto proj = [&](const Eigen::Vector3d& Xc) {
@@ -501,46 +545,92 @@ class System {
                 return cv::Point2f((float)u,(float)v);
             };
 
+            // thresholds (tune if needed)
+            const double minParallaxDeg = 2.0;                 // >= 2°
+            const double cosMinParallax = std::cos(minParallaxDeg * M_PI / 180.0);
+            const double maxReprojErr   = 2.5;                 // px (per view)
+            const double zMin           = 0.05;                // 5 cm
+            const double zMax           = 8.0;                 // 8 m
+            const int    maxNewPoints   = 150;                 // cap per init pass
+
+            struct Candidate {
+                MapPoint mp;
+                double parallaxCos; // smaller = larger parallax
+                double reprojErr;   // sum of two-view reproj error
+            };
+            std::vector<Candidate> accepted; accepted.reserve(x1.size());
+
+            // Filter loop
             for (int i = 0; i < pts4.cols; ++i) {
-                // Robustly read homogeneous point (float or double)
                 double X = (pts4.depth()==CV_64F) ? pts4.at<double>(0,i) : pts4.at<float>(0,i);
                 double Y = (pts4.depth()==CV_64F) ? pts4.at<double>(1,i) : pts4.at<float>(1,i);
                 double Z = (pts4.depth()==CV_64F) ? pts4.at<double>(2,i) : pts4.at<float>(2,i);
                 double W = (pts4.depth()==CV_64F) ? pts4.at<double>(3,i) : pts4.at<float>(3,i);
-                if (std::abs(W) < 1e-9) continue;
-                Eigen::Vector3d Xc1(X/W, Y/W, Z/W);      // in cam1/world frame
+                if (std::abs(W) < 1e-12) continue;
 
-                // Cheirality
-                if (Xc1.z() <= 0) continue;
-                Eigen::Vector3d Xc2 = R12 * Xc1 + t12;
-                if (Xc2.z() <= 0) continue;
+                Eigen::Vector3d Xc1(X/W, Y/W, Z/W);          // in cam1/world
+                if (Xc1.z() <= 0 || Xc1.z() < zMin || Xc1.z() > zMax) continue;
 
-                // Reprojection filter (px)
+                Eigen::Vector3d Xc2 = R12 * Xc1 + t12;       // in cam2
+                if (Xc2.z() <= 0 || Xc2.z() < zMin || Xc2.z() > zMax) continue;
+
+                // Reprojection error (both views)
                 cv::Point2f u1 = x1[i], u2 = x2[i];
-                if (cv::norm(u1 - proj(Xc1)) > 3.0 || cv::norm(u2 - proj(Xc2)) > 3.0) continue;
+                cv::Point2f u1hat = proj(Xc1);
+                cv::Point2f u2hat = proj(Xc2);
+                double e1 = cv::norm(u1 - u1hat);
+                double e2 = cv::norm(u2 - u2hat);
+                if (e1 > maxReprojErr || e2 > maxReprojErr) continue;
 
-                // ✅ Correct descriptor row from the original prev frame
-                const int matchIdx = idxMatch[i];                 // index into p1/p2
+                // Parallax between viewing rays (cam1 ray ~ Xc1, cam2 ray ~ Xc2)
+                double cospar = (Xc1.normalized()).dot(Xc2.normalized());
+                if (cospar > cosMinParallax) continue;       // parallax too small
+
+                // Map descriptor row index (from PREV frame)
+                const int matchIdx = idxMatch[i];
                 if (matchIdx < 0 || matchIdx >= (int)prevIdxForMatch.size()) continue;
-                const int kpIdx = prevIdxForMatch[matchIdx];      // row in f1.desc
+                const int kpIdx = prevIdxForMatch[matchIdx];
                 if (kpIdx < 0 || kpIdx >= f1.desc.rows) continue;
 
                 MapPoint mp;
-                mp.Xw  = Xc1;                         // world == cam1
-                mp.desc = f1.desc.row(kpIdx).clone(); // descriptor from prev frame
-                map_points_.push_back(std::move(mp));
+                mp.Xw  = Xc1;                                // world == cam1
+                mp.desc = f1.desc.row(kpIdx).clone();
+                // mp.obs stays default (if your struct default-inits it)
+
+                Candidate c;
+                c.mp = std::move(mp);
+                c.parallaxCos = cospar;
+                c.reprojErr   = e1 + e2;
+                accepted.push_back(std::move(c));
             }
 
-            // Rebuild descriptor matrix
+            if (accepted.empty()) return;
+
+            // Prefer larger parallax (smaller cos), then lower reprojection error
+            std::sort(accepted.begin(), accepted.end(),
+                    [](const Candidate& a, const Candidate& b){
+                        if (a.parallaxCos != b.parallaxCos) return a.parallaxCos < b.parallaxCos;
+                        return a.reprojErr < b.reprojErr;
+                    });
+
+            // Cap how many new points to insert this pass
+            int keepN = std::min((int)accepted.size(), maxNewPoints);
+            map_points_.reserve(map_points_.size() + keepN);
+            for (int k = 0; k < keepN; ++k) {
+                map_points_.push_back(std::move(accepted[k].mp));
+            }
+
+            // Rebuild descriptor matrix ONCE
             if (!map_points_.empty()) {
+                const int D = f1.desc.cols;
                 map_desc_.release();
-                const int D = f1.desc.cols;              // descriptor length (usually 32 for ORB)
                 map_desc_ = cv::Mat((int)map_points_.size(), D, CV_8U);
                 for (int r = 0; r < (int)map_points_.size(); ++r) {
                     map_points_[r].desc.copyTo(map_desc_.row(r));
                 }
             }
-        }  
+        }
+ 
 
 
         bool trackWithPnP(const Frame& cur) {
@@ -622,23 +712,21 @@ class System {
 
             refinePoseCeres_Rcw_tcw(q_cw, t_cw, inl_pts3, inl_pts2, /*max_iters=*/15);
 
-            // --- Convert to world-from-camera and blend IMU rotation (your logic) ---
             Eigen::Matrix3d R_cw = q_cw.normalized().toRotationMatrix();
             Eigen::Matrix3d R_wc = R_cw.transpose();
             Eigen::Vector3d t_wc = -R_wc * t_cw;
 
-            // Blend IMU on *world* rotation
             Eigen::Quaterniond q_vo_world(R_wc);
             Eigen::Quaterniond q_pred = R_imu_pred_.unit_quaternion();
 
-            double w_pred = 0.0;
-            if (imu_started_) {
-                // map inliers ∈ [12,200]  →  w_pred ∈ [0.35, 0.05]
-                double ninl = std::clamp((double)inl_pts3.size(), 12.0, 200.0);
-                w_pred = 0.35 - 0.30 * ((ninl - 12.0) / (200.0 - 12.0));
-            }
-            Eigen::Quaterniond q_blend = q_pred.slerp(w_pred, q_vo_world).normalized();
+            // Smooth dynamic blend based on inlier count
+            const int minInl = 12, maxInl = 200;
+            const double minW = 0.05, maxW = 0.35;
+            double ninl = std::clamp((double)inl_pts3.size(), (double)minInl, (double)maxInl);
+            double w_pred = maxW - (maxW - minW) * ((ninl - minInl) / (maxInl - minInl));
 
+            // Apply blended pose
+            Eigen::Quaterniond q_blend = q_pred.slerp(w_pred, q_vo_world).normalized();
             T_wc_ = Sophus::SE3d(Sophus::SO3d(q_blend), t_wc);
             R_imu_pred_ = Sophus::SO3d(T_wc_.so3().unit_quaternion());
 
@@ -661,7 +749,10 @@ class System {
             for (auto& p : pts) radii.push_back(p.norm());
             std::nth_element(radii.begin(), radii.begin()+radii.size()/2, radii.end());
             const double med = radii[radii.size()/2];
-            const double dist_thresh = std::max(1e-3, 0.06 * med); // ~6% of scene scale
+            // const double dist_thresh = std::max(1e-3, 0.06 * med); // ~6% of scene scale
+            // After computing med radius:
+            const double dist_thresh = std::clamp(0.015 * med, 0.005, 0.03); // 1.5% radius, clamp to [5mm, 3cm]
+
 
             auto planeFrom3 = [](const Eigen::Vector3d& a,
                                 const Eigen::Vector3d& b,

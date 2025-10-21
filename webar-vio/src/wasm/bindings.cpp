@@ -58,6 +58,12 @@ std::vector<double> getPlaneParams() {
   return g_sys->ExportPlaneThree(); // [nx,ny,nz,d, cx,cy,cz, inliers] in THREE basis
 }
 
+std::vector<double> getDebugPose() {
+  if (!g_sys) return {};
+  return g_sys->DebugStaticPose(); // [nx,ny,nz,d, cx,cy,cz, inliers] in THREE basis
+}
+
+
 int getNumMapPoints() { return g_sys ? g_sys->NumMapPoints() : 0; }
 int getNumKeypoints() { return g_sys ? g_sys->num_keypoints_  : -1; }
 int getNumInliers()   { return g_sys ? g_sys->num_inliers_    : -1; }
@@ -80,5 +86,6 @@ EMSCRIPTEN_BINDINGS(vio_module) {
   function("getPointsXYZ", &getPointsXYZ);
   function("getNumMapPoints", &getNumMapPoints);
   function("getPlaneParams", &getPlaneParams);
+  function("getDebugPose", &getDebugPose);
 
 }

@@ -8,6 +8,25 @@ let W = 0, H = 0;
 const raycaster = new THREE.Raycaster();
 const tapPlane  = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0); // y=0 plane
 
+function poseFromNormalAndPoint(n, p, camera) {
+  // n: THREE.Vector3 (unit), p: THREE.Vector3 point on plane
+  // Choose x-axis = camera right projected onto plane (stable, ARCore/ARKit-like)
+  const camRight = new THREE.Vector3(1,0,0).applyQuaternion(camera.quaternion);
+  const x = camRight.clone().sub(n.clone().multiplyScalar(camRight.dot(n))).normalize();
+  const z = n.clone();             // plane normal as +Z (matches your PlaneGeometry)
+  const y = new THREE.Vector3().crossVectors(z, x).normalize();
+
+  // Column-major rotation matrix (x,y,z as columns)
+  const T = new THREE.Matrix4();
+  T.set(
+    x.x, y.x, z.x, p.x,
+    x.y, y.y, z.y, p.y,
+    x.z, y.z, z.z, p.z,
+    0,   0,   0,   1
+  );
+  return T;
+}
+
 export async function initRenderer(canvas) {
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
   renderer.setPixelRatio(window.devicePixelRatio || 1);

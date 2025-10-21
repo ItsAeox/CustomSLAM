@@ -110,6 +110,7 @@ add_library(vio
   src/common/camera.cc
   src/frontend/feature_tracker.cc
   src/system.cc
+  src/slam/imu_initializer.cc
 )
 
 target_include_directories(vio PUBLIC

@@ -57,9 +57,15 @@ const hudEl = (() => {
 })();
 let fps = 0, lastTick = performance.now();
 let lastPose = null;
-function updateHUD(extra='') {
+function updateHUD(extra = '') {
   const p = lastPose;
-  const poseStr = p ? `[${Array.from(p).slice(0,4).map(v=>(+v).toFixed(3)).join(', ')} ...]` : 'none';
+  let poseStr = 'none';
+  if (p && p.length === 16) {
+    const tx = (+p[12]).toFixed(2);
+    const ty = (+p[13]).toFixed(2);
+    const tz = (+p[14]).toFixed(2);
+    poseStr = `[tx: ${tx}, ty: ${ty}, tz: ${tz}]`;
+  }
   hudEl.textContent = `FPS: ${fps.toFixed(1)} | pose: ${p ? 'ok' : 'none'} ${poseStr}${extra}`;
 }
 
@@ -176,7 +182,7 @@ async function getCameraStream() {
     window.addEventListener('resize', () => layoutVideoAndCanvas(bgVideo, canvas, W, H));
 
     // 4) Intrinsics (compute BEFORE initSystem)
-    const fovYdeg = 85;
+    const fovYdeg = 60;
     const fy = H / (2 * Math.tan((fovYdeg * Math.PI/180) / 2));
     const fx = fy * (W / H);
     const cx = W * 0.5;
@@ -257,6 +263,9 @@ async function getCameraStream() {
         } else if (lastPose) {
           updateFromPose_Twc_threeBasis(lastPose);
         }
+        // const pose = Module.getDebugPose?.();
+        // updateFromPose_Twc_threeBasis(pose);
+
       } catch (e) {
         logMsg('getPose error:', e?.message || e);
       }
