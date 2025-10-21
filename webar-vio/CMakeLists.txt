@@ -38,7 +38,7 @@ endif()
 # ---------------------------
 if (BUILD_WASM)
   message(STATUS "Configuring for WASM; minimal OpenCV modules")
-  find_package(OpenCV REQUIRED COMPONENTS core imgproc features2d calib3d)
+  find_package(OpenCV REQUIRED COMPONENTS core imgproc video features2d calib3d flann)
 else()
   message(STATUS "Configuring for native; add videoio/highgui")
   find_package(OpenCV REQUIRED COMPONENTS core imgproc features2d calib3d videoio highgui)
@@ -107,10 +107,10 @@ endif()
 # Library (your core)
 # ---------------------------
 add_library(vio
-  src/common/camera.cc
-  src/frontend/feature_tracker.cc
+  # src/common/camera.cc
+  # src/frontend/feature_tracker.cc
   src/system.cc
-  src/slam/imu_initializer.cc
+  # src/slam/imu_initializer.cc
 )
 
 target_include_directories(vio PUBLIC

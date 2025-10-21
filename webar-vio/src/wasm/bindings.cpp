@@ -1,91 +1,49 @@
-#include <memory>
-#include <vector>
 #include <emscripten/bind.h>
 #include "system.h"
-#include "common/camera.h"
+
 using namespace emscripten;
 
-static std::unique_ptr<System> g_sys;
+static System gSys;
 
+
+// --- wrappers so embind gets raw function pointers ---
+static int    GetNumKeypoints() { return gSys.getNumKeypoints(); }
+static int    GetTrackState()   { return gSys.getTrackState(); }
+static double GetLastTS()       { return gSys.getLastTS(); }
+
+// init from JS
 void initSystem(int width, int height, double fx, double fy, double cx, double cy) {
-  g_sys = std::make_unique<System>(Camera(fx, fy, cx, cy, width, height));
+  gSys.init(width, height, fx, fy, cx, cy);
 }
 
-void feedFrame(uintptr_t imgPtr, double ts, int strideBytes, bool isRGBA) {
-  if (!g_sys) return;
-  g_sys->ProcessFrame(reinterpret_cast<uint8_t*>(imgPtr), ts, strideBytes, isRGBA);
+// feed frame from a Uint8Array
+void feedFrameJS(val u8, double ts, int width, int height, bool isRGBA) {
+  const size_t expected = (size_t)width * height * (isRGBA ? 4 : 1);
+  const size_t n = u8["length"].as<size_t>();
+  if (n < expected) return;
+
+  // copy to a vector (simple + safe)
+  std::vector<uint8_t> buf(n);
+  for (size_t i=0; i<n; ++i) buf[i] = u8[i].as<uint8_t>();
+
+  gSys.feedFrame(buf.data(), ts, width, height, isRGBA);
 }
 
-// JS-friendly: Uint8Array -> std::vector<uint8_t>
-void feedFrameJS(val u8array, double ts, int width, int height, bool isRGBA) {
-  if (!g_sys) return;
-  const int strideBytes = width * (isRGBA ? 4 : 1);
-  std::vector<uint8_t> buf = convertJSArrayToNumberVector<uint8_t>(u8array);
-  g_sys->ProcessFrame(buf.data(), ts, strideBytes, isRGBA);
+// return JS array [x0,y0, x1,y1, ...]
+val getPoints2D() {
+  const auto pts = gSys.getPoints2D();
+  val jsArr = val::array();
+  for (size_t i=0; i<pts.size(); ++i) jsArr.set(i, pts[i]);
+  return jsArr;
 }
 
-void feedIMU(double ts, double ax, double ay, double az, double gx, double gy, double gz) {
-  if (!g_sys) return;
-  g_sys->ProcessIMU(ts, ax, ay, az, gx, gy, gz);
-}
+EMSCRIPTEN_BINDINGS(vio_bindings_pointtrack) {
+  function("initSystem",   &initSystem);
+  function("feedFrameJS",  &feedFrameJS);
+  function("getPoints2D",  &getPoints2D);
 
-// Return a copy (safe lifetime for JS)
-// std::vector<double> getPoseVec() {
-//   if (!g_sys) return {};
-//   auto T = g_sys->CurrentPoseGL(); // std::array<double,16> or similar
-//   return std::vector<double>(T.begin(), T.end());
-// }
-
-std::vector<double> getPoseVec() {
-  if (!g_sys) return {};
-  auto T = g_sys->CurrentPoseGLThree();
-  return std::vector<double>(T.begin(), T.end());
-}
-
-std::vector<double> getUpHint() {
-  if (!g_sys) return {};
-  Eigen::Vector3d u = g_sys->UpHintCam();
-  return { u.x(), u.y(), u.z() };
-}
-
-std::vector<double> getPointsXYZ(int maxN = 500) {
-  if (!g_sys) return {};
-  return g_sys->ExportPointsXYZ(maxN);
-}
-
-std::vector<double> getPlaneParams() {
-  if (!g_sys) return {};
-  return g_sys->ExportPlaneThree(); // [nx,ny,nz,d, cx,cy,cz, inliers] in THREE basis
-}
-
-std::vector<double> getDebugPose() {
-  if (!g_sys) return {};
-  return g_sys->DebugStaticPose(); // [nx,ny,nz,d, cx,cy,cz, inliers] in THREE basis
-}
-
-
-int getNumMapPoints() { return g_sys ? g_sys->NumMapPoints() : 0; }
-int getNumKeypoints() { return g_sys ? g_sys->num_keypoints_  : -1; }
-int getNumInliers()   { return g_sys ? g_sys->num_inliers_    : -1; }
-int getTrackState()   { return g_sys ? g_sys->tracking_state_ : 0; }
-
-EMSCRIPTEN_BINDINGS(vio_module) {
-  function("initSystem", &initSystem);
-  function("feedFrame", &feedFrame, allow_raw_pointers());
-  function("feedFrameJS", &feedFrameJS);
-  function("feedIMU", &feedIMU);
-  function("getNumKeypoints", &getNumKeypoints);
-  function("getNumInliers",   &getNumInliers);
-  function("getTrackState",   &getTrackState);
-
-  // Register vector<double> so Embind can marshal it
-  register_vector<double>("VectorDouble");
-
-  function("getPose", &getPoseVec);
-  function("getUpHint", &getUpHint);
-  function("getPointsXYZ", &getPointsXYZ);
-  function("getNumMapPoints", &getNumMapPoints);
-  function("getPlaneParams", &getPlaneParams);
-  function("getDebugPose", &getDebugPose);
-
+  // use wrappers (no lambdas)
+  function("getNumKeypoints", &GetNumKeypoints);
+  function("getTrackState",   &GetTrackState);
+  function("getLastTS",       &GetLastTS);
 }
