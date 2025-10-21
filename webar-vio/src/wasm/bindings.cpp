@@ -37,13 +37,24 @@ val getPoints2D() {
   return jsArr;
 }
 
+emscripten::val getPoints2D_Typed() {
+  static std::vector<float> buf; // lifetime stable
+  auto pts = gSys.getPoints2D(); // doubles
+  buf.resize(pts.size());
+  for (size_t i=0;i<pts.size();++i) buf[i] = static_cast<float>(pts[i]);
+  return emscripten::val(emscripten::typed_memory_view(buf.size(), buf.data()));
+}
+
 EMSCRIPTEN_BINDINGS(vio_bindings_pointtrack) {
   function("initSystem",   &initSystem);
   function("feedFrameJS",  &feedFrameJS);
-  function("getPoints2D",  &getPoints2D);
+  function("getPoints2DArray", &getPoints2D);       // old JS array builder
+  function("getPoints2D",      &getPoints2D_Typed); // fast typed view
+
 
   // use wrappers (no lambdas)
   function("getNumKeypoints", &GetNumKeypoints);
   function("getTrackState",   &GetTrackState);
   function("getLastTS",       &GetLastTS);
+
 }

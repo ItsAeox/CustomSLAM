@@ -138,8 +138,11 @@ function layoutVideoAndCanvas(bgVideo, canvas, frameW, frameH) {
     // Pull 2D points & draw
     let pts = [];
     try {
-      const arr = Module.getPoints2D(); // JS array of numbers
-      if (Array.isArray(arr) && arr.length > 0) pts = arr;
+      const arr = Module.getPoints2D(); // Float32Array or Array
+      if (arr && typeof arr.length === 'number' && arr.length > 0) {
+        // works for Float32Array, Uint16Array, plain Array, etc.
+        pts = arr;
+      }
     } catch (e) { /* ignore */ }
 
     drawPoints(pts, W, H); // draws small white dots
