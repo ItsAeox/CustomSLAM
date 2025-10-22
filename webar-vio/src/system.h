@@ -28,7 +28,7 @@ public:
   double getLastTotalMS() const { return t_last_total_ms_; }
   double getLastKltMS()   const { return t_last_klt_ms_; }
   double getLastSeedMS()  const { return t_last_seed_ms_; }
-  int maxReturnPts_ = 80;
+  int maxReturnPts_ = 200;
   double getLastMeanY() const { return lastMeanY_; }
   std::array<int,2> getLastProcWH() const { return { curProc_.cols, curProc_.rows }; }
 
@@ -40,9 +40,9 @@ private:
   float kltErrMax_      = 20.f;     // LK per-point error gate
   float fbMax_          = 2.0f;     // forward-backward gate (pixels)
   int   cellSize_       = 28;       // grid cell size for seeding (processing scale) ***** Scale DOWN 
-  int   targetKps_      = 80;      // feature budget at processing scale ***** Scale UP
+  int   targetKps_      = 200;      // feature budget at processing scale ***** Scale UP
   int   descEveryN_     = 8;        // ORB compute cadence (frames); 0 disables
-  int   maxTracks_    = 80;  // hard ceiling after tracking+reseeding
+  int   maxTracks_    =200;  // hard ceiling after tracking+reseeding
   double t_last_total_ms_ = 0.0;
   double t_last_klt_ms_   = 0.0;
   double t_last_seed_ms_  = 0.0;

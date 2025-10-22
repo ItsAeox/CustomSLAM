@@ -27,9 +27,9 @@ export function drawPoints(pts, W, H) {
   ctx2d.clearRect(0, 0, W, H);
 
   // Draw points as tiny white squares (faster than arcs; crisp even when scaled)
-  ctx2d.fillStyle = '#ffffff';
+  ctx2d.fillStyle = '#ffe658ff';
   const n = (pts.length / 2) | 0;
-  const s = 2; // point size in pixels
+  const s = 3; // point size in pixels
   for (let i = 0; i < n; ++i) {
     const x = pts[2*i], y = pts[2*i + 1];
     // Clamp to bounds just in case
