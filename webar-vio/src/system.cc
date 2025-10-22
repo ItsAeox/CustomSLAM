@@ -1,211 +1,280 @@
+
 #include "system.h"
-#include <opencv2/imgproc.hpp>
-#include <opencv2/video/tracking.hpp>
-#include <opencv2/calib3d.hpp>
 #include <algorithm>
+#include <cmath>
+#include <chrono>
+#include <numeric>  
+#include <random>   
+
+// Forward-Backward KLT tracking with consistency check and basic gating.
+static void trackFbKLT(const std::vector<cv::Mat>& pyrPrev,
+                       const std::vector<cv::Mat>& pyrCur,
+                       std::vector<cv::Point2f>& ptsPrev,
+                       std::vector<cv::Point2f>& ptsCur,
+                       std::vector<char>& alive,
+                       int win=21, int levels=3,
+                       float errMax=20.f, float fbMax=2.0f,
+                       const cv::TermCriteria& termcrit=cv::TermCriteria(
+                         cv::TermCriteria::COUNT|cv::TermCriteria::EPS,30,0.01))
+{
+  if (ptsPrev.empty()) return;
+  int maxLv = levels;
+  if ((int)pyrPrev.size() < 2*(levels+1)) maxLv = std::max(0, (int)pyrPrev.size()/2 - 1);
+
+  std::vector<uchar> st; std::vector<float> err;
+  cv::Size winSz(win,win);
+
+  // forward
+  ptsCur = ptsPrev;
+  cv::calcOpticalFlowPyrLK(pyrPrev, pyrCur, ptsPrev, ptsCur, st, err, winSz, maxLv, termcrit,
+                           cv::OPTFLOW_USE_INITIAL_FLOW | cv::OPTFLOW_LK_GET_MIN_EIGENVALS);
+
+  std::vector<cv::Point2f> fwdCur; fwdCur.reserve(ptsPrev.size());
+  std::vector<cv::Point2f> bwdPrev; bwdPrev.reserve(ptsPrev.size());
+  std::vector<int>         idx;     idx.reserve(ptsPrev.size());
+  alive.assign(ptsPrev.size(), 0);
+
+  for (size_t i=0;i<ptsPrev.size();++i) {
+    if (!st[i]) continue;
+    if (err[i] > errMax) continue;
+    const auto& p = ptsCur[i];
+    if (p.x < 1 || p.y < 1) continue;
+    if (p.x >= pyrCur[0].cols-1 || p.y >= pyrCur[0].rows-1) continue;
+    fwdCur.push_back(ptsCur[i]);
+    bwdPrev.push_back(ptsPrev[i]);
+    idx.push_back((int)i);
+    alive[i] = 1;
+  }
+  if (fwdCur.empty()) return;
+
+  // backward
+  st.clear(); err.clear();
+  cv::calcOpticalFlowPyrLK(pyrCur, pyrPrev, fwdCur, bwdPrev, st, err, winSz, 0, termcrit,
+                           cv::OPTFLOW_USE_INITIAL_FLOW | cv::OPTFLOW_LK_GET_MIN_EIGENVALS);
+
+  for (size_t k=0;k<fwdCur.size();++k) {
+    int i = idx[k];
+    if (!st[k]) { alive[i]=0; continue; }
+    if (cv::norm(ptsPrev[i] - bwdPrev[k]) > fbMax) { alive[i]=0; continue; }
+  }
+}
+
+// Keep a uniform subset of points: at most one per cell, up to 'maxKeep'
+static void thinTracksUniform(std::vector<cv::Point2f>& pts,
+                              int imgW, int imgH,
+                              int cellSize, int maxKeep)
+{
+  if ((int)pts.size() <= maxKeep) return;
+
+  const int CW = std::max(1, imgW / cellSize);
+  const int CH = std::max(1, imgH / cellSize);
+  std::vector<uint8_t> used(CW * CH, 0);
+
+  std::vector<cv::Point2f> kept;
+  kept.reserve(std::min((int)pts.size(), maxKeep));
+
+  // greedily keep at most one per cell
+  for (const auto& p : pts) {
+    int c = std::clamp(int(p.x / cellSize), 0, CW - 1);
+    int r = std::clamp(int(p.y / cellSize), 0, CH - 1);
+    uint8_t& flag = used[r * CW + c];
+    if (!flag) {
+      kept.push_back(p);
+      flag = 1;
+      if ((int)kept.size() >= maxKeep) break;
+    }
+  }
+
+  if (!kept.empty()) pts.swap(kept);
+  // If we still have more than maxKeep 
+  // truncate to maxKeep as a final guard:
+  if ((int)pts.size() > maxKeep) pts.resize(maxKeep);
+}
+
+
+// Randomized cell order to avoid top-row bias.
+static void detectGridShiTomasi(const cv::Mat& img,
+                                const std::vector<cv::Point2f>& occupied,
+                                int cellSize,
+                                int wantTotal,
+                                std::vector<cv::Point2f>& out)
+{
+  out.clear();
+  if (img.empty() || wantTotal <= 0) return;
+  const int W = img.cols, H = img.rows;
+  const int CW = std::max(1, W / cellSize);
+  const int CH = std::max(1, H / cellSize);
+
+  // mark occupied cells
+  std::vector<uint8_t> occ(CW*CH, 0);
+  for (auto& p : occupied) {
+    int c = std::clamp(int(p.x / cellSize), 0, CW-1);
+    int r = std::clamp(int(p.y / cellSize), 0, CH-1);
+    occ[r*CW + c] = 1;
+  }
+
+  // precompute score map once
+  cv::Mat blur; cv::GaussianBlur(img, blur, cv::Size(3,3), 0.);
+  cv::Mat hmap; cv::cornerMinEigenVal(blur, hmap, 3, 3);
+
+  // randomized traversal over all cells
+  std::vector<int> order(CW*CH);
+  std::iota(order.begin(), order.end(), 0);
+  static thread_local std::mt19937 rng{1234567};
+  std::shuffle(order.begin(), order.end(), rng);
+
+  out.reserve(std::min(wantTotal, CW*CH));
+  for (int idx : order) {
+    if ((int)out.size() >= wantTotal) break;
+    if (occ[idx]) continue;
+    int c = idx % CW, r = idx / CW;
+    int x0 = c*cellSize, y0 = r*cellSize;
+    int x1 = std::min(x0+cellSize, W), y1 = std::min(y0+cellSize, H);
+    if (x1-x0 < 3 || y1-y0 < 3) continue;
+
+    cv::Mat roi = hmap(cv::Rect(x0,y0,x1-x0,y1-y0));
+    double minv, maxv; cv::Point maxp;
+    cv::minMaxLoc(roi, &minv, &maxv, nullptr, &maxp);
+
+    cv::Point2f p(maxp.x + x0, maxp.y + y0);
+    std::vector<cv::Point2f> tmp{p};
+    cv::cornerSubPix(img, tmp, cv::Size(3,3), cv::Size(-1,-1),
+                     cv::TermCriteria(cv::TermCriteria::EPS|cv::TermCriteria::MAX_ITER, 30, 0.01));
+    out.push_back(tmp[0]);
+  }
+}
 
 System::System() {}
 
-// --- helpers ---
-static inline cv::Rect cellRect(int r,int c,int W,int H,int R,int C){
-  int x0 = (c*W)/C, x1 = ((c+1)*W)/C;
-  int y0 = (r*H)/R, y1 = ((r+1)*H)/R;
-  return cv::Rect(x0,y0, x1-x0, y1-y0);
-}
-
-static void detectGridGFTT(const cv::Mat& img, std::vector<cv::Point2f>& out,
-                           int gridRows,int gridCols,int maxPerCell)
-{
-  out.clear(); out.reserve(gridRows*gridCols*maxPerCell);
-  const double quality=0.01; const double minDist=5.0;
-  for (int r=0;r<gridRows;++r){
-    for (int c=0;c<gridCols;++c){
-      cv::Rect roi = cellRect(r,c,img.cols,img.rows,gridRows,gridCols);
-      std::vector<cv::Point2f> tmp;
-      cv::goodFeaturesToTrack(img(roi), tmp, maxPerCell, quality, minDist);
-      for (auto& p: tmp){ p.x += roi.x; p.y += roi.y; out.push_back(p); }
-    }
-  }
-}
-
-// simple circular mask around points (avoid re-detecting on top of tracks)
-static void maskFromPoints(const cv::Size& sz, const std::vector<cv::Point2f>& pts,
-                           cv::Mat& mask, int radius=8)
-{
-  mask = cv::Mat(sz, CV_8UC1, cv::Scalar(255));
-  for (auto& p: pts) cv::circle(mask, p, radius, cv::Scalar(0), -1, cv::LINE_AA);
-}
-
-static void topupDetection(const cv::Mat& img, std::vector<cv::Point2f>& pts,
-                           int wantTotal, int gridRows,int gridCols,int perCell)
-{
-  if ((int)pts.size() >= wantTotal) return;
-  cv::Mat m; maskFromPoints(img.size(), pts, m, 10);
-  // detect with mask per cell
-  std::vector<cv::Point2f> cand;
-  for (int r=0;r<gridRows;++r){
-    for (int c=0;c<gridCols;++c){
-      cv::Rect roi = cellRect(r,c,img.cols,img.rows,gridRows,gridCols);
-      // skip cell if it's heavily masked
-      if (cv::countNonZero(m(roi)) < roi.area()/10) continue;
-      std::vector<cv::Point2f> tmp;
-      cv::goodFeaturesToTrack(img(roi), tmp, perCell, 0.01, 5.0, m(roi));
-      for (auto& p: tmp){ p.x += roi.x; p.y += roi.y; cand.push_back(p); }
-    }
-  }
-  // greedily add until we hit wantTotal
-  for (auto& p: cand){ pts.push_back(p); if ((int)pts.size()>=wantTotal) break; }
-}
-
-static void pruneByForwardBackwardLK(const cv::Mat& prev, const cv::Mat& cur,
-                                     std::vector<cv::Point2f>& p0,
-                                     std::vector<cv::Point2f>& p1)
-{
-  if (p0.empty()) return;
-  std::vector<uchar> st01, st10; std::vector<float> err01, err10;
-  std::vector<cv::Point2f> p1fw, p0bw;
-
-  cv::calcOpticalFlowPyrLK(prev, cur, p0, p1fw, st01, err01,
-    cv::Size(15,15), 3, cv::TermCriteria(cv::TermCriteria::COUNT|cv::TermCriteria::EPS, 20, 0.03),
-    0, 1e-4);
-
-  // back
-  cv::calcOpticalFlowPyrLK(cur, prev, p1fw, p0bw, st10, err10,
-    cv::Size(15,15), 3, cv::TermCriteria(cv::TermCriteria::COUNT|cv::TermCriteria::EPS, 20, 0.03),
-    0, 1e-4);
-
-  std::vector<cv::Point2f> p0_out, p1_out; p0_out.reserve(p0.size()); p1_out.reserve(p0.size());
-  for (size_t i=0;i<p0.size();++i){
-    if (!st01[i] || !st10[i]) continue;
-    if (cv::norm(p0[i] - p0bw[i]) < 0.8) { // FB threshold
-      p0_out.push_back(p0[i]);
-      p1_out.push_back(p1fw[i]);
-    }
-  }
-  p0.swap(p0_out); p1.swap(p1_out);
-}
-
-static void pruneByGeometry(const std::vector<cv::Point2f>& p0,
-                            const std::vector<cv::Point2f>& p1,
-                            std::vector<uchar>& inlierMask,
-                            double ransacThresh)
-{
-  if (p0.size()<8){ inlierMask.assign(p0.size(), 1); return; }
-  // Fundamental (no intrinsics used in tracker)
-  cv::findFundamentalMat(p0, p1, cv::USAC_MAGSAC, ransacThresh, 0.999, inlierMask);
-}
-
 void System::init(int width, int height, double fx, double fy, double cx, double cy) {
-  w_ = width;  h_ = height;
-  fx_ = fx; fy_ = fy; cx_ = cx; cy_ = cy;
-  hasPrev_ = false;
+  imgW_ = width; imgH_ = height; fx_ = fx; fy_ = fy; cx_ = cx; cy_ = cy;
+
+  const int Wp = std::max(1, imgW_ / procScale_);
+  const int Hp = std::max(1, imgH_ / procScale_);
+  prevGray_.release(); curGray_.release();
+  prevProc_.create(Hp, Wp, CV_8UC1);
+  curProc_.create(Hp, Wp, CV_8UC1);
+  pyrPrev_.reserve(kltLevels_ + 1);
+  pyrCur_.reserve(kltLevels_ + 1);
+  ptsPrev_.reserve(targetKps_ * 2);
+  ptsCur_.reserve(targetKps_ * 2);
+  pyrPrev_.clear(); pyrCur_.clear();
+  ptsPrev_.clear(); ptsCur_.clear();
+
+  if (descEveryN_ > 0 && !orb_) {
+    // Small ORB just for occasional descriptors 
+    orb_ = cv::ORB::create(500);
+  }
+
   trackingState_ = 0;
-  prevGray_.release();
-  curGray_.release();
-  ptsPrev_.clear();
-  ptsCur_.clear();
-}
-
-void System::ensureGray(const uint8_t* img, int width, int height, bool isRGBA) {
-  if (isRGBA) {
-    cv::Mat rgba(h_, w_, CV_8UC4, const_cast<uint8_t*>(img));
-    curGray_.create(h_, w_, CV_8UC1);
-    cv::cvtColor(rgba, curGray_, cv::COLOR_RGBA2GRAY);
-  } else {
-    curGray_ = cv::Mat(h_, w_, CV_8UC1, const_cast<uint8_t*>(img)).clone();
-  }
-}
-
-
-void System::detectNewPoints(const cv::Mat& gray) {
-  std::vector<cv::Point2f> fresh;
-  cv::goodFeaturesToTrack(
-    gray, fresh, maxCorners_, qualityLevel_, minDistance_, cv::noArray(),
-    blockSize_, useHarris_, 0.04
-  );
-  // Replace current set (simple policy)
-  ptsCur_ = std::move(fresh);
-}
-
-void System::trackWithLK(const cv::Mat& prev, const cv::Mat& cur) {
-  if (ptsPrev_.empty()) { ptsCur_.clear(); return; }
-
-  std::vector<cv::Point2f> nextPts;
-  std::vector<unsigned char> status;
-  std::vector<float> err;
-
-  cv::calcOpticalFlowPyrLK(
-    prev, cur, ptsPrev_, nextPts, status, err,
-    cv::Size(21,21), 3,
-    cv::TermCriteria(cv::TermCriteria::COUNT|cv::TermCriteria::EPS, 30, 0.01),
-    0, 1e-4
-  );
-
-  // Keep only successfully tracked points within the frame
-  ptsCur_.clear();
-  ptsCur_.reserve(nextPts.size());
-  for (size_t i=0; i<nextPts.size(); ++i) {
-    if (!status[i]) continue;
-    const cv::Point2f& p = nextPts[i];
-    if (p.x >= 0 && p.y >= 0 && p.x < w_ && p.y < h_) {
-      ptsCur_.push_back(p);
-    }
-  }
+  frameCount_ = 0;
+  lastTS_ = 0.0;
 }
 
 void System::feedFrame(const uint8_t* img, double ts, int width, int height, bool isRGBA) {
+  auto t0 = std::chrono::high_resolution_clock::now();
   lastTS_ = ts;
 
-  // Re-init if size changed
-  if (width!=w_ || height!=h_) {
-    init(width, height, fx_, fy_, cx_, cy_);
+  // 1) to gray (full-res)
+  if (isRGBA) {
+    cv::Mat rgba(imgH_, imgW_, CV_8UC4, const_cast<uint8_t*>(img));
+    cv::cvtColor(rgba, curGray_, cv::COLOR_RGBA2GRAY);
+  } else {
+    curGray_ = cv::Mat(imgH_, imgW_, CV_8UC1, const_cast<uint8_t*>(img));
   }
 
-  // 1) Gray + downscale (reused Mats)
-  ensureGray(img, width, height, isRGBA);        // fills curGray_
-  if (procW_==0){ procW_ = int(w_*procScale_); procH_ = int(h_*procScale_); }
-  curProc_.create(procH_, procW_, CV_8UC1);
-  cv::resize(curGray_, curProc_, curProc_.size(), 0,0, cv::INTER_AREA);
+  // 2) downscale to processing size
+  const int Wp = std::max(1, imgW_ / procScale_);
+  const int Hp = std::max(1, imgH_ / procScale_);
+  cv::resize(curGray_, curProc_, cv::Size(Wp, Hp), 0, 0, cv::INTER_AREA);
+  lastMeanY_ = cv::mean(curProc_)[0];
 
-  // 2) First frame -> detect
-  static int frameCount = 0;
-  if (!hasPrev_) {
-    detectGridGFTT(curProc_, ptsCur_, gridRows_, gridCols_, maxPerCell_);
-    prevProc_ = curProc_.clone();
-    ptsPrev_  = ptsCur_;
-    hasPrev_ = true;
+  // 3) build pyramids (processing scale)
+  pyrCur_.clear();
+  int maxLevel = std::max(0, kltLevels_);
+  cv::buildOpticalFlowPyramid(curProc_, pyrCur_, cv::Size(kltWin_, kltWin_), maxLevel);
+
+  // First frame => seed
+  if (trackingState_ == 0 || prevProc_.empty() || ptsPrev_.empty()) {
+    auto ts0 = std::chrono::high_resolution_clock::now();
+    ptsPrev_.clear();
+    detectGridShiTomasi(curProc_, /*occupied=*/{}, cellSize_, targetKps_, ptsPrev_);
+    auto ts1 = std::chrono::high_resolution_clock::now();
+    t_last_seed_ms_ = std::chrono::duration<double, std::milli>(ts1 - ts0).count();
+
+    // Remove hidden per-frame allocations and reuse old
+    if (prevProc_.size() != curProc_.size()) prevProc_.create(curProc_.rows, curProc_.cols, CV_8UC1);
+    curProc_.copyTo(prevProc_);
+    pyrPrev_  = pyrCur_;
     trackingState_ = 1;
+    ptsCur_ = ptsPrev_;
+
+    auto t1 = std::chrono::high_resolution_clock::now();
+    t_last_klt_ms_ = 0.0;
+    t_last_total_ms_ = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
     return;
   }
 
-  // 3) Track prev -> cur with forward-backward check
-  std::vector<cv::Point2f> p0 = ptsPrev_;
-  std::vector<cv::Point2f> p1;
-  p1.reserve(p0.size());
-  pruneByForwardBackwardLK(prevProc_, curProc_, p0, p1);
+  // 4) KLT track with forward-backward check
+  auto tk0 = std::chrono::high_resolution_clock::now();
+  std::vector<char> alive;
+  ptsCur_.resize(ptsPrev_.size());
+  trackFbKLT(pyrPrev_, pyrCur_, ptsPrev_, ptsCur_, alive, kltWin_, kltLevels_,
+             kltErrMax_, fbMax_, termcrit_);
+  auto tk1 = std::chrono::high_resolution_clock::now();
+  t_last_klt_ms_ = std::chrono::duration<double, std::milli>(tk1 - tk0).count();
 
-  // 4) Geometric RANSAC pruning (threshold ~ 1.0 px at proc scale)
-  std::vector<uchar> inl;
-  pruneByGeometry(p0, p1, inl, 1.0);
-  ptsCur_.clear(); ptsCur_.reserve(p1.size());
-  for (size_t i=0;i<p1.size();++i) if (inl[i]) ptsCur_.push_back(p1[i]);
+  // compact surviving tracks
+  auto ts0 = std::chrono::high_resolution_clock::now();
+  size_t m = 0;
+  for (size_t i=0;i<ptsCur_.size();++i) if (alive[i]) ptsCur_[m++] = ptsCur_[i];
+  ptsCur_.resize(m);
 
-  // 5) Periodic redetect/top-up
-  frameCount++;
-  if (frameCount % redetectEveryN_ == 0 || (int)ptsCur_.size() < minKeep_) {
-    topupDetection(curProc_, ptsCur_, gridRows_*gridCols_*maxPerCell_, gridRows_, gridCols_, maxPerCell_);
+  // 5) reseed to maintain budget
+  if ((int)ptsCur_.size() < targetKps_) {
+    std::vector<cv::Point2f> newPts;
+    detectGridShiTomasi(curProc_, ptsCur_, cellSize_, targetKps_ - (int)ptsCur_.size(), newPts);
+    ptsCur_.insert(ptsCur_.end(), newPts.begin(), newPts.end());
   }
 
-  // 6) Roll
-  prevProc_ = curProc_.clone();
+  thinTracksUniform(ptsCur_, curProc_.cols, curProc_.rows, cellSize_, maxTracks_);
+  auto ts1 = std::chrono::high_resolution_clock::now();
+  t_last_seed_ms_ = std::chrono::duration<double, std::milli>(ts1 - ts0).count();
+
+  // OPT-> sparse ORB descriptors (for future map assoc); disabled if descEveryN_==0
+  if (descEveryN_ > 0 && orb_ && (++frameCount_ % descEveryN_) == 0) {
+    std::vector<cv::KeyPoint> kps; cv::KeyPoint::convert(ptsCur_, kps);
+    cv::Mat descs; orb_->compute(curProc_, kps, descs);
+    // store or expose descs if/when mapping is added
+  }
+
+  // 6) roll to next frame
+  // Remove hidden per-frame allocations and reuse old
+  if (prevProc_.size() != curProc_.size()) prevProc_.create(curProc_.rows, curProc_.cols, CV_8UC1);
+  curProc_.copyTo(prevProc_);
+  pyrPrev_  = pyrCur_;
   ptsPrev_  = ptsCur_;
   trackingState_ = 1;
+
+  auto t1 = std::chrono::high_resolution_clock::now();
+  t_last_total_ms_ = std::chrono::duration<double, std::milli>(t1 - t0).count();
 }
 
 std::vector<double> System::getPoints2D() const {
-  std::vector<double> out; out.reserve(ptsCur_.size()*2);
-  const double s = 1.0 / std::max(1e-6, (double)procScale_); // up-scale
-  for (const auto& p : ptsCur_) { out.push_back(p.x * s); out.push_back(p.y * s); }
-  return out;
+  // return FULL-RES coordinates (scale back from processing scale)
+  const float s = static_cast<float>(procScale_);
+  const size_t cap = std::min(ptsCur_.size(), static_cast<size_t>(maxReturnPts_));
+
+  std::vector<double> flat;
+  flat.reserve(cap * 2);
+
+  // If we have more points than we want to return, just take the first 'cap'.
+  for (size_t i = 0; i < cap; ++i) {
+    const auto& p = ptsCur_[i];
+    flat.push_back(p.x * s);
+    flat.push_back(p.y * s);
+  }
+  return flat;
 }
 

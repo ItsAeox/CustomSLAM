@@ -141,15 +141,19 @@ if (BUILD_WASM)
 
   if (EMSCRIPTEN)
     target_link_options(vio_wasm PRIVATE
+      -O3
+      -flto
       -sWASM=1
       -sALLOW_MEMORY_GROWTH=1
-      -sFILESYSTEM=1
+      -sINITIAL_MEMORY=268435456  # 256MB; bump to 384MB if needed
+      -sFILESYSTEM=0
       -sMODULARIZE=1
       -sEXPORT_ES6=1
       -sEXPORT_NAME=createVioModule
       -sEXPORTED_FUNCTIONS=['_malloc','_free']
-      -sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','lengthBytesUTF8']
+      -sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','HEAPU8','HEAP8','UTF8ToString','lengthBytesUTF8']
       -sENVIRONMENT=web
+      -sWASM_BIGINT=1
       --bind
       -msimd128
     )

@@ -1,61 +1,75 @@
+
 #pragma once
+
 #include <vector>
 #include <cstdint>
 #include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/video.hpp>
+#include <opencv2/features2d.hpp>
 
 class System {
 public:
-    System();
+  System();
 
-    // (Intrinsics not strictly needed for 2D tracking, but kept for parity/future)
-    void init(int width, int height, double fx, double fy, double cx, double cy);
+  // Initialize image size and camera intrinsics
+  void init(int width, int height, double fx, double fy, double cx, double cy);
 
-    // img: RGBA or Gray buffer straight from JS; ts in seconds
-    void feedFrame(const uint8_t* img, double ts, int width, int height, bool isRGBA);
+  // img: RGBA or Gray buffer; ts in seconds
+  // stride is not required; buffer is assumed tightly packed per row.
+  void feedFrame(const uint8_t* img, double ts, int width, int height, bool isRGBA);
 
-    // Flattened [x0,y0, x1,y1, ...] in pixel coords (image space, origin top-left)
-    std::vector<double> getPoints2D() const;
+  // Flattened [x0,y0, x1,y1, ...] in FULL-RES pixel coords (origin top-left)
+  std::vector<double> getPoints2D() const;
 
-    int getNumKeypoints() const { return static_cast<int>(ptsCur_.size()); }
-    int getTrackState()   const { return trackingState_; } // 0=uninit,1=tracking
-    double getLastTS()    const { return lastTS_; }
+  int getNumKeypoints() const { return static_cast<int>(ptsCur_.size()); }
+  int getTrackState()   const { return trackingState_; } // 0=uninit,1=tracking
+  double getLastTS()    const { return lastTS_; }
+  double getLastTotalMS() const { return t_last_total_ms_; }
+  double getLastKltMS()   const { return t_last_klt_ms_; }
+  double getLastSeedMS()  const { return t_last_seed_ms_; }
+  int maxReturnPts_ = 80;
+  double getLastMeanY() const { return lastMeanY_; }
+  std::array<int,2> getLastProcWH() const { return { curProc_.cols, curProc_.rows }; }
+
 
 private:
-    void ensureGray(const uint8_t* img, int width, int height, bool isRGBA);
-    void detectNewPoints(const cv::Mat& gray);
-    void trackWithLK(const cv::Mat& prev, const cv::Mat& cur);
+  int   procScale_      = 2;        // 2 => process at half-res (major speedup)
+  int   kltWin_         = 21;
+  int   kltLevels_      = 3;
+  float kltErrMax_      = 20.f;     // LK per-point error gate
+  float fbMax_          = 2.0f;     // forward-backward gate (pixels)
+  int   cellSize_       = 28;       // grid cell size for seeding (processing scale) ***** Scale DOWN 
+  int   targetKps_      = 80;      // feature budget at processing scale ***** Scale UP
+  int   descEveryN_     = 8;        // ORB compute cadence (frames); 0 disables
+  int   maxTracks_    = 80;  // hard ceiling after tracking+reseeding
+  double t_last_total_ms_ = 0.0;
+  double t_last_klt_ms_   = 0.0;
+  double t_last_seed_ms_  = 0.0;
+  double lastMeanY_ = -1.0;
 
-        // --- Processing scale ---
-    int   procW_=0, procH_=0;
-    float procScale_=0.5f; // track at 1/2 res
+  cv::TermCriteria termcrit_{cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 30, 0.01};
 
-    // Tuning
-    int   maxCorners_     = 1000;
-    double qualityLevel_  = 0.01;
-    double minDistance_   = 7.0;
-    int   blockSize_      = 3;
-    bool  useHarris_      = false;
+  // Image geometry / intrinsics
+  int imgW_ = 0, imgH_ = 0;
+  double fx_ = 0., fy_ = 0., cx_ = 0., cy_ = 0.;
 
-    int   gridRows_ = 12, gridCols_ = 20; // ~240 cells for 1280x720
-    int   maxPerCell_ = 3; 
-    int   redetectEveryN_ = 12;   // refresh features periodically
-    int   minKeep_        = 200;  // if we fall below this, re-detect
+  // Working images (reused every frame)
+  cv::Mat prevGray_, curGray_;   // full-res gray
+  cv::Mat prevProc_, curProc_;   // downscaled gray (working resolution)
 
-    // State
-    bool  hasPrev_   = false;
-    int   trackingState_ = 0;
-    int   w_ = 0, h_ = 0;
-    double fx_=0, fy_=0, cx_=0, cy_=0;
-    double lastTS_ = 0.0;
+  // Pyramids (processing scale)
+  std::vector<cv::Mat> pyrPrev_, pyrCur_;
 
+  // Tracks (processing scale coordinates)
+  std::vector<cv::Point2f> ptsPrev_, ptsCur_;
 
-    // Working images (reused every frame)
-    cv::Mat prevGray_, curGray_;      // full-res gray (only to downscale from)
-    cv::Mat prevProc_, curProc_;      // half-res gray
+  // Optional ORB descriptor extractor
+  cv::Ptr<cv::ORB> orb_;
+  int frameCount_ = 0;
 
-    // Pyramids for LK (reused)
-    std::vector<cv::Mat> pyrPrev_, pyrCur_;
-
-    // Tracks at proc scale
-    std::vector<cv::Point2f> ptsPrev_, ptsCur_;
+  // State
+  int trackingState_ = 0; // 0=uninitialized, 1=tracking
+  double lastTS_ = 0.0;
 };
+

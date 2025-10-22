@@ -7,9 +7,14 @@
   <link rel="stylesheet" href="index.css">
 </head>
 <body>
-  <video id="bgVideo" playsinline muted autoplay></video>
-  <canvas id="view" width="1280" height="720"></canvas>
-  <button id="placeBtn">Place Cactus</button>
+  <video id="bgVideo" autoplay playsinline muted style="
+  position:fixed; left:0; top:0; width:100%; height:100%;
+  object-fit:cover; z-index:0;"></video>
+  <canvas id="view" style="
+    position:fixed; left:0; top:0;
+    width:100%; height:100%;
+    z-index:10; pointer-events:none;"></canvas>
+
   <div id="log"></div>
   <div id="hud" style="position:fixed;right:8px;top:8px;color:#0f0;font:12px monospace;z-index:2;text-align:right"></div>
     <script type="importmap">
