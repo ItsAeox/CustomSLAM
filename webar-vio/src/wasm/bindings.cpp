@@ -15,6 +15,11 @@ static double GetLastMeanY()           { return gSys.getLastMeanY(); }
 static void SetTrackerType(int t) { gSys.setTrackerType(t); }
 static int  GetTrackerType()      { return gSys.getTrackerType(); }
 static double GetLastOrbMS()      { return gSys.getLastOrbMS(); }
+static void SetHybridEveryN(int n) { gSys.setHybridEveryN(n); }
+static int  GetHybridEveryN()      { return gSys.getHybridEveryN(); }
+static int      GetRanOrbThisFrame() { return gSys.getRanOrbThisFrame() ? 1 : 0; }
+static int      GetOrbKFCount()      { return gSys.getOrbKFCount(); }
+static uint32_t GetHybridFrameMod()  { int n = gSys.getHybridEveryN(); return (uint32_t)(gSys.getHybFrameIdx() % std::max(1,n)); }
 
 
 // init from JS
@@ -81,5 +86,10 @@ EMSCRIPTEN_BINDINGS(vio_bindings_pointtrack) {
   function("setTrackerType", &SetTrackerType);
   function("getTrackerType", &GetTrackerType);
   function("getLastOrbMS",   &GetLastOrbMS);
+  function("setHybridEveryN", &SetHybridEveryN);
+  function("getHybridEveryN", &GetHybridEveryN);
+  function("getRanOrbThisFrame", &GetRanOrbThisFrame);
+  function("getOrbKFCount",      &GetOrbKFCount);
+  function("getHybridFrameMod",  &GetHybridFrameMod);
 
 }

@@ -128,18 +128,30 @@ function layoutVideoAndCanvas(bgVideo, canvas, frameW, frameH) {
   Module.initSystem(W, H, fx, fy, cx, cy);
 
   // Default to KLT (0); change if you want to default to ORB
-try {
-  Module.setTrackerType?.(0);
-} catch {}
-
-const sel = document.getElementById('trackerSel');
-if (sel) {
-  sel.value = String(Module.getTrackerType?.() || 0);
-  sel.addEventListener('change', () => {
-    const t = parseInt(sel.value, 10) || 0;
-    Module.setTrackerType?.(t);
-  });
-}
+  try {
+    Module.setTrackerType?.(0);
+    Module.setHybridEveryN?.(8);
+  } catch {}
+  
+  const sel = document.getElementById('trackerSel');
+  const nEl = document.getElementById('hybridN');
+  
+  if (sel) {
+    sel.value = String(Module.getTrackerType?.() || 0);
+    sel.addEventListener('change', () => {
+      const t = parseInt(sel.value, 10) || 0;
+      Module.setTrackerType?.(t);
+    });
+  }
+  if (nEl) {
+    // Initialize from WASM if available
+    const curN = Module.getHybridEveryN?.() || 8;
+    nEl.value = String(curN);
+    nEl.addEventListener('change', () => {
+      const v = Math.max(1, parseInt(nEl.value, 10) || 8);
+      Module.setHybridEveryN?.(v);
+    });
+  }  
 
 // ------------- WebCodecs first
 let fps = 0, lastTick = performance.now();
@@ -295,13 +307,29 @@ if (useWebCodecs) {
         const jsGrayMS = (tBeforeFeed - grayStart).toFixed(2);
         const jsFeedMS = (tAfterFeed  - tBeforeFeed).toFixed(2);
         const jsDrawMS = (jsT1 - tAfterFeed).toFixed(2);
-        const tracker = (sel && sel.value === '1') ? 'ORB' : 'KLT';
-        const orbMS   = Module.getLastOrbMS?.() || 0;
+        const modeVal = sel ? sel.value : '0';
+        const N = Number(Module.getHybridEveryN?.() ?? 8);
+        let tracker =
+          modeVal === '1' ? 'ORB' :
+          modeVal === '2' ? `HYBRID (N=${(Module.getHybridEveryN?.()||8)})` :
+          'KLT';
+        const orbMS = Number(Module.getLastOrbMS?.() ?? 0); 
+        
+        let hybInfo = '';
+        if (modeVal === '2') {
+          const mod  = Number(Module.getHybridFrameMod?.() ?? 0);   // 0..N-1
+          const orbKF= Number(Module.getOrbKFCount?.()   ?? 0);     // 0,1,2,...
+          const ran  = Number(Module.getRanOrbThisFrame?.() ?? 0);  // 0/1
+          // Example: HYB mod 3/8 KF#5 ran:0
+          hybInfo = ` | HYB mod ${mod}/${N} KF#${orbKF} ran:${ran}`;
+        }
         
         const perMode =
-          tracker === 'KLT'
-            ? `KLT ${wasmKLT.toFixed(2)} ms, seed ${wasmSeed.toFixed(2)}`
-            : `ORB ${orbMS.toFixed(2)} ms`;
+        modeVal === '0'
+          ? `KLT ${wasmKLT.toFixed(2)} ms, seed ${wasmSeed.toFixed(2)}`
+          : modeVal === '1'
+          ? `ORB ${orbMS.toFixed(2)} ms`
+          : `KLT ${wasmKLT.toFixed(2)} ms + ORBkey ${orbMS.toFixed(2)} ms${hybInfo}`;      
         
         updateHUDText(
           `FPS ${fps.toFixed(1)} | kps ${kps} | ` +
@@ -385,13 +413,21 @@ if (useWebCodecs) {
     const jsRestMS = (jsT1 - tAfterFeed).toFixed(2);
     
     // HUD
-    const tracker = (sel && sel.value === '1') ? 'ORB' : 'KLT';
-    const orbMS   = Module.getLastOrbMS?.() || 0;
+    const modeVal = sel ? sel.value : '0';
+    let tracker =
+      modeVal === '1' ? 'ORB' :
+      modeVal === '2' ? `HYBRID (N=${(Module.getHybridEveryN?.()||8)})` :
+      'KLT';
+    const orbMS = Module.getLastOrbMS?.() || 0;
+    
     
     const perMode =
-      tracker === 'KLT'
-        ? `KLT ${wasmKLT.toFixed(2)} ms, seed ${wasmSeed.toFixed(2)}`
-        : `ORB ${orbMS.toFixed(2)} ms`;
+    modeVal === '0'
+      ? `KLT ${wasmKLT.toFixed(2)} ms, seed ${wasmSeed.toFixed(2)}`
+      : modeVal === '1'
+      ? `ORB ${orbMS.toFixed(2)} ms`
+      : `KLT ${wasmKLT.toFixed(2)} ms + ORBkey ${orbMS.toFixed(2)} ms`;
+  
     
     updateHUDText(
       `FPS ${fps.toFixed(1)} | kps ${kps} | ` +
