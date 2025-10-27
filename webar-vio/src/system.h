@@ -1,140 +1,101 @@
+
 #pragma once
-#include <Eigen/Core>
-#include <Eigen/Geometry>
-#include <sophus/se3.hpp>
-#include <opencv2/opencv.hpp>
-#include <opencv2/core/eigen.hpp>
-#include "common/camera.h"
-#include "map/frame.h"
-#include "frontend/feature_tracker.h"
+
+#include <vector>
+#include <cstdint>
+#include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/video.hpp>
+#include <opencv2/features2d.hpp>
 
 class System {
 public:
-    // HUD counters (read via bindings)
-    int num_keypoints_   = 0;   // detected features this frame
-    int num_inliers_     = 0;   // E-matrix inliers from recoverPose
-    int tracking_state_  = 0;   // 0=idle/no prev, 1=initializing, 2=tracking
+  System();
 
-    explicit System(const Camera& cam) : cam_(cam) {
-        T_wc_ = Sophus::SE3d(); // identity
-        Kcv_  = (cv::Mat_<double>(3,3) << cam_.fx,0,cam_.cx, 0,cam_.fy,cam_.cy, 0,0,1);
-    }
+  // Initialize image size and camera intrinsics
+  void init(int width, int height, double fx, double fy, double cx, double cy);
 
-    // RGBA or grayscale accepted; we convert to gray
-    void ProcessFrame(const uint8_t* img, double ts, int strideRGBAorGray, bool isRGBA=true) {
-        cv::Mat gray;
-        if (isRGBA) {
-            cv::Mat rgba(cam_.height, cam_.width, CV_8UC4, const_cast<uint8_t*>(img), strideRGBAorGray);
-            cv::cvtColor(rgba, gray, cv::COLOR_RGBA2GRAY);
-        } else {
-            gray = cv::Mat(cam_.height, cam_.width, CV_8UC1, const_cast<uint8_t*>(img), strideRGBAorGray).clone();
-        }
+  // img: RGBA or Gray buffer; ts in seconds
+  // stride is not required; buffer is assumed tightly packed per row.
+  void feedFrame(const uint8_t* img, double ts, int width, int height, bool isRGBA);
 
-        Frame cur; cur.timestamp = ts; cur.gray = gray;
-        tracker_.detectAndDescribe(cur.gray, cur.kps, cur.desc);
-        num_keypoints_ = static_cast<int>(cur.kps.size());
+  // Flattened [x0,y0, x1,y1, ...] in FULL-RES pixel coords (origin top-left)
+  std::vector<double> getPoints2D() const;
 
-        // no previous frame -> stash and wait
-        if (!has_prev_) {
-            prev_ = std::move(cur);
-            has_prev_ = true;
-            tracking_state_ = 1;        // initializing (need a baseline)
-            num_inliers_ = 0;
-            return;
-        }
+  int getNumKeypoints() const { return static_cast<int>(ptsCur_.size()); }
+  int getTrackState()   const { return trackingState_; } // 0=uninit,1=tracking
+  double getLastTS()    const { return lastTS_; }
+  double getLastTotalMS() const { return t_last_total_ms_; }
+  double getLastKltMS()   const { return t_last_klt_ms_; }
+  double getLastSeedMS()  const { return t_last_seed_ms_; }
+  int maxReturnPts_ = 200;
+  double getLastMeanY() const { return lastMeanY_; }
+  std::array<int,2> getLastProcWH() const { return { curProc_.cols, curProc_.rows }; }
+  enum class TrackerType { KLT = 0, ORB = 1 };
 
-        // match to previous
-        auto matches = tracker_.match(prev_.desc, cur.desc);
-        if (matches.size() < 20) {
-            // not enough for a robust E
-            num_inliers_ = 0;
-            tracking_state_ = 1;
-            prev_ = std::move(cur);
-            return;
-        }
+  void setTrackerType(int t) {
+    trackerType_ = (t == 1) ? TrackerType::ORB : TrackerType::KLT;
+  }
+  int  getTrackerType() const { return trackerType_ == TrackerType::ORB ? 1 : 0; }
 
-        // --- build matched points from prev -> cur (you already have matches) ---
-        std::vector<cv::Point2f> p_prev, p_cur;
-        p_prev.reserve(matches.size());
-        p_cur.reserve(matches.size());
-        for (const auto& m : matches) {
-            p_prev.push_back(prev_.kps[m.queryIdx].pt); // prev
-            p_cur .push_back(cur .kps[m.trainIdx].pt);  // cur
-        }
+  double getLastOrbMS() const { return t_last_orb_ms_; }
 
-        // --- estimate Essential (looser threshold on mobile) ---
-        cv::Mat inlierMask;
-        const double prob = 0.999;
-        const double ransac_thresh = 2.0; // px
-        cv::Mat E = cv::findEssentialMat(p_prev, p_cur, Kcv_, cv::RANSAC, prob, ransac_thresh, inlierMask);
 
-        if (E.empty()) {
-            num_inliers_ = 0;
-            tracking_state_ = 1;
-            prev_ = std::move(cur);
-            return;
-        }
+private:
+  int   procScale_      = 2;        // 2 => process at half-res (major speedup)
+  int   kltWin_         = 21;
+  int   kltLevels_      = 3;
+  float kltErrMax_      = 20.f;     // LK per-point error gate
+  float fbMax_          = 2.0f;     // forward-backward gate (pixels)
+  int   cellSize_       = 28;       // grid cell size for seeding (processing scale) ***** Scale DOWN 
+  int   targetKps_      = 200;      // feature budget at processing scale ***** Scale UP
+  int   descEveryN_     = 8;        // ORB compute cadence (frames); 0 disables
+  int   maxTracks_    =200;  // hard ceiling after tracking+reseeding
+  double t_last_total_ms_ = 0.0;
+  double t_last_klt_ms_   = 0.0;
+  double t_last_seed_ms_  = 0.0;
+  double lastMeanY_ = -1.0;
 
-        // --- recoverPose RETURNS motion that maps prev -> cur ---
-        cv::Mat R, t;
-        int inl = cv::recoverPose(E, p_prev, p_cur, Kcv_, R, t, inlierMask);
-        num_inliers_ = inl;
+  cv::TermCriteria termcrit_{cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 30, 0.01};
 
-        if (inl >= 25) {
-            Eigen::Matrix3d Re; cv::cv2eigen(R, Re);
-            Eigen::Vector3d te; cv::cv2eigen(t, te);
+  // Image geometry / intrinsics
+  int imgW_ = 0, imgH_ = 0;
+  double fx_ = 0., fy_ = 0., cx_ = 0., cy_ = 0.;
 
-            // Motion from prev to cur in CAMERA frame
-            Sophus::SE3d T_c1c2(Re, te);
+  // Working images (reused every frame)
+  cv::Mat prevGray_, curGray_;   // full-res gray
+  cv::Mat prevProc_, curProc_;   // downscaled gray (working resolution)
 
-            // Accumulate world pose: T_wc(new) = T_wc(prev) * T_cprev_cnew
-            T_wc_ = T_wc_ * T_c1c2;
+  // Pyramids (processing scale)
+  std::vector<cv::Mat> pyrPrev_, pyrCur_;
 
-            tracking_state_ = 2;
-        } else {
-            tracking_state_ = 1;
-        }
+  // Tracks (processing scale coordinates)
+  std::vector<cv::Point2f> ptsPrev_, ptsCur_;
+  int frameCount_ = 0;
 
-        prev_ = std::move(cur);
-    }
+  // State
+  int trackingState_ = 0; // 0=uninitialized, 1=tracking
+  double lastTS_ = 0.0;
 
-    // IMU stub (we'll fuse at M1)
-    void ProcessIMU(double /*ts*/, double /*ax*/, double /*ay*/, double /*az*/,
-                    double /*gx*/, double /*gy*/, double /*gz*/) {}
+  TrackerType trackerType_ = TrackerType::KLT;
 
-    // Column-major 4x4 for WebGL (always returns something: current T_wc_)
-    std::array<double,16> CurrentPoseGL() const {
-        Eigen::Matrix4d T = T_wc_.matrix();
-        std::array<double,16> a{};
-        int k=0;
-        for (int c=0;c<4;++c)
-            for (int r=0;r<4;++r)
-                a[k++] = T(r,c);
-        return a;
-    }
+  // ORB objects + frame-to-frame state
+  cv::Ptr<cv::ORB> orb_;
+  std::vector<cv::KeyPoint> orbPrevKps_, orbCurKps_;
+  cv::Mat orbPrevDesc_, orbCurDesc_;
 
-    std::array<double,16> CurrentPoseGLThree() const {
-        Eigen::Matrix4d S = Eigen::Matrix4d::Identity();
-        S(1,1) = -1.0; // flip Y
-        S(2,2) = -1.0; // flip Z
-        Eigen::Matrix4d Tthree = S * T_wc_.matrix() * S;
+  // Tunables (reasonable defaults; tweak later)
+  int   orbNFeatures_     = 600;
+  float orbScaleFactor_   = 1.2f;
+  int   orbNLevels_       = 4;
+  int   orbEdgeThreshold_ = 31;
+  int   orbFirstLevel_    = 0;
+  int   orbWtaK_          = 2;
+  cv::ORB::ScoreType orbScore_ = cv::ORB::HARRIS_SCORE;
+  int   orbPatchSize_     = 31;
+  int   orbFastThreshold_ = 20;
 
-        std::array<double,16> a{};
-        int k=0;
-        for (int c=0;c<4;++c)
-        for (int r=0;r<4;++r)
-            a[k++] = Tthree(r,c);
-        return a;
-    }
-
-    int lastInliers() const { return last_inlier_count_; }
-
-    private:
-        Camera cam_;
-        FeatureTracker tracker_;
-        bool has_prev_{false};
-        Frame prev_;
-        Sophus::SE3d T_wc_;
-        cv::Mat Kcv_;
-        int last_inlier_count_{0};
+  // Timing
+  double t_last_orb_ms_   = 0.0;
 };
+
