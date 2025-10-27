@@ -12,6 +12,9 @@ static double GetLastTotalMS() { return gSys.getLastTotalMS(); }
 static double GetLastKltMS()   { return gSys.getLastKltMS();   }
 static double GetLastSeedMS()  { return gSys.getLastSeedMS();  }
 static double GetLastMeanY()           { return gSys.getLastMeanY(); }
+static void SetTrackerType(int t) { gSys.setTrackerType(t); }
+static int  GetTrackerType()      { return gSys.getTrackerType(); }
+static double GetLastOrbMS()      { return gSys.getLastOrbMS(); }
 
 
 // init from JS
@@ -75,4 +78,8 @@ EMSCRIPTEN_BINDINGS(vio_bindings_pointtrack) {
   function("getLastTS",       &GetLastTS);
   function("getLastMeanY",  &GetLastMeanY);
   function("getLastProcWH", &GetLastProcWH);
+  function("setTrackerType", &SetTrackerType);
+  function("getTrackerType", &GetTrackerType);
+  function("getLastOrbMS",   &GetLastOrbMS);
+
 }

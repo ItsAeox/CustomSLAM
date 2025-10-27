@@ -31,6 +31,14 @@ public:
   int maxReturnPts_ = 200;
   double getLastMeanY() const { return lastMeanY_; }
   std::array<int,2> getLastProcWH() const { return { curProc_.cols, curProc_.rows }; }
+  enum class TrackerType { KLT = 0, ORB = 1 };
+
+  void setTrackerType(int t) {
+    trackerType_ = (t == 1) ? TrackerType::ORB : TrackerType::KLT;
+  }
+  int  getTrackerType() const { return trackerType_ == TrackerType::ORB ? 1 : 0; }
+
+  double getLastOrbMS() const { return t_last_orb_ms_; }
 
 
 private:
@@ -63,13 +71,31 @@ private:
 
   // Tracks (processing scale coordinates)
   std::vector<cv::Point2f> ptsPrev_, ptsCur_;
-
-  // Optional ORB descriptor extractor
-  cv::Ptr<cv::ORB> orb_;
   int frameCount_ = 0;
 
   // State
   int trackingState_ = 0; // 0=uninitialized, 1=tracking
   double lastTS_ = 0.0;
+
+  TrackerType trackerType_ = TrackerType::KLT;
+
+  // ORB objects + frame-to-frame state
+  cv::Ptr<cv::ORB> orb_;
+  std::vector<cv::KeyPoint> orbPrevKps_, orbCurKps_;
+  cv::Mat orbPrevDesc_, orbCurDesc_;
+
+  // Tunables (reasonable defaults; tweak later)
+  int   orbNFeatures_     = 600;
+  float orbScaleFactor_   = 1.2f;
+  int   orbNLevels_       = 4;
+  int   orbEdgeThreshold_ = 31;
+  int   orbFirstLevel_    = 0;
+  int   orbWtaK_          = 2;
+  cv::ORB::ScoreType orbScore_ = cv::ORB::HARRIS_SCORE;
+  int   orbPatchSize_     = 31;
+  int   orbFastThreshold_ = 20;
+
+  // Timing
+  double t_last_orb_ms_   = 0.0;
 };
 

@@ -127,6 +127,20 @@ function layoutVideoAndCanvas(bgVideo, canvas, frameW, frameH) {
   const cx = W * 0.5, cy = H * 0.5;
   Module.initSystem(W, H, fx, fy, cx, cy);
 
+  // Default to KLT (0); change if you want to default to ORB
+try {
+  Module.setTrackerType?.(0);
+} catch {}
+
+const sel = document.getElementById('trackerSel');
+if (sel) {
+  sel.value = String(Module.getTrackerType?.() || 0);
+  sel.addEventListener('change', () => {
+    const t = parseInt(sel.value, 10) || 0;
+    Module.setTrackerType?.(t);
+  });
+}
+
 // ------------- WebCodecs first
 let fps = 0, lastTick = performance.now();
 
@@ -281,11 +295,18 @@ if (useWebCodecs) {
         const jsGrayMS = (tBeforeFeed - grayStart).toFixed(2);
         const jsFeedMS = (tAfterFeed  - tBeforeFeed).toFixed(2);
         const jsDrawMS = (jsT1 - tAfterFeed).toFixed(2);
+        const tracker = (sel && sel.value === '1') ? 'ORB' : 'KLT';
+        const orbMS   = Module.getLastOrbMS?.() || 0;
+        
+        const perMode =
+          tracker === 'KLT'
+            ? `KLT ${wasmKLT.toFixed(2)} ms, seed ${wasmSeed.toFixed(2)}`
+            : `ORB ${orbMS.toFixed(2)} ms`;
+        
         updateHUDText(
           `FPS ${fps.toFixed(1)} | kps ${kps} | ` +
           `JS gray ${jsGrayMS} ms, feed ${jsFeedMS} ms, draw ${jsDrawMS} ms | ` +
-          `WASM total ${wasmTotal.toFixed(2)} ms (KLT ${wasmKLT.toFixed(2)}, seed ${wasmSeed.toFixed(2)}) | ` +
-          `ingest WebCodecs`
+          `WASM total ${wasmTotal.toFixed(2)} ms (${perMode}) | ingest ${ingestPath}`
         );
 
       } catch (e) {
@@ -364,12 +385,19 @@ if (useWebCodecs) {
     const jsRestMS = (jsT1 - tAfterFeed).toFixed(2);
     
     // HUD
+    const tracker = (sel && sel.value === '1') ? 'ORB' : 'KLT';
+    const orbMS   = Module.getLastOrbMS?.() || 0;
+    
+    const perMode =
+      tracker === 'KLT'
+        ? `KLT ${wasmKLT.toFixed(2)} ms, seed ${wasmSeed.toFixed(2)}`
+        : `ORB ${orbMS.toFixed(2)} ms`;
+    
     updateHUDText(
-      `FPS ${fps.toFixed(1)} | kps ${Module.getNumKeypoints?.() || 0} | ` +
-      `JS gray ${jsGrayMS} ms, feed ${jsFeedMS} ms, draw ${jsRestMS} ms | ` +
-      `WASM total ${wasmTotal.toFixed(2)} ms (KLT ${wasmKLT.toFixed(2)}, seed ${wasmSeed.toFixed(2)}) | ` +
-      `ingest ${ingestPath}`
-    );
+      `FPS ${fps.toFixed(1)} | kps ${kps} | ` +
+      `JS gray ${jsGrayMS} ms, feed ${jsFeedMS} ms, draw ${jsDrawMS} ms | ` +
+      `WASM total ${wasmTotal.toFixed(2)} ms (${perMode}) | ingest ${ingestPath}`
+    );    
     requestAnimationFrame(loop);
   }
     requestAnimationFrame(loop);
