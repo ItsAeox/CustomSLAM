@@ -15,14 +15,15 @@
     width:100%; height:100%;
     z-index:10; pointer-events:none;"></canvas>
 
-  <div id="log"></div>
-  <div style="position:fixed;left:8px;top:8px;z-index:25;">
+  <div style="position:fixed;left:8px;top:60px;z-index:25;">
     <label for="trackerSel" style="color:#0f0;font:12px monospace;">Tracker:</label>
     <select id="trackerSel" style="font:12px monospace;background:#111;color:#0f0;border:1px solid #0f0;">
       <option value="0">KLT</option>
       <option value="1">ORB</option>
+      <option value="2">Hybrid (ORB every 8Frames)</option>
     </select>
-  </div>  
+  </div>
+  <div id="log"></div>
   <div id="hud" style="position:fixed;right:8px;top:8px;color:#0f0;font:12px monospace;z-index:2;text-align:right"></div>
 
     <script type="importmap">

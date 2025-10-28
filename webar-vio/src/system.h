@@ -31,15 +31,27 @@ public:
   int maxReturnPts_ = 200;
   double getLastMeanY() const { return lastMeanY_; }
   std::array<int,2> getLastProcWH() const { return { curProc_.cols, curProc_.rows }; }
-  enum class TrackerType { KLT = 0, ORB = 1 };
+  enum class TrackerType { KLT = 0, ORB = 1, HYBRID = 2 };
 
   void setTrackerType(int t) {
-    trackerType_ = (t == 1) ? TrackerType::ORB : TrackerType::KLT;
+    if      (t == 2) trackerType_ = TrackerType::HYBRID;
+    else if (t == 1) trackerType_ = TrackerType::ORB;
+    else             trackerType_ = TrackerType::KLT;
   }
-  int  getTrackerType() const { return trackerType_ == TrackerType::ORB ? 1 : 0; }
+  int getTrackerType() const {
+    switch (trackerType_) {
+      case TrackerType::HYBRID: return 2;
+      case TrackerType::ORB:    return 1;
+      default:                  return 0;
+    }
+  }  
 
   double getLastOrbMS() const { return t_last_orb_ms_; }
-
+  void setHybridEveryN(int n) { hybridEveryN_ = std::max(1, n); }
+  int  getHybridEveryN() const { return hybridEveryN_; }
+  bool getRanOrbThisFrame() const { return ranOrbThisFrame_; }
+  int  getOrbKFCount() const { return orbKFCount_; }
+  uint64_t getHybFrameIdx() const { return hybFrameIdx_; }
 
 private:
   int   procScale_      = 2;        // 2 => process at half-res (major speedup)
@@ -78,6 +90,13 @@ private:
   double lastTS_ = 0.0;
 
   TrackerType trackerType_ = TrackerType::KLT;
+
+  // Hybrid config/state
+  int hybridEveryN_ = 8;               // default: run ORB every 8th frame
+  uint64_t hybFrameIdx_ = 0;            // increments each feedFrame
+  bool     ranOrbThisFrame_ = false;
+  uint64_t lastOrbKF_ = 0;       // last frame idx that ran ORB
+  int      orbKFCount_ = 0;      // number of ORB keyframes run
 
   // ORB objects + frame-to-frame state
   cv::Ptr<cv::ORB> orb_;
