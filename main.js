@@ -297,11 +297,6 @@ if (useWebCodecs) {
 
         drawPoints(pts, curW, curH);
 
-        // (Debug) if we still get 0 features, tell us every 30 frames
-        if ((++frameIdx % 30) === 0 && kps === 0) {
-          logMsg(`DEBUG kps=0 | state=${st} | coded=${curW}x${curH}`);
-        }
-
         // HUD — always update (no silent '...')
         const jsT1 = performance.now();
         const jsGrayMS = (tBeforeFeed - grayStart).toFixed(2);
