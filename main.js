@@ -1,4 +1,4 @@
-import { initRenderer, drawPoints, updateHUDText } from './renderer.js';
+import { initRenderer, drawPoints, updateHUDText, drawPathXZ, drawAttitude } from './renderer.js';
 
 function ensureLogEl() {
   let d = document.getElementById('log');
@@ -129,29 +129,9 @@ function layoutVideoAndCanvas(bgVideo, canvas, frameW, frameH) {
 
   // Default to KLT (0); change if you want to default to ORB
   try {
-    Module.setTrackerType?.(0);
+    Module.setTrackerType?.(2);
     Module.setHybridEveryN?.(8);
   } catch {}
-  
-  const sel = document.getElementById('trackerSel');
-  const nEl = document.getElementById('hybridN');
-  
-  if (sel) {
-    sel.value = String(Module.getTrackerType?.() || 0);
-    sel.addEventListener('change', () => {
-      const t = parseInt(sel.value, 10) || 0;
-      Module.setTrackerType?.(t);
-    });
-  }
-  if (nEl) {
-    // Initialize from WASM if available
-    const curN = Module.getHybridEveryN?.() || 8;
-    nEl.value = String(curN);
-    nEl.addEventListener('change', () => {
-      const v = Math.max(1, parseInt(nEl.value, 10) || 8);
-      Module.setHybridEveryN?.(v);
-    });
-  }  
 
 // ------------- WebCodecs first
 let fps = 0, lastTick = performance.now();
@@ -297,40 +277,70 @@ if (useWebCodecs) {
 
         drawPoints(pts, curW, curH);
 
+        // --- Orientation overlay (yaw/pitch/roll in degrees) ---
+        try {
+          const ypr = Module.getYPR?.(); // Float32Array or JS array [yawDeg, pitchDeg, rollDeg]
+          if (ypr && ypr.length === 3) {
+            const yawDeg   = Number(ypr[0]);
+            const pitchDeg = Number(ypr[1]);
+            const rollDeg  = Number(ypr[2]);
+            drawAttitude(yawDeg, pitchDeg, rollDeg, curW, curH);
+          }
+        } catch {}
+        
+        // --- Top-down XZ path (optional – keep this if you like the inset) ---
+        try {
+          const pathXZ = Module.getPathXZ?.();
+          if (pathXZ && pathXZ.length) {
+            drawPathXZ(pathXZ, curW, curH);
+          }
+        } catch {}
+      
+
         // HUD — always update (no silent '...')
         const jsT1 = performance.now();
         const jsGrayMS = (tBeforeFeed - grayStart).toFixed(2);
         const jsFeedMS = (tAfterFeed  - tBeforeFeed).toFixed(2);
         const jsDrawMS = (jsT1 - tAfterFeed).toFixed(2);
-        const modeVal = sel ? sel.value : '0';
         const N = Number(Module.getHybridEveryN?.() ?? 8);
-        let tracker =
-          modeVal === '1' ? 'ORB' :
-          modeVal === '2' ? `HYBRID (N=${(Module.getHybridEveryN?.()||8)})` :
-          'KLT';
         const orbMS = Number(Module.getLastOrbMS?.() ?? 0); 
+
+        // E/H gate telemetry
+        const ehModel = Number(Module.getEHModel?.() ?? 0);   // 0=NONE,1=E,2=H
+        const ehE     = Number(Module.getEHInliersE?.() ?? 0);
+        const ehH     = Number(Module.getEHInliersH?.() ?? 0);
+        const ehPar   = Number(Module.getEHParallaxDeg?.() ?? 0);
+        const ehTag   = ehModel === 1 ? 'E' : (ehModel === 2 ? 'H' : '-');
+
+        //Mappoints and Keyframes
+        const kfs = Number(Module.getNumKFs?.() ?? 0);
+        const mps = Number(Module.getNumMPs?.() ?? 0);
         
         let hybInfo = '';
-        if (modeVal === '2') {
-          const mod  = Number(Module.getHybridFrameMod?.() ?? 0);   // 0..N-1
-          const orbKF= Number(Module.getOrbKFCount?.()   ?? 0);     // 0,1,2,...
-          const ran  = Number(Module.getRanOrbThisFrame?.() ?? 0);  // 0/1
-          // Example: HYB mod 3/8 KF#5 ran:0
-          hybInfo = ` | HYB mod ${mod}/${N} KF#${orbKF} ran:${ran}`;
-        }
+        const mod  = Number(Module.getHybridFrameMod?.() ?? 0);   // 0..N-1
+        const orbKF= Number(Module.getOrbKFCount?.()   ?? 0);     // 0,1,2,...
+        const ran  = Number(Module.getRanOrbThisFrame?.() ?? 0);  // 0/1
+        hybInfo = ` | HYB mod ${mod}/${N} KF#${orbKF} ran:${ran}`;
         
-        const perMode =
-        modeVal === '0'
-          ? `KLT ${wasmKLT.toFixed(2)} ms, seed ${wasmSeed.toFixed(2)}`
-          : modeVal === '1'
-          ? `ORB ${orbMS.toFixed(2)} ms`
-          : `KLT ${wasmKLT.toFixed(2)} ms + ORBkey ${orbMS.toFixed(2)} ms${hybInfo}`;      
+        const perMode = `KLT ${wasmKLT.toFixed(2)} ms + ORBkey ${orbMS.toFixed(2)} ms${hybInfo}`;      
+        let yawTxt = '', pitchTxt = '', rollTxt = '';
+        try {
+          const ypr = Module.getYPR?.();
+          if (ypr && ypr.length === 3) {
+            yawTxt   = Number(ypr[0]).toFixed(1);
+            pitchTxt = Number(ypr[1]).toFixed(1);
+            rollTxt  = Number(ypr[2]).toFixed(1);
+          }
+        } catch {}
         
         updateHUDText(
           `FPS ${fps.toFixed(1)} | kps ${kps} | ` +
           `JS gray ${jsGrayMS} ms, feed ${jsFeedMS} ms, draw ${jsDrawMS} ms | ` +
-          `WASM total ${wasmTotal.toFixed(2)} ms (${perMode}) | ingest ${ingestPath}`
-        );
+          `WASM total ${wasmTotal.toFixed(2)} ms (${perMode}) | ` +
+          `EH ${ehTag} E:${ehE} H:${ehH} par:${ehPar.toFixed(1)}° | ` +
+          (yawTxt ? `YPR ${yawTxt}°/${pitchTxt}°/${rollTxt}° | ` : ``) +
+          `MapPoints ${mps} KeyFrames ${kfs} | ingest ${ingestPath}`
+        );        
 
       } catch (e) {
         // Surface any exception into the log AND HUD, so we see it
@@ -408,27 +418,23 @@ if (useWebCodecs) {
     const jsRestMS = (jsT1 - tAfterFeed).toFixed(2);
     
     // HUD
-    const modeVal = sel ? sel.value : '0';
-    let tracker =
-      modeVal === '1' ? 'ORB' :
-      modeVal === '2' ? `HYBRID (N=${(Module.getHybridEveryN?.()||8)})` :
-      'KLT';
     const orbMS = Module.getLastOrbMS?.() || 0;
-    
-    
-    const perMode =
-    modeVal === '0'
-      ? `KLT ${wasmKLT.toFixed(2)} ms, seed ${wasmSeed.toFixed(2)}`
-      : modeVal === '1'
-      ? `ORB ${orbMS.toFixed(2)} ms`
-      : `KLT ${wasmKLT.toFixed(2)} ms + ORBkey ${orbMS.toFixed(2)} ms`;
+    const perMode = `KLT ${wasmKLT.toFixed(2)} ms + ORBkey ${orbMS.toFixed(2)} ms`;
   
-    
+    // E/H gate telemetry
+    const ehModel = Number(Module.getEHModel?.() ?? 0);
+    const ehE     = Number(Module.getEHInliersE?.() ?? 0);
+    const ehH     = Number(Module.getEHInliersH?.() ?? 0);
+    const ehPar   = Number(Module.getEHParallaxDeg?.() ?? 0);
+    const ehTag   = ehModel === 1 ? 'E' : (ehModel === 2 ? 'H' : '-');
+
     updateHUDText(
-      `FPS ${fps.toFixed(1)} | kps ${kps} | ` +
-      `JS gray ${jsGrayMS} ms, feed ${jsFeedMS} ms, draw ${jsDrawMS} ms | ` +
-      `WASM total ${wasmTotal.toFixed(2)} ms (${perMode}) | ingest ${ingestPath}`
-    );    
+      `FPS ${fps.toFixed(1)} | ` +
+      `JS gray ${jsGrayMS} ms, feed ${jsFeedMS} ms, rest ${jsRestMS} ms | ` +
+      `WASM total ${wasmTotal.toFixed(2)} ms (${perMode}) | ` +
+      `EH ${ehTag} E:${ehE} H:${ehH} par:${ehPar.toFixed(1)}° | ingest ${ingestPath}`
+    );
+   
     requestAnimationFrame(loop);
   }
     requestAnimationFrame(loop);

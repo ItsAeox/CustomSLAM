@@ -20,7 +20,31 @@ static int  GetHybridEveryN()      { return gSys.getHybridEveryN(); }
 static int      GetRanOrbThisFrame() { return gSys.getRanOrbThisFrame() ? 1 : 0; }
 static int      GetOrbKFCount()      { return gSys.getOrbKFCount(); }
 static uint32_t GetHybridFrameMod()  { int n = gSys.getHybridEveryN(); return (uint32_t)(gSys.getHybFrameIdx() % std::max(1,n)); }
+static int    GetEHModel()       { return gSys.getEHModel(); }
+static int    GetEHInliersE()    { return gSys.getEHInliersE(); }
+static int    GetEHInliersH()    { return gSys.getEHInliersH(); }
+static double GetEHParallaxDeg() { return gSys.getEHParallaxDeg(); }
+static int GetNumKFs() { return gSys.getNumKFs(); }
+static int GetNumMPs() { return gSys.getNumMPs(); }
 
+static emscripten::val GetTwc() {
+  auto t = gSys.getTwc();
+  emscripten::val a = emscripten::val::array();
+  a.set(0, t[0]); a.set(1, t[1]); a.set(2, t[2]);
+  return a;
+}
+static emscripten::val GetYPR() {
+  auto r = gSys.getYPR();
+  emscripten::val a = emscripten::val::array();
+  a.set(0, r[0]); a.set(1, r[1]); a.set(2, r[2]);
+  return a;
+}
+
+static emscripten::val GetPathXZ() {
+  static std::vector<float> buf; // stable storage for typed view
+  buf = gSys.getPathXZ();
+  return emscripten::val(emscripten::typed_memory_view(buf.size(), buf.data()));
+}
 
 // init from JS
 void initSystem(int width, int height, double fx, double fy, double cx, double cy) {
@@ -91,5 +115,14 @@ EMSCRIPTEN_BINDINGS(vio_bindings_pointtrack) {
   function("getRanOrbThisFrame", &GetRanOrbThisFrame);
   function("getOrbKFCount",      &GetOrbKFCount);
   function("getHybridFrameMod",  &GetHybridFrameMod);
+  function("getEHModel",        &GetEHModel);
+  function("getEHInliersE",     &GetEHInliersE);
+  function("getEHInliersH",     &GetEHInliersH);
+  function("getEHParallaxDeg",  &GetEHParallaxDeg);
+  function("getPathXZ", &GetPathXZ);
+  function("getNumKFs", &GetNumKFs);
+  function("getNumMPs", &GetNumMPs);  
+  function("getTwc", &GetTwc);
+  function("getYPR", &GetYPR);
 
 }

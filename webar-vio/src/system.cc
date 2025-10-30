@@ -178,6 +178,495 @@ static void buildSuppressionMask(cv::Size sz,
   }
 }
 
+// === Mapping helpers ========================================================
+
+// Compute ORB descriptors at given processing-scale points (no detection step).
+void System::computeORBAtPoints(const cv::Mat& img,
+                                const std::vector<cv::Point2f>& pts,
+                                cv::Mat& outDesc)
+{
+  std::vector<cv::KeyPoint> kps; kps.reserve(pts.size());
+  for (auto& p : pts) kps.emplace_back(p, (float)orbPatchSize_);
+  outDesc.release();
+  if (orb_) orb_->compute(img, kps, outDesc);
+}
+
+// Collect (Xw ↔ pixel) pairs by projection + small window gating.
+// Returns number of correspondences harvested into pnp_points_/pnp_pixels_/pnp_indices_.
+int System::harvestPnpCorrespondences(float winPx, int maxTake)
+{
+  pnp_points_.clear(); pnp_pixels_.clear(); pnp_indices_.clear();
+  pnp_points_.reserve(std::min<int>((int)mps_.size(), maxTake));
+  pnp_pixels_.reserve(std::min<int>((int)mps_.size(), maxTake));
+  pnp_indices_.reserve(std::min<int>((int)mps_.size(), maxTake));
+
+  // Current camera pose (world->camera): Rcw, tcw from Rwc_,twc_
+  cv::Matx33d Rcw = Rwc_.t();
+  cv::Vec3d   tcw = -(Rwc_.t() * twc_);
+  const cv::Matx33d Kd = K();
+
+  // Build a light grid over current 2D tracks to accelerate nearest search (processing scale).
+  // Grid cell ~ 12 px at processing scale.
+  const int Wp = curProc_.cols, Hp = curProc_.rows;
+  const int cell = 12;
+  const int gx = std::max(1, Wp / cell), gy = std::max(1, Hp / cell);
+  std::vector<std::vector<int>> grid(gx*gy);
+  grid.reserve(gx*gy);
+  for (int i = 0; i < (int)ptsCur_.size(); ++i) {
+    const auto& p = ptsCur_[i];
+    int cx = std::clamp(int(p.x / cell), 0, gx-1);
+    int cy = std::clamp(int(p.y / cell), 0, gy-1);
+    grid[cy*gx + cx].push_back(i);
+  }
+  auto visitBucket = [&](int cx, int cy, auto&& fn){
+    if (cx<0||cy<0||cx>=gx||cy>=gy) return;
+    for (int idx : grid[cy*gx + cx]) fn(idx);
+  };
+
+  // Reprojection window defined at processing scale:
+  const float s = (float)procScale_;
+  const float winProc = std::max(2.f, winPx / s);
+  const float win2 = winProc * winProc;
+
+  int taken = 0;
+  for (int mi = 0; mi < (int)mps_.size(); ++mi) {
+    const auto& M = mps_[mi];
+
+    // Project Xw
+    cv::Vec3d Xc = Rcw * M.Xw + tcw;
+    if (Xc[2] <= 1e-6) continue; // behind
+
+    double u = (Kd(0,0) * (Xc[0]/Xc[2])) + Kd(0,2);
+    double v = (Kd(1,1) * (Xc[1]/Xc[2])) + Kd(1,2);
+
+    // Convert full-res pixel to processing scale
+    float up = (float)(u / s);
+    float vp = (float)(v / s);
+    if (up < 2 || vp < 2 || up >= Wp-2 || vp >= Hp-2) continue;
+
+    // Search a few neighbor buckets
+    int cx = int(up / cell), cy = int(vp / cell);
+    int hits = 0, bestIdx = -1; float bestD2 = win2;
+
+    auto scan = [&](int idx){
+      const auto& q = ptsCur_[idx];
+      float dx = q.x - up, dy = q.y - vp;
+      float d2 = dx*dx + dy*dy;
+      if (d2 <= bestD2) { bestD2 = d2; bestIdx = idx; }
+    };
+    visitBucket(cx,cy,scan);
+    visitBucket(cx+1,cy,scan); visitBucket(cx-1,cy,scan);
+    visitBucket(cx,cy+1,scan); visitBucket(cx,cy-1,scan);
+
+    if (bestIdx >= 0) {
+      pnp_indices_.push_back(mi);
+      pnp_points_.emplace_back((float)M.Xw[0], (float)M.Xw[1], (float)M.Xw[2]);
+      // use full-res pixels for PnP
+      pnp_pixels_.emplace_back(up * s, vp * s);
+      if (++taken >= maxTake) break;
+    }
+  }
+  return (int)pnp_points_.size();
+}
+
+// Two-view init: recover relative pose, triangulate inlier pairs, make 2 KFs + MapPoints.
+bool System::tryTwoViewInit(const std::vector<cv::Point2f>& prevProcPts,
+                            const std::vector<cv::Point2f>& curProcPts)
+{
+  if (mapInitialized_) return true;
+  if (prevProcPts.size() < 12 || curProcPts.size() < 12) return false;
+
+  // Promote to full-res pixels
+  std::vector<cv::Point2f> p0, p1;
+  toFullResPixels(prevProcPts, p0);
+  toFullResPixels(curProcPts,  p1);
+
+  // E + recoverPose
+  cv::Mat mask;
+  cv::Mat E = cv::findEssentialMat(p0, p1, fx_, cv::Point2d(cx_, cy_),
+                                   cv::RANSAC, 0.999, 1.5, mask);
+  if (E.empty()) return false;
+
+  cv::Mat R, t;
+  int ninl = cv::recoverPose(E, p0, p1, R, t, fx_, cv::Point2d(cx_, cy_), mask);
+  if (ninl < 30) return false;
+
+  // Build normalized points for triangulation
+  std::vector<cv::Point2f> n0, n1; n0.reserve(ninl); n1.reserve(ninl);
+  cv::Matx33d Ki_ = Ki();
+  for (int i=0;i<(int)mask.rows;i++) if (mask.at<uchar>(i)) {
+    cv::Vec3d x0(p0[i].x, p0[i].y, 1.0); x0 = Ki_ * x0;
+    cv::Vec3d x1(p1[i].x, p1[i].y, 1.0); x1 = Ki_ * x1;
+    n0.emplace_back((float)(x0[0]), (float)(x0[1]));
+    n1.emplace_back((float)(x1[0]), (float)(x1[1]));
+  }
+
+  // Cameras: P0 = [I|0], P1 = [R|t] (camera-1 in camera-0 coords)
+  cv::Matx34d P0 = cv::Matx34d::eye();
+  cv::Matx34d P1;
+  for (int r=0;r<3;++r) for (int c=0;c<3;++c) P1(r,c) = R.at<double>(r,c);
+  P1(0,3) = t.at<double>(0); P1(1,3) = t.at<double>(1); P1(2,3) = t.at<double>(2);
+
+  // Triangulate
+  cv::Mat X4;
+  cv::triangulatePoints(P0, P1, n0, n1, X4);
+
+  // Compose first two KFs in world=cam0 coords
+  Keyframe KF0; KF0.id = nextKFId_++; KF0.Rwc = cv::Matx33d::eye(); KF0.twc = cv::Vec3d(0,0,0);
+  Keyframe KF1; KF1.id = nextKFId_++; 
+  cv::Matx33d R10; for (int r=0;r<3;++r) for (int c=0;c<3;++c) R10(r,c) = R.at<double>(r,c);
+  cv::Vec3d   t10(t.at<double>(0), t.at<double>(1), t.at<double>(2));
+  KF1.Rwc = R10.t(); KF1.twc = -(R10.t()*t10);
+
+  // Prepare ORB descs at inlier pixels for KF1 (processing scale)
+  // Convert full-res inliers to processing points to compute descriptors quickly
+  std::vector<cv::Point2f> inlProc1; inlProc1.reserve(n1.size());
+  const float s = (float)procScale_;
+  for (auto& px : p1) inlProc1.emplace_back(px.x / s, px.y / s);
+  computeORBAtPoints(curProc_, inlProc1, KF1.desc);
+
+  // Create MapPoints with cheirality + reprojection + baseline angle checks
+  mps_.reserve(mps_.size() + X4.cols);
+  int kept = 0;
+  for (int i=0;i<X4.cols;++i) {
+    double X = X4.at<double>(0,i), Y = X4.at<double>(1,i), Z = X4.at<double>(2,i), W = X4.at<double>(3,i);
+    if (W <= 1e-9) continue;
+    cv::Vec3d Xc0 = cv::Vec3d(X/W, Y/W, Z/W);
+    if (Xc0[2] <= 1e-6) continue; // depth>0 in cam0
+
+    // depth in cam1: R*Xc0 + t
+    cv::Vec3d Xc1 = R10 * Xc0 + t10;
+    if (Xc1[2] <= 1e-6) continue;
+
+    // simple reprojection check (< 2.5 px) into both cams (full-res)
+    auto reprojErr = [&](const cv::Vec3d& Xc, const cv::Point2f& px){
+      double u = fx_ * (Xc[0]/Xc[2]) + cx_;
+      double v = fy_ * (Xc[1]/Xc[2]) + cy_;
+      double du = u - px.x, dv = v - px.y;
+      return std::sqrt(du*du + dv*dv);
+    };
+    if (reprojErr(Xc0, p0[i]) > 2.5) continue;
+    if (reprojErr(Xc1, p1[i]) > 2.5) continue;
+
+    MapPoint M;
+    M.Xw = Xc0; // world=cam0
+    M.hostKF = KF0.id;
+    if (!KF1.desc.empty() && i < KF1.desc.rows) {
+      M.desc = KF1.desc.row(i).clone();
+    }
+    mps_.push_back(std::move(M));
+    kept++;
+  }
+
+  kfs_.push_back(std::move(KF0));
+  kfs_.push_back(std::move(KF1));
+  mapInitialized_ = (kept >= 50);
+  lastKFTs_ = lastTS_;
+  lastKFInliers_ = kept;
+
+  // Initialize global pose with KF1 (so trail keeps continuity)
+  if (mapInitialized_) {
+    Rwc_ = kfs_.back().Rwc;
+    twc_ = kfs_.back().twc;
+  }
+  return mapInitialized_;
+}
+
+// PnP on harvested correspondences; refines pose; returns true on success.
+bool System::trackWithPnP()
+{
+  const int N = harvestPnpCorrespondences(/*winPx=*/8.f, /*maxTake=*/800);
+  if (N < 20) return false;
+
+  // Build vectors cv::Mat-friendly
+  cv::Mat rvec, tvec;
+  // Start from last pose as initial guess (cw)
+  {
+    cv::Matx33d Rcw = Rwc_.t();
+    cv::Rodrigues(Rcw, rvec);
+    tvec = (cv::Mat_<double>(3,1) << 0,0,0);
+    cv::Vec3d tcw = -(Rwc_.t() * twc_);
+    tvec.at<double>(0)=tcw[0]; tvec.at<double>(1)=tcw[1]; tvec.at<double>(2)=tcw[2];
+  }
+
+  cv::Mat inliers;
+  const cv::Mat Kcv = (cv::Mat_<double>(3,3) << fx_,0,cx_, 0,fy_,cy_, 0,0,1);
+  bool ok = cv::solvePnPRansac(
+              pnp_points_, pnp_pixels_, Kcv, cv::noArray(),
+              rvec, tvec, /*useExtrinsicGuess=*/true,
+              200, 2.5, 0.99, inliers, cv::SOLVEPNP_EPNP);
+  if (!ok || inliers.empty() || inliers.rows < 20) return false;
+
+  // Motion-only refine (optional LM)
+  cv::solvePnP(pnp_points_, pnp_pixels_, Kcv, cv::noArray(),
+               rvec, tvec, true, cv::SOLVEPNP_ITERATIVE);
+
+  // Update Twc
+  cv::Mat Rcv; cv::Rodrigues(rvec, Rcv);
+  cv::Matx33d Rcw;
+  for (int r=0;r<3;++r) for (int c=0;c<3;++c) Rcw(r,c) = Rcv.at<double>(r,c);
+  cv::Vec3d tcw(tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2));
+  Rwc_ = Rcw.t();
+  twc_ = -(Rcw.t() * tcw);
+
+  // Append trail position (keeps your on-screen path in sync)
+  path_.emplace_back((float)twc_[0], (float)twc_[1], (float)twc_[2]);
+  if (path_.size() > 4096) {
+    path_.erase(path_.begin(), path_.begin() + (path_.size() - 4096));
+  }
+
+  lastKFInliers_ = inliers.rows;
+  return true;
+}
+
+// KF insertion heuristic: parallax/time/inliers based
+bool System::shouldInsertKF(int pnpInliers, double nowTs) const
+{
+  if (!mapInitialized_) return false;
+  if (kfs_.empty()) return true;
+  if (pnpInliers < 80) return true;                    // tracking thinning
+  if ((nowTs - lastKFTs_) > 1.0) return true;          // time-based
+  if (pnpInliers < (lastKFInliers_ * 7) / 10) return true; // drop vs last KF
+  return false;
+}
+
+// Insert KF for current pose and triangulate new points vs last KF
+void System::insertKeyframeAndTriangulate()
+{
+  if (!mapInitialized_) return;
+
+  // Build KF from current frame; compute dense ORB over full image (cheap at proc scale)
+  Keyframe KF; KF.id = nextKFId_++; KF.Rwc = Rwc_; KF.twc = twc_;
+  // We can reuse orb_ detector (already configured).
+  std::vector<cv::KeyPoint> kps; cv::Mat desc;
+  orb_->detectAndCompute(curProc_, cv::noArray(), kps, desc);
+  KF.kps.swap(kps); KF.desc = desc;
+
+  // Triangulate vs previous KF (simple 2-KF baseline)
+  if (!kfs_.empty()) {
+    const Keyframe& Kprev = kfs_.back();
+
+    // match KFprev.desc ↔ KF.desc (ratio + mutual)
+    cv::BFMatcher bf(cv::NORM_HAMMING, false);
+    std::vector<std::vector<cv::DMatch>> knn01, knn10;
+    bf.knnMatch(Kprev.desc, KF.desc, knn01, 2);
+    bf.knnMatch(KF.desc,   Kprev.desc, knn10, 2);
+    const float ratio=0.75f;
+    std::vector<cv::DMatch> cands;
+    for (auto& ks:knn01) if (ks.size()>=2 && ks[0].distance < ratio*ks[1].distance) cands.push_back(ks[0]);
+    std::vector<char> ok(cands.size(),0);
+    for (size_t i=0;i<cands.size();++i){
+      auto m=cands[i];
+      const auto& rv=knn10[m.trainIdx];
+      if (rv.size()<2) continue;
+      if (rv[0].distance >= ratio*rv[1].distance) continue;
+      if (rv[0].trainIdx == m.queryIdx) ok[i]=1;
+    }
+
+    // normalized points for triangulation
+    std::vector<cv::Point2f> n0, n1; n0.reserve(ok.size()); n1.reserve(ok.size());
+    for (size_t i=0;i<cands.size();++i) if (ok[i]) {
+      auto a = Kprev.kps[cands[i].queryIdx].pt;
+      auto b = KF.kps   [cands[i].trainIdx].pt;
+      // back to full-res pixels
+      cv::Vec3d x0(a.x*procScale_, a.y*procScale_, 1.0); x0 = Ki()*x0;
+      cv::Vec3d x1(b.x*procScale_, b.y*procScale_, 1.0); x1 = Ki()*x1;
+      n0.emplace_back((float)x0[0], (float)x0[1]);
+      n1.emplace_back((float)x1[0], (float)x1[1]);
+    }
+
+    if (n0.size() >= 20) {
+      // P0=[Rcw0|tcw0], P1=[Rcw1|tcw1] but triangulation expects cam1 in cam0:
+      cv::Matx33d Rcw0 = Kprev.Rwc.t(), Rcw1 = KF.Rwc.t();
+      cv::Vec3d   tcw0 = -(Kprev.Rwc.t()*Kprev.twc);
+      cv::Vec3d   tcw1 = -(KF.Rwc.t()*KF.twc);
+      cv::Matx34d P0, P1;
+      for (int r=0;r<3;++r) for (int c=0;c<3;++c){ P0(r,c)=Rcw0(r,c); P1(r,c)=Rcw1(r,c); }
+      P0(0,3)=tcw0[0]; P0(1,3)=tcw0[1]; P0(2,3)=tcw0[2];
+      P1(0,3)=tcw1[0]; P1(1,3)=tcw1[1]; P1(2,3)=tcw1[2];
+
+      cv::Mat X4; cv::triangulatePoints(P0,P1,n0,n1,X4);
+      const double cosMax = std::cos(70.0 * M_PI/180.0); // viewing angle gate
+
+      for (int i=0;i<X4.cols;++i){
+        double X=X4.at<double>(0,i), Y=X4.at<double>(1,i), Z=X4.at<double>(2,i), W=X4.at<double>(3,i);
+        if (W<=1e-9) continue;
+        cv::Vec3d Xw(X/W, Y/W, Z/W);
+
+        // Cheirality
+        cv::Vec3d Xc0 = Rcw0*Xw + tcw0;
+        cv::Vec3d Xc1 = Rcw1*Xw + tcw1;
+        if (Xc0[2]<=1e-6 || Xc1[2]<=1e-6) continue;
+
+        // Baseline angle (cosine of angle between rays)
+        cv::Vec3d v0 = Xc0 / cv::norm(Xc0), v1 = Xc1 / cv::norm(Xc1);
+        double cosang = v0.dot(v1);
+        if (cosang > cosMax) continue; // too small angle
+
+        MapPoint M; M.Xw = Xw; M.hostKF = KF.id;
+        if (!KF.desc.empty() && i < KF.desc.rows) M.desc = KF.desc.row(i).clone();
+        mps_.push_back(std::move(M));
+      }
+    }
+  }
+
+  kfs_.push_back(std::move(KF));
+  lastKFTs_ = lastTS_;
+}
+
+// Convert processing-scale points -> full-res pixel coordinates
+void System::toFullResPixels(const std::vector<cv::Point2f>& procPts,
+                             std::vector<cv::Point2f>& fullResPx) const {
+  fullResPx.resize(procPts.size());
+  const float s = static_cast<float>(procScale_);
+  for (size_t i = 0; i < procPts.size(); ++i) {
+    fullResPx[i].x = procPts[i].x * s;
+    fullResPx[i].y = procPts[i].y * s;
+  }
+}
+
+// Run E vs H RANSAC on matched pairs; store result in eh* fields
+void System::runEvsHGate(const std::vector<cv::Point2f>& prevProcPts,
+                         const std::vector<cv::Point2f>& curProcPts) {
+  ehModel_ = 0; ehInliersE_ = ehInliersH_ = 0; ehParallaxDeg_ = 0.0;
+  if (prevProcPts.size() < 8 || curProcPts.size() < 8) return;
+
+  // 1) Promote to full-res pixel coordinates (your intrinsics are full-res)
+  std::vector<cv::Point2f> p0, p1;
+  toFullResPixels(prevProcPts, p0);
+  toFullResPixels(curProcPts,  p1);
+
+  // 2) Median pixel displacement -> rough parallax (deg)
+  {
+    std::vector<double> disp; disp.reserve(p0.size());
+    for (size_t i = 0; i < p0.size(); ++i) {
+      disp.push_back(cv::norm(p1[i] - p0[i]));
+    }
+    if (!disp.empty()) {
+      std::nth_element(disp.begin(), disp.begin()+disp.size()/2, disp.end());
+      const double medPx = disp[disp.size()/2];
+      // small-angle approx: angle ≈ atan(medPx / fx_)
+      const double ang = std::atan2(medPx, std::max(1e-6, fx_)) * 180.0 / M_PI;
+      ehParallaxDeg_ = ang;
+    }
+  }
+
+  // 3) RANSAC for Essential (use pixel points + focal,pp)
+  int inlE = 0, inlH = 0;
+  {
+    cv::Mat maskE;
+    // thresh in pixels (reproj), conf=0.999
+    cv::findEssentialMat(p0, p1, fx_, cv::Point2d(cx_, cy_),
+                         cv::RANSAC, 0.999, 1.5, maskE);
+    if (!maskE.empty()) {
+      for (int i = 0; i < maskE.rows; ++i) inlE += maskE.at<uchar>(i) ? 1 : 0;
+    }
+  }
+  // 4) RANSAC for Homography (pixel domain)
+  {
+    cv::Mat maskH;
+    cv::findHomography(p0, p1, cv::RANSAC, 1.5, maskH, 2000, 0.999);
+    if (!maskH.empty()) {
+      for (int i = 0; i < maskH.rows; ++i) inlH += maskH.at<uchar>(i) ? 1 : 0;
+    }
+  }
+
+  ehInliersE_ = inlE;
+  ehInliersH_ = inlH;
+
+  // 5) Simple model selection heuristic
+  // Prefer E when parallax is present and inliers are comparable; else H.
+  const bool hasParallax = (ehParallaxDeg_ >= 1.0);
+  bool preferE = false;
+  if (inlE >= inlH + 15) preferE = true;
+  else if (inlE >= (int)std::round(0.7 * inlH) && hasParallax) preferE = true;
+
+  ehModel_ = preferE ? 1 : 2; // 1=E, 2=H
+}
+
+// Integrate VO using E decomposition (monocular; scale arbitrary)
+void System::integrateVO_E(const std::vector<cv::Point2f>& prevProcPts,
+                           const std::vector<cv::Point2f>& curProcPts)
+{
+  if (prevProcPts.size() < 8 || curProcPts.size() < 8) return;
+
+  // Promote to full-res pixel coords (intrinsics are full-res)
+  std::vector<cv::Point2f> p0, p1;
+  toFullResPixels(prevProcPts, p0);
+  toFullResPixels(curProcPts,  p1);
+
+  // Find E and recover relative pose (R_10, t_10) from cam0->cam1
+  cv::Mat inlierMaskE;
+  cv::Mat E = cv::findEssentialMat(p0, p1, fx_, cv::Point2d(cx_, cy_),
+                                   cv::RANSAC, 0.999, 1.5, inlierMaskE);
+  if (E.empty()) return;
+
+  cv::Mat R, t;
+  int ninl = cv::recoverPose(E, p0, p1, R, t, fx_, cv::Point2d(cx_, cy_), inlierMaskE);
+  if (ninl < 8) return;
+
+  // Convert to double-friendly formats
+  cv::Matx33d R10; cv::Vec3d t10;
+  for (int r=0;r<3;++r) for (int c=0;c<3;++c) R10(r,c) = R.at<double>(r,c);
+  t10[0] = t.at<double>(0); t10[1] = t.at<double>(1); t10[2] = t.at<double>(2);
+
+  // Monocular: t10 is up to scale. Use a soft scale heuristic from pixel motion
+  // to keep the trail legible (not physically accurate, just for visualization).
+  // Median pixel displacement (already similar to your parallax calc):
+  std::vector<double> disp; disp.reserve(p0.size());
+  for (size_t i=0;i<p0.size();++i) disp.push_back(cv::norm(p1[i]-p0[i]));
+  std::nth_element(disp.begin(), disp.begin()+disp.size()/2, disp.end());
+  const double medPx = disp[disp.size()/2];
+  // Scale factor: s ~ medPx / fx_ * k ; choose k≈1.5 to look nice on-screen
+  const double s = std::clamp(1.5 * (medPx / std::max(1e-6, fx_)), 0.0, 0.2);
+  t10 *= s;
+
+  // Compose world pose. If Twc0 = [Rwc|twc], and cam1 = R10,t10 in cam0 frame:
+  // Twc1 = Twc0 * inv(Tc1c0) = Twc0 * [R10^T | -R10^T t10]
+  cv::Matx33d R_next = Rwc_ * R10.t();
+  cv::Vec3d   t_next = twc_ - Rwc_ * (R10.t() * t10);
+
+  Rwc_ = R_next;
+  twc_ = t_next;
+
+  // Record position
+  path_.emplace_back((float)twc_[0], (float)twc_[1], (float)twc_[2]);
+  if (path_.size() > 4096) {
+    path_.erase(path_.begin(), path_.begin() + (path_.size() - 4096));
+  }
+}
+
+// Return flattened [x0,z0, x1,z1, ...]
+std::vector<float> System::getPathXZ() const {
+  std::vector<float> flat;
+  flat.reserve(path_.size() * 2);
+  for (const auto& P : path_) {
+    flat.push_back(P.x);
+    flat.push_back(P.z);
+  }
+  return flat;
+}
+
+std::array<double,3> System::getYPR() const {
+  // Camera forward, right, up in world coordinates (columns of Rwc_)
+  const cv::Vec3d fx = cv::Vec3d(Rwc_(0,0), Rwc_(1,0), Rwc_(2,0)); // right
+  const cv::Vec3d fy = cv::Vec3d(Rwc_(0,1), Rwc_(1,1), Rwc_(2,1)); // down (OpenCV)
+  const cv::Vec3d fz = cv::Vec3d(Rwc_(0,2), Rwc_(1,2), Rwc_(2,2)); // forward
+
+  // Yaw: heading of forward projected onto XZ
+  double yaw = std::atan2(fz[2], fz[0]); // atan2(Z, X) in world XZ
+
+  // Pitch: elevation of forward (negate Y because OpenCV Y is "down")
+  double pitch = std::atan2(-fz[1], std::sqrt(fz[0]*fz[0] + fz[2]*fz[2]));
+
+  // Roll: rotation around forward; derive from right/up on the plane orthogonal to forward.
+  // Use right vector components in world XY-plane for a stable screen-like roll:
+  double roll = std::atan2(fx[1], fy[1]); // using down-axis components
+
+  return { yaw, pitch, roll };
+}
+
+
 
 System::System() {}
 
@@ -236,128 +725,6 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
   lastMeanY_ = cv::mean(curProc_)[0];
   ranOrbThisFrame_ = false;
   hybFrameIdx_++;
-
-  // === ORB path (early exit if selected) =====================================
-  if (trackerType_ == TrackerType::ORB) {
-    const auto t_orb0 = std::chrono::high_resolution_clock::now();
-
-    // 1) Detect+compute on current processing-scale frame
-    orbCurKps_.clear();
-    orbCurDesc_.release();
-    orb_->detectAndCompute(curProc_, cv::noArray(), orbCurKps_, orbCurDesc_);
-
-    ptsPrev_.clear();
-    ptsCur_.clear();
-
-    std::vector<cv::Point2f> curPtsAll; curPtsAll.reserve(orbCurKps_.size());
-    for (auto& k : orbCurKps_) curPtsAll.push_back(k.pt);
-
-    std::vector<cv::Point2f> keepPrev, keepCur;
-
-    if (!orbPrevDesc_.empty() && !orbCurDesc_.empty()) {
-      // 2) Ratio + mutual (symmetric) matching to stabilize correspondences
-      cv::BFMatcher bf(cv::NORM_HAMMING, /*crossCheck=*/false);
-
-      std::vector<std::vector<cv::DMatch>> knnPC, knnCP;
-      bf.knnMatch(orbPrevDesc_, orbCurDesc_, knnPC, 2);
-      bf.knnMatch(orbCurDesc_, orbPrevDesc_, knnCP, 2);
-
-      const float ratio = 0.75f;
-      std::vector<cv::DMatch> candPC;
-      candPC.reserve(knnPC.size());
-      for (const auto& ks : knnPC) {
-        if (ks.size() < 2) continue;
-        if (ks[0].distance < ratio * ks[1].distance) candPC.push_back(ks[0]);
-      }
-
-      // mutual check
-      std::vector<char> ok(candPC.size(), 0);
-      for (size_t i = 0; i < candPC.size(); ++i) {
-        const auto& m = candPC[i];
-        // find best in CP for m.trainIdx
-        const auto& rev = knnCP[m.trainIdx];
-        if (rev.size() < 2) continue;
-        if (rev[0].distance >= ratio * rev[1].distance) continue;
-        if (rev[0].trainIdx == m.queryIdx) ok[i] = 1;
-      }
-
-      std::vector<cv::Point2f> pPrev, pCur;
-      std::vector<int> idxPrev, idxCur;
-      for (size_t i = 0; i < candPC.size(); ++i) if (ok[i]) {
-        const auto& m = candPC[i];
-        pPrev.push_back(orbPrevKps_[m.queryIdx].pt);
-        pCur .push_back(orbCurKps_[m.trainIdx].pt);
-        idxPrev.push_back(m.queryIdx);
-        idxCur .push_back(m.trainIdx);
-      }
-
-      // 3) Geometric gating (RANSAC). Use Fundamental matrix (no intrinsics needed).
-      cv::Mat inlierMask;
-      if (pPrev.size() >= 8) {
-        // ransacReprojThreshold = 1.5 px, confidence = 0.99
-        (void)cv::findFundamentalMat(pPrev, pCur, cv::FM_RANSAC, 1.5, 0.99, inlierMask);
-      } else {
-        inlierMask = cv::Mat::ones((int)pPrev.size(), 1, CV_8U);
-      }
-      
-      for (int i = 0; i < inlierMask.rows; ++i) {
-        if (inlierMask.at<uchar>(i)) {
-          keepPrev.push_back(pPrev[(size_t)i]);
-          keepCur .push_back(pCur [(size_t)i]);
-        }
-      }      
-    }
-
-    // 4) Top-up: if too few tracked points, detect new ones away from current tracks
-    const int target = std::min(maxTracks_, 800);   // cap
-    const int minTracked = std::min(target, std::max(10, target * 6 / 10)); // keep ~60% tracked
-    if ((int)keepCur.size() < minTracked) {
-      cv::Mat mask;
-      buildSuppressionMask(curProc_.size(), keepCur, /*radius px=*/12, mask);
-
-      // Detect more where we have no points; compute descriptors for those
-      std::vector<cv::KeyPoint> addKps;
-      cv::Mat addDesc;
-      orb_->detectAndCompute(curProc_, mask, addKps, addDesc);
-
-      // Append until we reach target
-      for (int i = 0; i < (int)addKps.size() && (int)keepCur.size() < target; ++i) {
-        keepCur.push_back(addKps[i].pt);
-        // no need to maintain keepPrev for new points (they are new births)
-      }
-    }
-
-    // 5) Enforce spatial spread (bucket/grid). Works on keepCur only.
-    std::vector<int> uniformIdx;
-    bucketUniform(keepCur, curProc_.cols, curProc_.rows, /*cell=*/cellSize_, /*maxKeep=*/target, uniformIdx);
-
-    ptsCur_.reserve(uniformIdx.size());
-    for (int j : uniformIdx) ptsCur_.push_back(keepCur[j]);
-
-    // Tracking state
-    trackingState_ = (ptsCur_.size() >= 10) ? 1 : 0;
-
-    // 6) Prepare "prev" for next frame: set prev = current (re-compute descriptors to align sets)
-    //    Recompute descriptors at the positions we actually kept, so next matching is clean.
-    {
-      std::vector<cv::KeyPoint> kpForPrev; kpForPrev.reserve(ptsCur_.size());
-      for (auto& p : ptsCur_) kpForPrev.emplace_back(cv::Point2f(p.x, p.y), /*size=*/orbPatchSize_);
-      orbPrevKps_.swap(kpForPrev);
-      orb_->compute(curProc_, orbPrevKps_, orbPrevDesc_); // descriptors for next frame
-    }
-
-    // Also keep a copy of the current image for any downstream assumptions
-    if (prevProc_.size() != curProc_.size()) prevProc_.create(curProc_.rows, curProc_.cols, CV_8UC1);
-    curProc_.copyTo(prevProc_);
-
-    // Timing + exit
-    const auto t_orb1 = std::chrono::high_resolution_clock::now();
-    t_last_orb_ms_ = std::chrono::duration<double, std::milli>(t_orb1 - t_orb0).count();
-    auto t_all1 = std::chrono::high_resolution_clock::now();
-    t_last_total_ms_ = std::chrono::duration<double, std::milli>(t_all1 - t0).count();
-    return; // skip KLT branch
-    // ==========================================================================
-  } else if (trackerType_ == TrackerType::HYBRID){
     const bool isKeyframe = (hybFrameIdx_ % std::max(1, hybridEveryN_)) == 0;
     if (isKeyframe) {
       const auto t_orb0 = std::chrono::high_resolution_clock::now();
@@ -427,6 +794,19 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
           }
         }      
       }
+      // --- E/H gate on ORB correspondences (post-F check) ---
+      if (keepPrev.size() >= 8 && keepCur.size() >= 8) {
+        runEvsHGate(keepPrev, keepCur);
+        if (!mapInitialized_ && ehModel_ == 1) {
+          integrateVO_E(keepPrev, keepCur);
+        }        
+      }  
+
+      // Two-view init trigger (only once)
+      if (!mapInitialized_ && ehModel_ == 1) {
+        (void)tryTwoViewInit(keepPrev, keepCur);
+      }
+
   
       // 4) Top-up: if too few tracked points, detect new ones away from current tracks
       const int target = std::min(maxTracks_, 800);   // cap
@@ -483,7 +863,7 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
       t_last_total_ms_ = std::chrono::duration<double, std::milli>(t_all1 - t0).count();
       return;
     }
-  }
+  
 
   // 3) build pyramids (processing scale)
   pyrCur_.clear();
@@ -517,9 +897,28 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
   std::vector<char> alive;
   ptsCur_.resize(ptsPrev_.size());
   trackFbKLT(pyrPrev_, pyrCur_, ptsPrev_, ptsCur_, alive, kltWin_, kltLevels_,
-             kltErrMax_, fbMax_, termcrit_);
+            kltErrMax_, fbMax_, termcrit_);
   auto tk1 = std::chrono::high_resolution_clock::now();
   t_last_klt_ms_ = std::chrono::duration<double, std::milli>(tk1 - tk0).count();
+
+  // --- E/H gate on alive KLT tracks (use pairs before compaction) ---
+  {
+    std::vector<cv::Point2f> p0, p1;
+    p0.reserve(ptsPrev_.size()); p1.reserve(ptsPrev_.size());
+    for (size_t i = 0; i < ptsPrev_.size(); ++i) {
+      if (i < (size_t)alive.size() && alive[i]) { p0.push_back(ptsPrev_[i]); p1.push_back(ptsCur_[i]); }
+    }
+    if (p0.size() >= 8) {
+      runEvsHGate(p0, p1);
+      if (!mapInitialized_ && ehModel_ == 1) {
+        integrateVO_E(p0, p1);
+      }      
+    }
+
+    if (!mapInitialized_ && ehModel_ == 1) {
+      (void)tryTwoViewInit(p0, p1);
+    }  
+  }
 
   // compact surviving tracks
   auto ts0 = std::chrono::high_resolution_clock::now();
@@ -544,6 +943,14 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
     cv::Mat descs; orb_->compute(curProc_, kps, descs);
     // store or expose descs if/when mapping is added
   }
+
+  // ===== Mapping track (PnP) + KF insertion =====
+  if (mapInitialized_) {
+    const bool pnpOk = trackWithPnP();
+    if (pnpOk && shouldInsertKF(lastKFInliers_, lastTS_)) {
+      insertKeyframeAndTriangulate();
+    }
+  }  
 
   // 6) roll to next frame
   // Remove hidden per-frame allocations and reuse old

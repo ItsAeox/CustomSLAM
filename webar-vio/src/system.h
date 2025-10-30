@@ -52,6 +52,29 @@ public:
   bool getRanOrbThisFrame() const { return ranOrbThisFrame_; }
   int  getOrbKFCount() const { return orbKFCount_; }
   uint64_t getHybFrameIdx() const { return hybFrameIdx_; }
+  // --- VO / path telemetry ---
+  // Returns a flattened [x0,z0, x1,z1, ...] in arbitrary scale (monocular)
+  std::vector<float> getPathXZ() const;
+  // --- Pose accessors for UI ---
+  // World position (x,y,z)
+  std::array<double,3> getTwc() const {
+    return { twc_[0], twc_[1], twc_[2] };
+  }
+  // Heading (yaw on XZ), pitch, roll in radians (right-handed, OpenCV: x right, y down, z forward)
+  // yaw: angle of forward (Rwc_.col(2)) projected on XZ
+  // pitch: elevation of forward
+  // roll: rotation around forward axis using right/up
+  std::array<double,3> getYPR() const;
+  // --- E/H gate telemetry (for HUD/logging) ---
+  // model: 0=NONE, 1=E, 2=H
+  int    getEHModel()       const { return ehModel_; }
+  int    getEHInliersE()    const { return ehInliersE_; }
+  int    getEHInliersH()    const { return ehInliersH_; }
+  double getEHParallaxDeg() const { return ehParallaxDeg_; }
+  // Mapping stats (public getters)
+  int getNumKFs() const { return (int)kfs_.size(); }
+  int getNumMPs() const { return (int)mps_.size(); }
+
 
 private:
   int   procScale_      = 2;        // 2 => process at half-res (major speedup)
@@ -114,7 +137,100 @@ private:
   int   orbPatchSize_     = 31;
   int   orbFastThreshold_ = 20;
 
+  // ===== Mapping state (SFM → VIO) =====
+  struct Keyframe {
+    int id = -1;
+    cv::Matx33d Rwc;   // world-from-camera
+    cv::Vec3d   twc;
+    std::vector<cv::KeyPoint> kps; // ORB keypoints at processing scale
+    cv::Mat desc;                   // ORB descriptors (rows=kps)
+  };
+  struct MapPoint {
+    cv::Vec3d Xw;
+    cv::Mat   desc;      // 1x32 (cloned row) OR empty if unknown
+    int       hostKF = -1;
+    int       seen   = 0;
+    int       found  = 0;
+    float     invScale = 1.f; // quick gating by distance (optional)
+  };
+
+  bool mapInitialized_ = false;
+  std::vector<Keyframe>  kfs_;
+  std::vector<MapPoint>  mps_;
+  int nextKFId_ = 0;
+
+  // Working buffers reused each frame (avoid allocs in hot loop)
+  std::vector<int>     pnp_indices_;     // indices into mps_
+  std::vector<cv::Point2f> pnp_pixels_;  // matched 2D
+  std::vector<cv::Point3f> pnp_points_;  // 3D (float for cv PnP)
+  cv::Mat rvec_, tvec_;                  // current cam pose (cw) for PnP refine
+
+  // KF policy
+  double lastKFTs_ = 0.0;
+  int    lastKFInliers_ = 0;
+
+  // ====== API ======
+  // 2-view init from 2D-2D (processing-scale points)
+  bool tryTwoViewInit(const std::vector<cv::Point2f>& prevProcPts,
+                      const std::vector<cv::Point2f>& curProcPts);
+
+  // Per-frame 3D-2D tracking using MapPoints (fills Rwc_/twc_ on success)
+  bool trackWithPnP();
+
+  // KF insertion + triangulation vs last KF
+  bool shouldInsertKF(int pnpInliers, double nowTs) const;
+  void insertKeyframeAndTriangulate();
+
+  // Helper: compute ORB at arbitrary pixel locations (processing scale)
+  void computeORBAtPoints(const cv::Mat& img,
+                          const std::vector<cv::Point2f>& pts,
+                          cv::Mat& outDesc);
+
+  // Project MapPoints and collect 3D-2D with small reprojection window
+  int harvestPnpCorrespondences(float reprojThreshPx = 8.f, int maxTake = 500);
+
+  // Utility: K (intrinsics) and its inverse at **full-res**
+  inline cv::Matx33d K()  const { return cv::Matx33d(fx_, 0,  cx_,
+                                                     0,  fy_, cy_,
+                                                     0,  0,  1); }
+  inline cv::Matx33d Ki() const {
+    const double ix = 1.0/std::max(1e-9, fx_);
+    const double iy = 1.0/std::max(1e-9, fy_);
+    return cv::Matx33d(ix,0,-cx_*ix,  0,iy,-cy_*iy,  0,0,1);
+  }
+
   // Timing
   double t_last_orb_ms_   = 0.0;
+  // ===== Visual Odometry (VO) state =====
+  // World pose of camera: Rwc_ (3x3), twc_ (3x1); start at identity
+  cv::Matx33d Rwc_ = cv::Matx33d::eye();
+  cv::Vec3d   twc_ = cv::Vec3d(0,0,0);
+
+  // History of world positions for drawing (x,z used for top-down path)
+  std::vector<cv::Point3f> path_; // (x,y,z), push one per frame
+
+  // Integrate relative pose from Essential-matrix inlier correspondences
+  void integrateVO_E(const std::vector<cv::Point2f>& prevProcPts,
+                     const std::vector<cv::Point2f>& curProcPts);
+
+  // Utility already present:
+  // void toFullResPixels(const std::vector<cv::Point2f>& procPts,
+  //                      std::vector<cv::Point2f>& fullResPx) const;
+
+  // ===== E/H model gate state (unique names: eh*) =====
+  // 0 = NONE, 1 = E (Essential), 2 = H (Homography)
+  int    ehModel_        = 0;
+  int    ehInliersE_     = 0;
+  int    ehInliersH_     = 0;
+  double ehParallaxDeg_  = 0.0;
+
+  // Compute E vs H on corresponding point pairs (processing-scale coords)
+  void   runEvsHGate(const std::vector<cv::Point2f>& prevProcPts,
+                     const std::vector<cv::Point2f>& curProcPts);
+
+  // Utility: build full-res pixel pairs from processing-scale points
+  void   toFullResPixels(const std::vector<cv::Point2f>& procPts,
+                         std::vector<cv::Point2f>& fullResPx) const;
+
 };
 
