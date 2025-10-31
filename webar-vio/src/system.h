@@ -3,6 +3,7 @@
 
 #include <vector>
 #include <cstdint>
+#include <array>
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/video.hpp>
@@ -78,12 +79,12 @@ public:
 
 private:
   int   procScale_      = 2;        // 2 => process at half-res (major speedup)
-  int   kltWin_         = 21;
-  int   kltLevels_      = 3;
-  float kltErrMax_      = 20.f;     // LK per-point error gate
-  float fbMax_          = 2.0f;     // forward-backward gate (pixels)
-  int   cellSize_       = 28;       // grid cell size for seeding (processing scale) ***** Scale DOWN 
-  int   targetKps_      = 200;      // feature budget at processing scale ***** Scale UP
+  int   kltWin_         = 25;
+  int   kltLevels_      = 4;
+  float kltErrMax_      = 3.f;     // LK per-point error gate
+  float fbMax_          = 1.2f;     // forward-backward gate (pixels)
+  int   cellSize_       = 16;       // grid cell size for seeding (processing scale) ***** Scale DOWN 
+  int   targetKps_      = 180;      // feature budget at processing scale ***** Scale UP
   int   descEveryN_     = 8;        // ORB compute cadence (frames); 0 disables
   int   maxTracks_    =200;  // hard ceiling after tracking+reseeding
   double t_last_total_ms_ = 0.0;
@@ -115,7 +116,7 @@ private:
   TrackerType trackerType_ = TrackerType::KLT;
 
   // Hybrid config/state
-  int hybridEveryN_ = 8;               // default: run ORB every 8th frame
+  int hybridEveryN_ = 4;               // default: run ORB every 4th frame
   uint64_t hybFrameIdx_ = 0;            // increments each feedFrame
   bool     ranOrbThisFrame_ = false;
   uint64_t lastOrbKF_ = 0;       // last frame idx that ran ORB
@@ -129,13 +130,13 @@ private:
   // Tunables (reasonable defaults; tweak later)
   int   orbNFeatures_     = 600;
   float orbScaleFactor_   = 1.2f;
-  int   orbNLevels_       = 4;
+  int   orbNLevels_       = 5;
   int   orbEdgeThreshold_ = 31;
   int   orbFirstLevel_    = 0;
   int   orbWtaK_          = 2;
   cv::ORB::ScoreType orbScore_ = cv::ORB::HARRIS_SCORE;
   int   orbPatchSize_     = 31;
-  int   orbFastThreshold_ = 20;
+  int   orbFastThreshold_ = 12;
 
   // ===== Mapping state (SFM → VIO) =====
   struct Keyframe {
@@ -212,6 +213,9 @@ private:
   // Integrate relative pose from Essential-matrix inlier correspondences
   void integrateVO_E(const std::vector<cv::Point2f>& prevProcPts,
                      const std::vector<cv::Point2f>& curProcPts);
+  // Integrate rotation from Homography (pure rotation/planar scenes)
+  void integrateVO_H(const std::vector<cv::Point2f>& prevProcPts,
+                     const std::vector<cv::Point2f>& curProcPts);
 
   // Utility already present:
   // void toFullResPixels(const std::vector<cv::Point2f>& procPts,
@@ -223,6 +227,9 @@ private:
   int    ehInliersE_     = 0;
   int    ehInliersH_     = 0;
   double ehParallaxDeg_  = 0.0;
+  // --- Rotation prior from last Essential decomposition (used once to seed PnP)
+  cv::Matx33d R_delta_prior_ = cv::Matx33d::eye();
+
 
   // Compute E vs H on corresponding point pairs (processing-scale coords)
   void   runEvsHGate(const std::vector<cv::Point2f>& prevProcPts,

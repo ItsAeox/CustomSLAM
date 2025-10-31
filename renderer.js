@@ -226,7 +226,8 @@ export function drawPathXZ(flatXZ, W, H) {
   if (flatXZ.length >= 4) {
     const X = flatXZ[flatXZ.length-2], Z = flatXZ[flatXZ.length-1];
     const px = x0 + 6 + (X - minX) * sx;
-    const pz = y0 + 6 + (Z - minZ) * sz; // forward (+Z) draws downward
+    // RIGHT (match trail mapping):
+    const pz = y0 + boxH - 6 - (Z - minZ) * sz;    
     ctx2d.beginPath();
     ctx2d.arc(px, pz, 3, 0, Math.PI*2);
     ctx2d.fillStyle = '#ffffff';

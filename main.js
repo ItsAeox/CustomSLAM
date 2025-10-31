@@ -120,17 +120,17 @@ function layoutVideoAndCanvas(bgVideo, canvas, frameW, frameH) {
   );  
   window.Module = Module;
 
-  // Intrinsics 
-  const fovYdeg = 60;
-  const fy = H / (2 * Math.tan((fovYdeg * Math.PI/180) / 2));
+  // Intrinsics (tunable FOV)
+  const FOVY = 45;
+  const fy = H / (2 * Math.tan((FOVY * Math.PI/180) / 2));
   const fx = fy * (W / H);
   const cx = W * 0.5, cy = H * 0.5;
-  Module.initSystem(W, H, fx, fy, cx, cy);
+  Module.initSystem(W, H, fx, fy, cx, cy);  
 
   // Default to KLT (0); change if you want to default to ORB
   try {
     Module.setTrackerType?.(2);
-    Module.setHybridEveryN?.(8);
+    Module.setHybridEveryN?.(4);
   } catch {}
 
 // ------------- WebCodecs first
@@ -175,11 +175,11 @@ if (useWebCodecs) {
     layoutVideoAndCanvas(bgVideo, canvas, curW, curH);
 
     // Re-init tracker with exact size
-    const fovYdeg = 60;
-    const fy = curH / (2 * Math.tan((fovYdeg * Math.PI/180) / 2));
-    const fx = fy * (curW / curH);
-    const cx = curW * 0.5, cy = curH * 0.5;
-    Module.initSystem(curW, curH, fx, fy, cx, cy);
+    const FOVY = 45;
+    const fy = newH / (2 * Math.tan((FOVY * Math.PI/180) / 2));
+    const fx = fy * (newW / newH);
+    const cx = newW * 0.5, cy = newH * 0.5;
+    Module.initSystem(newW, newH, fx, fy, cx, cy);    
 
     // Optional zero-copy heap path
     wasmPtr  = 0; wasmView = null;
@@ -281,10 +281,11 @@ if (useWebCodecs) {
         try {
           const ypr = Module.getYPR?.(); // Float32Array or JS array [yawDeg, pitchDeg, rollDeg]
           if (ypr && ypr.length === 3) {
-            const yawDeg   = Number(ypr[0]);
-            const pitchDeg = Number(ypr[1]);
-            const rollDeg  = Number(ypr[2]);
-            drawAttitude(yawDeg, pitchDeg, rollDeg, curW, curH);
+            const RAD2DEG = 180 / Math.PI;
+            const yawDeg   = Number(ypr[0]) * RAD2DEG;
+            const pitchDeg = Number(ypr[1]) * RAD2DEG;
+            const rollDeg  = Number(ypr[2]) * RAD2DEG;
+            drawAttitude(yawDeg, pitchDeg, -rollDeg, curW, curH);
           }
         } catch {}
         
@@ -316,29 +317,30 @@ if (useWebCodecs) {
         const kfs = Number(Module.getNumKFs?.() ?? 0);
         const mps = Number(Module.getNumMPs?.() ?? 0);
         
-        let hybInfo = '';
-        const mod  = Number(Module.getHybridFrameMod?.() ?? 0);   // 0..N-1
-        const orbKF= Number(Module.getOrbKFCount?.()   ?? 0);     // 0,1,2,...
-        const ran  = Number(Module.getRanOrbThisFrame?.() ?? 0);  // 0/1
-        hybInfo = ` | HYB mod ${mod}/${N} KF#${orbKF} ran:${ran}`;
+        // let hybInfo = '';
+        // const mod  = Number(Module.getHybridFrameMod?.() ?? 0);   // 0..N-1
+        // const orbKF= Number(Module.getOrbKFCount?.()   ?? 0);     // 0,1,2,...
+        // const ran  = Number(Module.getRanOrbThisFrame?.() ?? 0);  // 0/1
+        // hybInfo = ` | HYB mod ${mod}/${N} KF#${orbKF} ran:${ran}`;
         
-        const perMode = `KLT ${wasmKLT.toFixed(2)} ms + ORBkey ${orbMS.toFixed(2)} ms${hybInfo}`;      
-        let yawTxt = '', pitchTxt = '', rollTxt = '';
-        try {
-          const ypr = Module.getYPR?.();
-          if (ypr && ypr.length === 3) {
-            yawTxt   = Number(ypr[0]).toFixed(1);
-            pitchTxt = Number(ypr[1]).toFixed(1);
-            rollTxt  = Number(ypr[2]).toFixed(1);
-          }
-        } catch {}
+        // const perMode = `KLT ${wasmKLT.toFixed(2)} ms + ORBkey ${orbMS.toFixed(2)} ms${hybInfo}`;    
+        const perMode = `KLT ${wasmKLT.toFixed(2)} ms + ORBkey ${orbMS.toFixed(2)} ms`;      
+        // let yawTxt = '', pitchTxt = '', rollTxt = '';
+        // try {
+        //   const ypr = Module.getYPR?.();
+        //   if (ypr && ypr.length === 3) {
+        //     yawTxt   = Number(ypr[0]).toFixed(1);
+        //     pitchTxt = Number(ypr[1]).toFixed(1);
+        //     rollTxt  = Number(ypr[2]).toFixed(1);
+        //   }
+        // } catch {}
         
         updateHUDText(
           `FPS ${fps.toFixed(1)} | kps ${kps} | ` +
           `JS gray ${jsGrayMS} ms, feed ${jsFeedMS} ms, draw ${jsDrawMS} ms | ` +
           `WASM total ${wasmTotal.toFixed(2)} ms (${perMode}) | ` +
-          `EH ${ehTag} E:${ehE} H:${ehH} par:${ehPar.toFixed(1)}° | ` +
-          (yawTxt ? `YPR ${yawTxt}°/${pitchTxt}°/${rollTxt}° | ` : ``) +
+          // `EH ${ehTag} E:${ehE} H:${ehH} par:${ehPar.toFixed(1)}° | ` +
+          // (yawTxt ? `YPR ${yawTxt}°/${pitchTxt}°/${rollTxt}° | ` : ``) +
           `MapPoints ${mps} KeyFrames ${kfs} | ingest ${ingestPath}`
         );        
 

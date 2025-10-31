@@ -124,5 +124,4 @@ EMSCRIPTEN_BINDINGS(vio_bindings_pointtrack) {
   function("getNumMPs", &GetNumMPs);  
   function("getTwc", &GetTwc);
   function("getYPR", &GetYPR);
-
 }
