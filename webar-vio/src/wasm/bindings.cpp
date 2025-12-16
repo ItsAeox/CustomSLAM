@@ -26,6 +26,11 @@ static int    GetEHInliersH()    { return gSys.getEHInliersH(); }
 static double GetEHParallaxDeg() { return gSys.getEHParallaxDeg(); }
 static int GetNumKFs() { return gSys.getNumKFs(); }
 static int GetNumMPs() { return gSys.getNumMPs(); }
+static double GetLastImuMS() { return gSys.getLastImuMS(); }
+static int    GetImuUsedThisFrame() { return gSys.getImuUsedThisFrame(); }
+static double GetImuHz()            { return gSys.getImuHz(); }
+static int    GetImuUsedCount()     { return gSys.getImuSamplesUsedThisFrame(); }
+static int    GetImuBufSize()       { return gSys.getImuBufSize(); }
 
 static emscripten::val GetTwc() {
   auto t = gSys.getTwc();
@@ -93,6 +98,26 @@ static emscripten::val GetLastProcWH() {
   return out;
 }
 
+void feedImuSample(double ts, double ax, double ay, double az, double gx, double gy, double gz) {
+  gSys.feedImu(ts, ax, ay, az, gx, gy, gz);
+}
+
+static emscripten::val GetImuDeltaYPR() {
+  auto r = gSys.getImuDeltaYPR();
+  emscripten::val a = emscripten::val::array();
+  a.set(0, r[0]); a.set(1, r[1]); a.set(2, r[2]);
+  return a;
+}
+static emscripten::val GetImuDeltaRod() {
+  auto r = gSys.getImuDeltaRodrigues();
+  emscripten::val a = emscripten::val::array();
+  a.set(0, r[0]); a.set(1, r[1]); a.set(2, r[2]);
+  return a;
+}
+static double GetImuDeltaAngleDeg() { return gSys.getImuDeltaAngleDeg(); }
+
+
+
 EMSCRIPTEN_BINDINGS(vio_bindings_pointtrack) {
   function("initSystem",   &initSystem);
   function("feedFrameJS",  &feedFrameJS);
@@ -124,4 +149,14 @@ EMSCRIPTEN_BINDINGS(vio_bindings_pointtrack) {
   function("getNumMPs", &GetNumMPs);  
   function("getTwc", &GetTwc);
   function("getYPR", &GetYPR);
+  function("feedImuSample", &feedImuSample);
+  function("getLastImuMS", &GetLastImuMS);
+  function("getImuUsedThisFrame", &GetImuUsedThisFrame);
+  function("getImuHz",            &GetImuHz);
+  function("getImuUsedCount",     &GetImuUsedCount);
+  function("getImuBufSize",       &GetImuBufSize);
+  function("getImuDeltaYPR", &GetImuDeltaYPR);
+  function("getImuDeltaRod", &GetImuDeltaRod);
+  function("getImuDeltaAngleDeg", &GetImuDeltaAngleDeg);
+
 }

@@ -75,7 +75,20 @@ public:
   // Mapping stats (public getters)
   int getNumKFs() const { return (int)kfs_.size(); }
   int getNumMPs() const { return (int)mps_.size(); }
-
+  double getLastImuMS() const { return t_last_imu_ms_; }
+  // IMU sample in SI units, timestamp in seconds (same clock domain as feedFrame ts)
+  void feedImu(double ts,
+              double ax, double ay, double az,    // m/s^2
+              double gx, double gy, double gz);   // rad/s
+  int    getImuUsedThisFrame() const { return imuUsedThisFrame_; }
+  double getImuHz() const { return imuHz_; }
+  int    getImuSamplesUsedThisFrame() const { return imuSamplesUsedThisFrame_; }
+  int    getImuBufSize() const { return (int)imuBuf_.size(); }
+  // --- IMU (gyro-only) delta rotation debug (between last frame ts and this frame ts) ---
+  std::array<double,3> getImuDeltaYPR() const { return { imuDeltaYPR_[0], imuDeltaYPR_[1], imuDeltaYPR_[2] }; }
+  std::array<double,3> getImuDeltaRodrigues() const { return { imuDeltaRod_[0], imuDeltaRod_[1], imuDeltaRod_[2] }; }
+  double getImuDeltaAngleDeg() const { return imuDeltaAngleDeg_; }
+  
 
 private:
   int   procScale_      = 2;        // 2 => process at half-res (major speedup)
@@ -85,12 +98,35 @@ private:
   float fbMax_          = 1.2f;     // forward-backward gate (pixels)
   int   cellSize_       = 16;       // grid cell size for seeding (processing scale) ***** Scale DOWN 
   int   targetKps_      = 180;      // feature budget at processing scale ***** Scale UP
-  int   descEveryN_     = 8;        // ORB compute cadence (frames); 0 disables
+  int   descEveryN_     = 0;        // ORB compute cadence (frames); 0 disables
   int   maxTracks_    =200;  // hard ceiling after tracking+reseeding
   double t_last_total_ms_ = 0.0;
   double t_last_klt_ms_   = 0.0;
   double t_last_seed_ms_  = 0.0;
   double lastMeanY_ = -1.0;
+  bool imuHadDeltaThisFrame_ = false;
+  // --- per-frame gyro delta debug ---
+  cv::Vec3d imuDeltaYPR_ = cv::Vec3d(0,0,0);      // radians (delta yaw/pitch/roll)
+  cv::Vec3d imuDeltaRod_ = cv::Vec3d(0,0,0);      // Rodrigues vector (axis * angle), radians
+  double    imuDeltaAngleDeg_ = 0.0;              // magnitude of imuDeltaRod_ in degrees
+
+  struct ImuState {
+    cv::Matx33d Rwb = cv::Matx33d::eye();  // world-from-body (IMU body)
+    cv::Vec3d   vwb = cv::Vec3d(0,0,0);    // (optional later)
+    cv::Vec3d   pwb = cv::Vec3d(0,0,0);    // (optional later)
+    cv::Vec3d   bg  = cv::Vec3d(0,0,0);    // gyro bias (later)
+    cv::Vec3d   ba  = cv::Vec3d(0,0,0);    // accel bias (later)
+  };
+  ImuState imuState_;
+  
+  // Gravity direction estimate in world (unit vector), and magnitude
+  cv::Vec3d gDirW_ = cv::Vec3d(0, -1, 0); // matches your current g_world_ convention
+  double    gMag_  = 9.81;
+  
+  // Complementary filter gain (tune)
+  double imuAccKp_ = 2.5;  // start 1.5..5.0
+  cv::Matx33d Rcb_ = cv::Matx33d::eye(); // camera-from-body (IMU->Cam). Calibrate later.
+
 
   cv::TermCriteria termcrit_{cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 30, 0.01};
 
@@ -230,6 +266,28 @@ private:
   // --- Rotation prior from last Essential decomposition (used once to seed PnP)
   cv::Matx33d R_delta_prior_ = cv::Matx33d::eye();
 
+  struct ImuSample {
+    double ts;
+    cv::Vec3d acc;   // m/s^2
+    cv::Vec3d gyro;  // rad/s
+  };
+  
+  std::vector<ImuSample> imuBuf_;
+  double lastImuFuseTS_ = 0.0;
+  cv::Matx33d R_imu_delta_ = cv::Matx33d::eye();   // integrated delta since last fuse
+  double t_last_imu_ms_ = 0.0;
+  // ---- IMU telemetry for HUD ----
+  int    imuSamplesInWindow_ = 0;
+  double imuWindowStartTS_   = 0.0;
+  double imuHz_              = 0.0;   // computed rate
+  int    imuUsedThisFrame_   = 0;     // 0/1 (set in feedFrame)
+  int    imuSamplesUsedThisFrame_ = 0;
+  double lastImuSampleTS_    = 0.0;
+
+  
+  // Optional: gravity direction estimate in world (for later)
+  cv::Vec3d g_world_ = cv::Vec3d(0, -9.81, 0);
+  
 
   // Compute E vs H on corresponding point pairs (processing-scale coords)
   void   runEvsHGate(const std::vector<cv::Point2f>& prevProcPts,
@@ -238,6 +296,7 @@ private:
   // Utility: build full-res pixel pairs from processing-scale points
   void   toFullResPixels(const std::vector<cv::Point2f>& procPts,
                          std::vector<cv::Point2f>& fullResPx) const;
-
+  
+  cv::Matx33d integrateImuDeltaRotationAccCorr(double t0, double t1, bool* used);
 };
 

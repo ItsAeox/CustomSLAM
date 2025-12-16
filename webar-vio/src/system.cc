@@ -28,7 +28,7 @@ static void trackFbKLT(const std::vector<cv::Mat>& pyrPrev,
   cv::Size winSz(win,win);
 
   // forward
-  ptsCur = ptsPrev;
+  if (ptsCur.size() != ptsPrev.size()) ptsCur = ptsPrev; // keep caller’s init if same size
   cv::calcOpticalFlowPyrLK(pyrPrev, pyrCur, ptsPrev, ptsCur, st, err, winSz, maxLv, termcrit,
                            cv::OPTFLOW_USE_INITIAL_FLOW | cv::OPTFLOW_LK_GET_MIN_EIGENVALS);
 
@@ -232,6 +232,35 @@ static inline void orthoMat(cv::Matx33d& Rm) {
   for (int r=0;r<3;++r) for (int c=0;c<3;++c) Rm(r,c) = R.at<double>(r,c);
 }
 
+static inline cv::Vec3d safeNormed(const cv::Vec3d& v, double eps=1e-9) {
+  double n = cv::norm(v);
+  if (n < eps) return cv::Vec3d(0,0,0);
+  return v * (1.0 / n);
+}
+
+
+static inline cv::Matx33d so3Exp(const cv::Vec3d& w) {
+  // Rodrigues: exp([w]x)
+  cv::Mat rvec = (cv::Mat_<double>(3,1) << w[0], w[1], w[2]);
+  cv::Mat R;
+  cv::Rodrigues(rvec, R);
+  cv::Matx33d out;
+  for (int r=0;r<3;++r) for (int c=0;c<3;++c) out(r,c) = R.at<double>(r,c);
+  return out;
+}
+
+static inline cv::Vec3d yprFromRwcLike(const cv::Matx33d& R) {
+  // Same convention as System::getYPR()
+  const double r02 = R(0,2), r12 = R(1,2), r22 = R(2,2);
+  const double r01 = R(0,1), r11 = R(1,1);
+
+  double yaw   = std::atan2(r02, r22);
+  double pitch = std::atan2(-r12, std::sqrt(r02*r02 + r22*r22));
+  double roll  = std::atan2(r01, r11);
+  return cv::Vec3d(yaw, pitch, roll);
+}
+
+
 // === Mapping helpers ========================================================
 // Compute ORB descriptors at given processing-scale points (no detection step).
 void System::computeORBAtPoints(const cv::Mat& img,
@@ -365,14 +394,27 @@ bool System::tryTwoViewInit(const std::vector<cv::Point2f>& prevProcPts,
   int ninl = cv::recoverPose(E, p0, p1, R, t, fx_, cv::Point2d(cx_, cy_), mask);
   if (ninl < 30) return false;
 
-  // Build normalized points for triangulation
-  std::vector<cv::Point2f> n0, n1; n0.reserve(ninl); n1.reserve(ninl);
+  // Build inlier-aligned pixel arrays + normalized arrays for triangulation
+  std::vector<cv::Point2f> p0_inl, p1_inl;
+  std::vector<cv::Point2f> n0, n1;
   cv::Matx33d Ki_ = Ki();
-  for (int i=0;i<(int)mask.rows;i++) if (mask.at<uchar>(i)) {
+
+  p0_inl.reserve(ninl);
+  p1_inl.reserve(ninl);
+  n0.reserve(ninl);
+  n1.reserve(ninl);
+
+  for (int i = 0; i < (int)mask.rows; i++) {
+    if (!mask.at<uchar>(i)) continue;
+
+    p0_inl.push_back(p0[i]);
+    p1_inl.push_back(p1[i]);
+
     cv::Vec3d x0(p0[i].x, p0[i].y, 1.0); x0 = Ki_ * x0;
     cv::Vec3d x1(p1[i].x, p1[i].y, 1.0); x1 = Ki_ * x1;
-    n0.emplace_back((float)(x0[0]), (float)(x0[1]));
-    n1.emplace_back((float)(x1[0]), (float)(x1[1]));
+
+    n0.emplace_back((float)x0[0], (float)x0[1]);
+    n1.emplace_back((float)x1[0], (float)x1[1]);
   }
 
   // Cameras: P0 = [I|0], P1 = [R|t] (camera-1 in camera-0 coords)
@@ -392,11 +434,11 @@ bool System::tryTwoViewInit(const std::vector<cv::Point2f>& prevProcPts,
   cv::Vec3d   t10(t.at<double>(0), t.at<double>(1), t.at<double>(2));
   KF1.Rwc = R10.t(); KF1.twc = -(R10.t()*t10);
 
-  // Prepare ORB descs at inlier pixels for KF1 (processing scale)
-  // Convert full-res inliers to processing points to compute descriptors quickly
-  std::vector<cv::Point2f> inlProc1; inlProc1.reserve(n1.size());
+  // Prepare ORB descs for KF1 at *inlier* pixels (processing scale)
+  std::vector<cv::Point2f> inlProc1;
+  inlProc1.reserve(p1_inl.size());
   const float s = (float)procScale_;
-  for (auto& px : p1) inlProc1.emplace_back(px.x / s, px.y / s);
+  for (const auto& px : p1_inl) inlProc1.emplace_back(px.x / s, px.y / s);
   computeORBAtPoints(curProc_, inlProc1, KF1.desc);
 
   // Create MapPoints with cheirality + reprojection + baseline angle checks
@@ -419,9 +461,8 @@ bool System::tryTwoViewInit(const std::vector<cv::Point2f>& prevProcPts,
       double du = u - px.x, dv = v - px.y;
       return std::sqrt(du*du + dv*dv);
     };
-    if (reprojErr(Xc0, p0[i]) > 2.5) continue;
-    if (reprojErr(Xc1, p1[i]) > 2.5) continue;
-
+    if (reprojErr(Xc0, p0_inl[i]) > 2.5) continue;
+    if (reprojErr(Xc1, p1_inl[i]) > 2.5) continue;
     MapPoint M;
     M.Xw = Xc0; // world=cam0
     M.hostKF = KF0.id;
@@ -677,7 +718,9 @@ void System::runEvsHGate(const std::vector<cv::Point2f>& prevProcPts,
           cv::Matx33d R10;
           for (int r=0; r<3; ++r) for (int c=0; c<3; ++c) R10(r,c) = R.at<double>(r,c);
           // World-from-camera delta for Twc update is R10^T
-          R_delta_prior_ = R10.t();
+          if (!imuHadDeltaThisFrame_) {
+            R_delta_prior_ = R10.t();
+          }
         }
       }
     }
@@ -806,7 +849,17 @@ void System::integrateVO_H(const std::vector<cv::Point2f>& prevProcPts,
       sumAng += std::acos(dot);
       ++cnt;
     }
-    const double avg = (cnt ? sumAng / cnt : 1e9);
+    double avg = (cnt ? sumAng / cnt : 1e9);
+
+    // IMU prior: prefer candidate rotations close to the IMU delta (if available)
+    if (imuHadDeltaThisFrame_) {
+      // Compare Ri (cam0->cam1) with R_imu (cam0->cam1)
+      cv::Matx33d dR = Ri * R_imu_delta_.t();
+      // angle from trace
+      double tr = dR(0,0) + dR(1,1) + dR(2,2);
+      double ang = std::acos(std::clamp((tr - 1.0) * 0.5, -1.0, 1.0));
+      avg += 0.5 * ang; // weight (tune: 0.2..1.0)
+    }
     if (avg < bestErr) { bestErr = avg; best = i; }
   }
   if (best < 0) return;
@@ -895,6 +948,51 @@ void System::init(int width, int height, double fx, double fy, double cx, double
 void System::feedFrame(const uint8_t* img, double ts, int width, int height, bool isRGBA) {
   auto t0 = std::chrono::high_resolution_clock::now();
   lastTS_ = ts;
+
+  // --- IMU: integrate gyro rotation between frames to seed pose/VO ---
+  auto t_imu0 = std::chrono::high_resolution_clock::now();
+
+  imuHadDeltaThisFrame_ = false;
+  cv::Matx33d R_imu = cv::Matx33d::eye();
+
+  if (lastImuFuseTS_ > 0.0) {
+    bool used = false;
+    R_imu = integrateImuDeltaRotationAccCorr(lastImuFuseTS_, ts, &used);
+    R_imu_delta_ = R_imu; // cache per-frame delta for other functions
+    imuHadDeltaThisFrame_ = used;
+    imuUsedThisFrame_ = imuHadDeltaThisFrame_ ? 1 : 0;
+  }
+  // --- DEBUG: expose raw gyro-only delta rotation used between frames ---
+  if (imuHadDeltaThisFrame_) {
+    // Axis-angle (Rodrigues vector): magnitude = angle (rad)
+    cv::Mat Rcv(3,3,CV_64F);
+    for (int r=0;r<3;++r) for (int c=0;c<3;++c) Rcv.at<double>(r,c) = R_imu(r,c);
+
+    cv::Mat rvec;
+    cv::Rodrigues(Rcv, rvec);
+    imuDeltaRod_ = cv::Vec3d(rvec.at<double>(0), rvec.at<double>(1), rvec.at<double>(2));
+
+    const double angRad = cv::norm(imuDeltaRod_);
+    imuDeltaAngleDeg_ = angRad * (180.0 / M_PI);
+
+    // ΔYaw/ΔPitch/ΔRoll from the delta rotation matrix
+    imuDeltaYPR_ = yprFromRwcLike(R_imu);
+  } else {
+    imuDeltaRod_ = cv::Vec3d(0,0,0);
+    imuDeltaYPR_ = cv::Vec3d(0,0,0);
+    imuDeltaAngleDeg_ = 0.0;
+  }
+  lastImuFuseTS_ = ts;
+
+  // Only update the prior if IMU actually contributed.
+  // Otherwise, keep whatever prior was set by vision (E-gate) until PnP consumes it.
+  if ((ts - lastImuSampleTS_) > 0.05) {  // 50 ms
+    imuHadDeltaThisFrame_ = false;
+    R_imu_delta_ = cv::Matx33d::eye();
+  }  
+
+  auto t_imu1 = std::chrono::high_resolution_clock::now();
+  t_last_imu_ms_ = std::chrono::duration<double,std::milli>(t_imu1 - t_imu0).count();
 
   // 1) to gray (full-res)
   if (isRGBA) {
@@ -985,10 +1083,11 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
         runEvsHGate(keepPrev, keepCur);
         if (!mapInitialized_ && ehModel_ == 1) {
           integrateVO_E(keepPrev, keepCur);
-        } else if (ehModel_ == 2) {
-          integrateVO_H(keepPrev, keepCur);   // in the ORB path
+          R_imu_delta_ = cv::Matx33d::eye();  // reset IMU delta after VO_E use
+        } else if (!mapInitialized_ && ehModel_ == 2) {
+          integrateVO_H(keepPrev, keepCur);   // only before mapping starts
         }
-      }  
+      } 
 
       // Two-view init trigger (only once)
       if (!mapInitialized_ && ehModel_ == 1) {
@@ -1049,8 +1148,18 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
       ranOrbThisFrame_ = true;
       lastOrbKF_ = hybFrameIdx_;
       orbKFCount_++;
-  
-      // We ran ORB this frame; skip KLT below.
+
+      // ===== Mapping track (PnP) + KF insertion (RUN ALSO ON ORB FRAMES) =====
+      if (mapInitialized_) {
+        const bool pnpOk = trackWithPnP();
+        if (pnpOk && shouldInsertKF(lastKFInliers_, lastTS_)) {
+          insertKeyframeAndTriangulate();
+        }
+      }
+
+      // Roll state is already updated above (prevProc_, pyrPrev_, ptsPrev_ set).
+      trackingState_ = (ptsPrev_.size() >= 10) ? 1 : 0;
+
       auto t_all1 = std::chrono::high_resolution_clock::now();
       t_last_total_ms_ = std::chrono::duration<double, std::milli>(t_all1 - t0).count();
       return;
@@ -1088,6 +1197,31 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
   auto tk0 = std::chrono::high_resolution_clock::now();
   std::vector<char> alive;
   ptsCur_.resize(ptsPrev_.size());
+  // IMU rotation-only warp gives LK a good initial guess
+  if (imuHadDeltaThisFrame_ && !ptsPrev_.empty()) {
+    // Build homography from rotation: H = K * R * K^-1 (full-res)
+    const cv::Matx33d Hfull = K() * R_imu * Ki();
+
+    ptsCur_ = ptsPrev_; // init size
+    const float s = (float)procScale_;
+
+    for (size_t i = 0; i < ptsPrev_.size(); ++i) {
+      // proc -> full pixel
+      const double u = ptsPrev_[i].x * s;
+      const double v = ptsPrev_[i].y * s;
+
+      cv::Vec3d x(u, v, 1.0);
+      cv::Vec3d y = Hfull * x;
+      if (std::abs(y[2]) < 1e-9) continue;
+
+      const double uu = y[0] / y[2];
+      const double vv = y[1] / y[2];
+
+      // full -> proc
+      ptsCur_[i].x = (float)(uu / s);
+      ptsCur_[i].y = (float)(vv / s);
+    }
+  }
   trackFbKLT(pyrPrev_, pyrCur_, ptsPrev_, ptsCur_, alive, kltWin_, kltLevels_,
             kltErrMax_, fbMax_, termcrit_);
   auto tk1 = std::chrono::high_resolution_clock::now();
@@ -1104,9 +1238,9 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
       runEvsHGate(p0, p1);
       if (!mapInitialized_ && ehModel_ == 1) {
         integrateVO_E(p0, p1);
-      } else if (ehModel_ == 2) {
-        integrateVO_H(p0, p1);              // in the KLT path
-      }      
+      } else if (!mapInitialized_ && ehModel_ == 2) {
+        integrateVO_H(p0, p1);              // only before mapping starts
+      }  
     }
 
     if (!mapInitialized_ && ehModel_ == 1) {
@@ -1175,3 +1309,102 @@ std::vector<double> System::getPoints2D() const {
   return flat;
 }
 
+void System::feedImu(double ts,
+  double ax, double ay, double az,
+  double gx, double gy, double gz)
+{
+  // Keep buffer bounded (avoid unbounded growth)
+  if (imuBuf_.size() > 4000) imuBuf_.erase(imuBuf_.begin(), imuBuf_.begin() + 2000);
+
+  // Track IMU rate using a simple 1-second window
+  if (imuWindowStartTS_ <= 0.0) imuWindowStartTS_ = ts;
+  imuSamplesInWindow_++;
+
+  const double win = ts - imuWindowStartTS_;
+  if (win >= 1.0) {
+    imuHz_ = imuSamplesInWindow_ / std::max(1e-6, win);
+    imuWindowStartTS_ = ts;
+    imuSamplesInWindow_ = 0;
+  }
+  lastImuSampleTS_ = ts;
+
+  imuBuf_.push_back(ImuSample{
+    ts,
+    cv::Vec3d(ax, ay, az),
+    cv::Vec3d(gx, gy, gz)
+  });
+}
+
+cv::Matx33d System::integrateImuDeltaRotationAccCorr(double t0, double t1, bool* used)
+{
+  int usedCount = 0;
+  if (used) *used = false;
+  if (imuBuf_.empty() || t1 <= t0) return cv::Matx33d::eye();
+
+  // Save orientation at start to compute delta at end
+  cv::Matx33d Rwb0 = imuState_.Rwb;
+
+  double prevT = t0;
+
+  // We'll maintain a running Rwb using gyro integration + accel correction
+  for (size_t i = 0; i < imuBuf_.size(); ++i) {
+    const auto& s = imuBuf_[i];
+    if (s.ts <= t0) continue;
+    if (s.ts >  t1) break;
+
+    const double dt = s.ts - prevT;
+    if (dt <= 0) { prevT = s.ts; continue; }
+
+    // 1) Gyro propagate (bias later)
+    const cv::Vec3d w = s.gyro - imuState_.bg;
+    imuState_.Rwb = imuState_.Rwb * so3Exp(w * dt);
+    orthoMat(imuState_.Rwb);
+
+    // 2) Accel correction for gravity direction (complementary filter)
+    // We trust accel only when magnitude looks like gravity-ish.
+    const cv::Vec3d a = s.acc - imuState_.ba;
+    const double an = cv::norm(a);
+
+    // Rough gate: accept ~ [7, 13] m/s^2
+    if (an > 7.0 && an < 13.0) {
+      // measured gravity direction in body frame (points "down" in device sense)
+      const cv::Vec3d gMeas_b = safeNormed(a);
+
+      // predicted gravity direction in body frame from current world gravity dir:
+      // gDirW_ is unit vector in world, so in body: Rwb^T * gDirW_
+      const cv::Vec3d gPred_b = safeNormed(imuState_.Rwb.t() * gDirW_);
+
+      // error axis (body frame): gPred x gMeas (small-angle)
+      const cv::Vec3d err_b = gPred_b.cross(gMeas_b);
+
+      // apply correction in body frame (right-multiply in world-from-body)
+      // small angle: dR = Exp(kp * err * dt)
+      const cv::Vec3d dth = imuAccKp_ * err_b * dt;
+      imuState_.Rwb = imuState_.Rwb * so3Exp(dth);
+      orthoMat(imuState_.Rwb);
+
+      // Update world gravity direction slowly too (optional but stabilizes over time)
+      // Recompute gDirW_ from corrected orientation and measured accel:
+      cv::Vec3d gW_from_meas = imuState_.Rwb * gMeas_b;
+      gDirW_ = safeNormed(0.98 * gDirW_ + 0.02 * gW_from_meas);
+    }
+
+    usedCount++;
+    prevT = s.ts;
+    if (used) *used = true;
+  }
+
+  // Delta rotation between t0 and t1 in world frame (world-from-body)
+  cv::Matx33d Rwb1 = imuState_.Rwb;
+  cv::Matx33d dRwb = Rwb0.t() * Rwb1; // body0->body1 expressed in body0 frame
+
+  // Convert to camera delta: Rc = Rcb * Rb * Rcb^T
+  cv::Matx33d dRcc = Rcb_ * dRwb * Rcb_.t();
+
+  // Prune old IMU samples
+  while (!imuBuf_.empty() && imuBuf_.front().ts <= (t1 - 0.05)) {
+    imuBuf_.erase(imuBuf_.begin());
+  }
+  imuSamplesUsedThisFrame_ = usedCount;
+  return dRcc;
+}

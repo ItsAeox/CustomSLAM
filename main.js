@@ -120,6 +120,67 @@ function layoutVideoAndCanvas(bgVideo, canvas, frameW, frameH) {
   );  
   window.Module = Module;
 
+    // ================= IMU -> WASM =================
+  function startImuFeed(Module) {
+    if (!Module?.feedImuSample) {
+      console.warn('feedImuSample export missing');
+      return;
+    }
+
+    // Some browsers (iOS Safari) require permission
+    async function ensurePermission() {
+      try {
+        if (typeof DeviceMotionEvent !== 'undefined' &&
+            typeof DeviceMotionEvent.requestPermission === 'function') {
+          const res = await DeviceMotionEvent.requestPermission();
+          if (res !== 'granted') throw new Error('DeviceMotion permission denied');
+        }
+      } catch (e) {
+        console.warn('IMU permission error:', e?.message || e);
+      }
+    }
+
+    // Keep latest accel; gyro comes with rotationRate
+    let lastAcc = { x: 0, y: 0, z: 0 };
+
+    window.addEventListener('devicemotion', (e) => {
+      // e.timeStamp is ms since page start (same clock family as performance.now())
+      const ts = performance.now() * 1e-3;
+
+      const a = e.accelerationIncludingGravity || e.acceleration;
+      if (a) {
+        // DeviceMotion uses m/s^2 (usually). Keep raw.
+        lastAcc = {
+          x: Number(a.x || 0),
+          y: Number(a.y || 0),
+          z: Number(a.z || 0),
+        };
+      }
+
+      const r = e.rotationRate;
+      if (r) {
+        // rotationRate is usually in deg/s -> convert to rad/s
+        const DEG2RAD = Math.PI / 180.0;
+
+        // Common mapping: alpha=z, beta=x, gamma=y (device frame)
+        const gx = Number(r.beta  || 0) * DEG2RAD;
+        const gy = Number(r.gamma || 0) * DEG2RAD;
+        const gz = Number(r.alpha || 0) * DEG2RAD;
+
+        Module.feedImuSample(
+          ts,
+          lastAcc.x, lastAcc.y, lastAcc.z,
+          gx, gy, gz
+        );
+      }
+    }, { passive: true });
+
+    ensurePermission();
+  }
+
+  // Call once after Module is ready:
+  startImuFeed(Module);
+
   // Intrinsics (tunable FOV)
   const FOVY = 45;
   const fy = H / (2 * Math.tan((FOVY * Math.PI/180) / 2));
@@ -303,46 +364,60 @@ if (useWebCodecs) {
         const jsGrayMS = (tBeforeFeed - grayStart).toFixed(2);
         const jsFeedMS = (tAfterFeed  - tBeforeFeed).toFixed(2);
         const jsDrawMS = (jsT1 - tAfterFeed).toFixed(2);
-        const N = Number(Module.getHybridEveryN?.() ?? 8);
+        // const N = Number(Module.getHybridEveryN?.() ?? 8);
         const orbMS = Number(Module.getLastOrbMS?.() ?? 0); 
 
         // E/H gate telemetry
-        const ehModel = Number(Module.getEHModel?.() ?? 0);   // 0=NONE,1=E,2=H
-        const ehE     = Number(Module.getEHInliersE?.() ?? 0);
-        const ehH     = Number(Module.getEHInliersH?.() ?? 0);
-        const ehPar   = Number(Module.getEHParallaxDeg?.() ?? 0);
-        const ehTag   = ehModel === 1 ? 'E' : (ehModel === 2 ? 'H' : '-');
+        // const ehModel = Number(Module.getEHModel?.() ?? 0);   // 0=NONE,1=E,2=H
+        // const ehE     = Number(Module.getEHInliersE?.() ?? 0);
+        // const ehH     = Number(Module.getEHInliersH?.() ?? 0);
+        // const ehPar   = Number(Module.getEHParallaxDeg?.() ?? 0);
+        // const ehTag   = ehModel === 1 ? 'E' : (ehModel === 2 ? 'H' : '-');
 
         //Mappoints and Keyframes
         const kfs = Number(Module.getNumKFs?.() ?? 0);
         const mps = Number(Module.getNumMPs?.() ?? 0);
-        
-        // let hybInfo = '';
-        // const mod  = Number(Module.getHybridFrameMod?.() ?? 0);   // 0..N-1
-        // const orbKF= Number(Module.getOrbKFCount?.()   ?? 0);     // 0,1,2,...
-        // const ran  = Number(Module.getRanOrbThisFrame?.() ?? 0);  // 0/1
-        // hybInfo = ` | HYB mod ${mod}/${N} KF#${orbKF} ran:${ran}`;
-        
-        // const perMode = `KLT ${wasmKLT.toFixed(2)} ms + ORBkey ${orbMS.toFixed(2)} ms${hybInfo}`;    
-        const perMode = `KLT ${wasmKLT.toFixed(2)} ms + ORBkey ${orbMS.toFixed(2)} ms`;      
-        // let yawTxt = '', pitchTxt = '', rollTxt = '';
-        // try {
-        //   const ypr = Module.getYPR?.();
-        //   if (ypr && ypr.length === 3) {
-        //     yawTxt   = Number(ypr[0]).toFixed(1);
-        //     pitchTxt = Number(ypr[1]).toFixed(1);
-        //     rollTxt  = Number(ypr[2]).toFixed(1);
-        //   }
-        // } catch {}
-        
-        updateHUDText(
-          `FPS ${fps.toFixed(1)} | kps ${kps} | ` +
-          `JS gray ${jsGrayMS} ms, feed ${jsFeedMS} ms, draw ${jsDrawMS} ms | ` +
-          `WASM total ${wasmTotal.toFixed(2)} ms (${perMode}) | ` +
-          // `EH ${ehTag} E:${ehE} H:${ehH} par:${ehPar.toFixed(1)}° | ` +
-          // (yawTxt ? `YPR ${yawTxt}°/${pitchTxt}°/${rollTxt}° | ` : ``) +
-          `MapPoints ${mps} KeyFrames ${kfs} | ingest ${ingestPath}`
-        );        
+
+        const ranOrbThisFrame  = Number(Module.getRanOrbThisFrame?.() ?? 0);  // 0/1
+        const perMode = `KLT ${wasmKLT.toFixed(2)} ms + ORBkey ${orbMS.toFixed(2)} ms`;  
+        const imuMS = Number(Module.getLastImuMS?.() ?? 0);    
+        const imuUsed = Number(Module.getImuUsedThisFrame?.() ?? 0);
+        const imuHz   = Number(Module.getImuHz?.() ?? 0);
+        const imuUsedCount = Number(Module.getImuUsedCount?.() ?? 0);
+        const imuBuf = Number(Module.getImuBufSize?.() ?? 0);
+        // --- gyro-only delta rotation debug (per video frame) ---
+        let dYPR = null, dRod = null, dAng = 0;
+        try {
+          dYPR = Module.getImuDeltaYPR?.();      // [dyaw, dpitch, droll] in radians
+          dRod = Module.getImuDeltaRod?.();      // [rx, ry, rz] in radians (axis*angle)
+          dAng = Number(Module.getImuDeltaAngleDeg?.() ?? 0);
+        } catch {}
+        const RAD2DEG = 180 / Math.PI;
+
+        const dyaw   = dYPR ? (Number(dYPR[0]) * RAD2DEG) : 0;
+        const dpitch = dYPR ? (Number(dYPR[1]) * RAD2DEG) : 0;
+        const droll  = dYPR ? (Number(dYPR[2]) * RAD2DEG) : 0;
+        const fmt = (label, value) => `${String(label).padEnd(14)} ${String(value ?? 'NA')}`;
+
+        updateHUDText([
+          fmt('FPS', fps?.toFixed?.(1) ?? 'NA'),
+          fmt('Keypoints', kps ?? 'NA'),
+          fmt('Mode', ranOrbThisFrame ? 'ORB' : 'KLT'),
+          fmt('JS gray ms', jsGrayMS ?? 'NA'),
+          fmt('JS feed ms', jsFeedMS ?? 'NA'),
+          fmt('JS draw ms', jsDrawMS ?? 'NA'),
+          fmt('WASM total ms', wasmTotal?.toFixed?.(2) ?? 'NA'),
+          fmt('Per-mode', perMode ?? 'NA'),
+          fmt('MapPoints', mps ?? 'NA'),
+          fmt('KeyFrames', kfs ?? 'NA'),
+          fmt('IMU ms', imuMS?.toFixed?.(2) ?? 'NA'),
+          fmt('IMU used', imuUsed ? `YES (${imuUsedCount})` : 'NO'),
+          fmt('IMU Hz', imuHz ? imuHz.toFixed(1) : 'NA'),
+          fmt('IMU buf', imuBuf ?? 'NA'),
+          fmt('Gyro Δ angle', dAng.toFixed(3) + '°'),
+          fmt('Gyro Δ YPR', `${dyaw.toFixed(3)} ${dpitch.toFixed(3)} ${droll.toFixed(3)} deg`),
+          fmt('Ingest', ingestPath ?? 'NA'),
+        ].join('\n'));               
 
       } catch (e) {
         // Surface any exception into the log AND HUD, so we see it

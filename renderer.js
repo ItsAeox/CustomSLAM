@@ -11,8 +11,15 @@ export async function initRenderer(cvs) {
   if (!hudEl) {
     hudEl = document.createElement('div');
     hudEl.id = 'hud';
-    hudEl.style.cssText = 'position:fixed;right:8px;top:8px;color:#0f0;font:12px monospace;z-index:20;text-align:right';
-    document.body.appendChild(hudEl);
+    hudEl.style.cssText =
+    'position:fixed;right:8px;top:8px;z-index:20;' +
+    'color:#0f0;font:12px monospace;' +
+    'width:340px;box-sizing:border-box;' +         // <- fixed width (prevents left/right snapping)
+    'white-space:pre;overflow:hidden;' +           // <- keeps your \n lines stable, prevents wrapping
+    'text-align:left;' +                           // <- left align inside the box (more readable)
+    'padding:8px 10px;background:rgba(0,0,0,.55);' +
+    'border:1px solid rgba(0,255,0,.25);border-radius:10px;';
+      document.body.appendChild(hudEl);
   }
   updateHUDText('…');
 }
