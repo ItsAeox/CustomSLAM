@@ -1,0 +1,94 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Web VIO • KITTI Runner</title>
+  <link rel="stylesheet" href="index.css">
+  <style>
+    #ui{
+      position:fixed; left:8px; top:8px; z-index:50;
+      background:rgba(0,0,0,.65); color:#e8ffe8;
+      font:12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      border:1px solid rgba(0,255,0,.25); border-radius:12px;
+      padding:10px; max-width:min(560px, calc(100vw - 16px));
+    }
+    #ui h1{ font-size:13px; margin:0 0 8px 0; color:#b6ffb6; }
+    #ui .row{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:6px 0; }
+    #ui label{ opacity:.9; }
+    #ui input[type="number"], #ui input[type="text"]{
+      width:110px; padding:4px 6px; border-radius:8px;
+      border:1px solid rgba(0,255,0,.25); background:rgba(0,0,0,.55); color:#e8ffe8;
+    }
+    #ui button{
+      padding:6px 10px; border-radius:10px; border:1px solid rgba(0,255,0,.25);
+      background:rgba(0,0,0,.75); color:#d8ffd8; cursor:pointer;
+    }
+    #ui button:disabled{ opacity:.45; cursor:not-allowed; }
+    #ui .hint{ opacity:.8; line-height:1.35; }
+    #ui .pill{ padding:2px 8px; border-radius:999px; border:1px solid rgba(0,255,0,.25); opacity:.9; }
+    #log{
+      position:fixed; left:8px; bottom:8px; max-width:92%; max-height:38%;
+      overflow:auto; background:#000a; color:#0f0; font:12px monospace;
+      padding:6px; white-space:pre-wrap; z-index:60;
+    }
+    #hud{ position:fixed; right:8px; top:8px; z-index:55; }
+    #view{ position:fixed; inset:0; width:100vw; height:100vh; }
+  </style>
+</head>
+<body>
+  <canvas id="view"></canvas>
+  <div id="hud"></div>
+  <div id="log"></div>
+
+  <div id="ui">
+    <h1>KITTI dataset runner (browser)</h1>
+
+    <div class="row">
+      <label class="pill">Step 1</label>
+      <input id="dirPick" type="file" webkitdirectory multiple />
+      <button id="btnScan" disabled>Scan</button>
+    </div>
+
+    <div class="row">
+      <label>Image dir</label>
+      <input id="imgDir" type="text" value="image_02/data" title="Path inside the selected KITTI root" />
+      <label>OXTS dir</label>
+      <input id="oxtsDir" type="text" value="oxts/data" title="Path inside the selected KITTI root" />
+    </div>
+
+    <div class="row">
+      <label class="pill">Step 2</label>
+      <button id="btnLoad" disabled>Load sequence</button>
+      <span id="seqInfo" class="hint">No sequence loaded.</span>
+    </div>
+
+    <div class="row">
+      <label>Playback</label>
+      <input id="speed" type="number" min="0.1" step="0.1" value="1.0" />
+      <label>Skip</label>
+      <input id="skip" type="number" min="0" step="1" value="0" />
+      <label>Max frames</label>
+      <input id="maxFrames" type="number" min="0" step="100" value="0" title="0 = no limit" />
+    </div>
+
+    <div class="row">
+      <label class="pill">Step 3</label>
+      <button id="btnRun" disabled>Run</button>
+      <button id="btnStop" disabled>Stop</button>
+      <button id="btnExport" disabled>Export poses CSV</button>
+    </div>
+
+    <div class="hint">
+      Notes:
+      <ul>
+        <li>Select the KITTI <b>raw</b> drive folder (the one containing <code>image_02</code> and <code>oxts</code>).</li>
+        <li>In browsers, directory access is via the folder picker; you can’t type a filesystem path.</li>
+        <li>This runner will decode images, feed them to WASM, feed OXTS-derived IMU samples (wx/wy/wz, ax/ay/az), and record poses per frame.</li>
+      </ul>
+    </div>
+  </div>
+
+  <script type="module" src="./kitti.js"></script>
+</body>
+</html>

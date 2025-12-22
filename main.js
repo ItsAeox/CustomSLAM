@@ -143,6 +143,31 @@ function layoutVideoAndCanvas(bgVideo, canvas, frameW, frameH) {
     // Keep latest accel; gyro comes with rotationRate
     let lastAcc = { x: 0, y: 0, z: 0 };
 
+    function getScreenAngleDeg() {
+      // Prefer the modern API
+      if (screen.orientation && typeof screen.orientation.angle === 'number') {
+        return screen.orientation.angle;
+      }
+      // iOS Safari fallback
+      if (typeof window.orientation === 'number') {
+        return window.orientation;
+      }
+      return 0;
+    }
+
+    function remapGyroByScreen(angleDeg, gx, gy, gz) {
+      // Rotate the (gx,gy) plane by the screen rotation around Z
+      // (This fixes portrait vs landscape axis mismatch)
+      const a = ((angleDeg % 360) + 360) % 360;
+
+      if (a === 0)   return { gx, gy, gz };
+      if (a === 90)  return { gx:  gy, gy: -gx, gz };
+      if (a === 180) return { gx: -gx, gy: -gy, gz };
+      if (a === 270) return { gx: -gy, gy:  gx, gz };
+
+      return { gx, gy, gz };
+    }
+
     window.addEventListener('devicemotion', (e) => {
       // e.timeStamp is ms since page start (same clock family as performance.now())
       const ts = performance.now() * 1e-3;
@@ -163,15 +188,19 @@ function layoutVideoAndCanvas(bgVideo, canvas, frameW, frameH) {
         const DEG2RAD = Math.PI / 180.0;
 
         // Common mapping: alpha=z, beta=x, gamma=y (device frame)
-        const gx = Number(r.beta  || 0) * DEG2RAD;
-        const gy = Number(r.gamma || 0) * DEG2RAD;
-        const gz = Number(r.alpha || 0) * DEG2RAD;
+        const gx0 = Number(r.beta  || 0) * DEG2RAD;
+        const gy0 = Number(r.gamma || 0) * DEG2RAD;
+        const gz0 = Number(r.alpha || 0) * DEG2RAD;
+
+        const ang = getScreenAngleDeg();
+        const g = remapGyroByScreen(ang, gx0, gy0, gz0);
 
         Module.feedImuSample(
           ts,
           lastAcc.x, lastAcc.y, lastAcc.z,
-          gx, gy, gz
+          g.gx, g.gy, g.gz
         );
+
       }
     }, { passive: true });
 
@@ -346,7 +375,7 @@ if (useWebCodecs) {
             const yawDeg   = Number(ypr[0]) * RAD2DEG;
             const pitchDeg = Number(ypr[1]) * RAD2DEG;
             const rollDeg  = Number(ypr[2]) * RAD2DEG;
-            drawAttitude(yawDeg, pitchDeg, -rollDeg, curW, curH);
+            drawAttitude(yawDeg, pitchDeg, rollDeg, curW, curH);
           }
         } catch {}
         

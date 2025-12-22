@@ -69,7 +69,7 @@ export function drawAttitude(yawDeg, pitchDeg, rollDeg, W, H) {
 
   // Move to center, rotate by -roll (standard artificial horizon convention)
   ctx2d.translate(W * 0.5, H * 0.5);
-  ctx2d.rotate(-rollRad);
+  ctx2d.rotate(rollRad);
 
   // Draw horizon line (shifted by pitch)
   ctx2d.beginPath();

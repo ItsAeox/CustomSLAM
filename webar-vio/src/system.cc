@@ -986,7 +986,7 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
 
   // Only update the prior if IMU actually contributed.
   // Otherwise, keep whatever prior was set by vision (E-gate) until PnP consumes it.
-  if ((ts - lastImuSampleTS_) > 0.05) {  // 50 ms
+  if ((ts - lastImuSampleTS_) > 0.15) {  // 50 ms
     imuHadDeltaThisFrame_ = false;
     R_imu_delta_ = cv::Matx33d::eye();
   }  
