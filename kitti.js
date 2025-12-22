@@ -1,4 +1,4 @@
-import { initRenderer, drawPoints, updateHUDText, drawPathXZ, drawAttitude } from './renderer.js';
+import { initRenderer, drawFrame, drawPoints, updateHUDText, drawPathXZ, drawAttitude } from './renderer.js';
 
 // ===== utilities ============================================================
 function ensureLogEl() {
@@ -279,9 +279,16 @@ els.btnRun.addEventListener('click', async () => {
 
     // Decode image
     const bmp = await createImageBitmap(seq.images[i]);
-    ctx.drawImage(bmp, 0, 0);
-    bmp.close?.();
 
+    // 1) Draw to visible canvas (so you see the sequence)
+    drawFrame(bmp, canvas.width, canvas.height);
+    
+    // 2) Draw to offscreen canvas (so we can extract pixels for WASM)
+    ctx.drawImage(bmp, 0, 0);
+    
+    // Now we can release it
+    bmp.close?.();
+    
     // RGBA -> gray
     const img = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
     let j = 0;

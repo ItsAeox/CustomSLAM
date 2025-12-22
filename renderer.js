@@ -24,14 +24,23 @@ export async function initRenderer(cvs) {
   updateHUDText('…');
 }
 
+export function drawFrame(bmp, W, H) {
+  if (!ctx2d || !bmp) return;
+
+  // Ensure canvas backing buffer matches expected render size
+  if (canvas.width !== W) canvas.width = W;
+  if (canvas.height !== H) canvas.height = H;
+
+  // Clear, then draw the frame
+  ctx2d.clearRect(0, 0, W, H);
+  ctx2d.drawImage(bmp, 0, 0, W, H);
+}
+
 /**
  * pts: JS array [x0,y0, x1,y1, ...] in pixel coords (origin at top-left)
  */
 export function drawPoints(pts, W, H) {
   if (!ctx2d) return;
-
-  // Clear the canvas
-  ctx2d.clearRect(0, 0, W, H);
 
   // Draw points as tiny white squares (faster than arcs; crisp even when scaled)
   ctx2d.fillStyle = '#ffe658ff';
