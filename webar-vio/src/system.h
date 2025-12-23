@@ -1,4 +1,3 @@
-
 #pragma once
 
 #include <vector>
@@ -8,6 +7,12 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/video.hpp>
 #include <opencv2/features2d.hpp>
+#include <string>
+#include "kitti_calib.h"
+#include "vio_backend.h"
+#include "vio_init.h"
+#include "imu_preint.h"
+
 
 class System {
 public:
@@ -46,6 +51,11 @@ public:
       default:                  return 0;
     }
   }  
+
+  // Pass raw KITTI calib text files (loaded in JS) into WASM
+  bool setKittiCalibFromTexts(const std::string& cam2cam,
+                              const std::string& velo2cam,
+                              const std::string& imu2velo);
 
   double getLastOrbMS() const { return t_last_orb_ms_; }
   void setHybridEveryN(int n) { hybridEveryN_ = std::max(1, n); }
@@ -127,6 +137,19 @@ private:
   double imuAccKp_ = 2.5;  // start 1.5..5.0
   cv::Matx33d Rcb_ = cv::Matx33d::eye(); // camera-from-body (IMU->Cam). Calibrate later.
 
+  // ===== Tight-coupled VIO backend =====
+  VioBackend vio_;
+  bool vioInitDone_ = false;
+  double vioLastKfTs_ = 0.0;
+
+  // keep IMU in a backend-friendly vector
+  std::vector<ImuMeas> imuMeas_;
+
+  // last reprojection obs (built from map correspondences)
+  std::vector<FeatureObs> vioLastObs_;
+
+  // helper: push keyframe into backend + optimize + publish pose
+  void vioOnKeyframe(double ts);
 
   cv::TermCriteria termcrit_{cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 30, 0.01};
 

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Web VIO • KITTI Runner</title>
+  <title>Web VIO</title>
   <link rel="stylesheet" href="index.css">
   <style>
     #ui{
@@ -42,7 +42,7 @@
   <div id="log"></div>
 
   <div id="ui">
-    <h1>KITTI dataset runner (browser)</h1>
+    <h1>KITTI dataset runner</h1>
 
     <div class="row">
       <label class="pill">Step 1</label>
@@ -79,14 +79,14 @@
       <button id="btnExport" disabled>Export poses CSV</button>
     </div>
 
-    <div class="hint">
+    <!-- <div class="hint">
       Notes:
       <ul>
         <li>Select the KITTI <b>raw</b> drive folder (the one containing <code>image_02</code> and <code>oxts</code>).</li>
         <li>In browsers, directory access is via the folder picker; you can’t type a filesystem path.</li>
         <li>This runner will decode images, feed them to WASM, feed OXTS-derived IMU samples (wx/wy/wz, ax/ay/az), and record poses per frame.</li>
       </ul>
-    </div>
+    </div> -->
   </div>
 
   <script type="module" src="./kitti.js"></script>

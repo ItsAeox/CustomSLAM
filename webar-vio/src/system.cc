@@ -1,4 +1,3 @@
-
 #include "system.h"
 #include <algorithm>
 #include <cmath>
@@ -8,6 +7,27 @@
 #include <opencv2/features2d.hpp>
 #include <opencv2/calib3d.hpp>
 
+static inline cv::Matx33d ortho(const cv::Matx33d& R)
+{
+  // Orthonormalize rotation with SVD: R = U * Vt
+  cv::Matx33d Rt = R;
+  cv::Mat Rm(3,3,CV_64F);
+  for(int r=0;r<3;r++) for(int c=0;c<3;c++) Rm.at<double>(r,c) = Rt(r,c);
+
+  cv::SVD svd(Rm, cv::SVD::FULL_UV);
+  cv::Mat Rn = svd.u * svd.vt;
+
+  // Ensure right-handed (det = +1)
+  if (cv::determinant(Rn) < 0.0) {
+    cv::Mat U = svd.u.clone();
+    U.col(2) *= -1.0;
+    Rn = U * svd.vt;
+  }
+
+  cv::Matx33d out;
+  for(int r=0;r<3;r++) for(int c=0;c<3;c++) out(r,c) = Rn.at<double>(r,c);
+  return out;
+}
 
 // Forward-Backward KLT tracking with consistency check and basic gating.
 static void trackFbKLT(const std::vector<cv::Mat>& pyrPrev,
@@ -236,17 +256,6 @@ static inline cv::Vec3d safeNormed(const cv::Vec3d& v, double eps=1e-9) {
   double n = cv::norm(v);
   if (n < eps) return cv::Vec3d(0,0,0);
   return v * (1.0 / n);
-}
-
-
-static inline cv::Matx33d so3Exp(const cv::Vec3d& w) {
-  // Rodrigues: exp([w]x)
-  cv::Mat rvec = (cv::Mat_<double>(3,1) << w[0], w[1], w[2]);
-  cv::Mat R;
-  cv::Rodrigues(rvec, R);
-  cv::Matx33d out;
-  for (int r=0;r<3;++r) for (int c=0;c<3;++c) out(r,c) = R.at<double>(r,c);
-  return out;
 }
 
 static inline cv::Vec3d yprFromRwcLike(const cv::Matx33d& R) {
@@ -939,6 +948,19 @@ void System::init(int width, int height, double fx, double fy, double cx, double
     );
   }  
 
+  // ---- VIO calibration ----
+  VioCalib c;
+  c.K = K();
+  c.R_ci = Rcb_;            // camera-from-imu (you currently use Rcb_ as IMU->Cam)
+  c.t_ci = cv::Vec3d(0,0,0); // TODO: fill from KITTI extrinsics once we parse (see note below)
+  c.g_w  = g_world_;        // your existing gravity convention
+  vio_.setCalib(c);
+
+  vioInitDone_ = false;
+  vioLastKfTs_ = 0.0;
+  imuMeas_.clear();
+  vioLastObs_.clear();
+
   trackingState_ = 0;
   frameCount_ = 0;
   lastTS_ = 0.0;
@@ -1152,6 +1174,12 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
       // ===== Mapping track (PnP) + KF insertion (RUN ALSO ON ORB FRAMES) =====
       if (mapInitialized_) {
         const bool pnpOk = trackWithPnP();
+
+        // Tight VIO update: run on every ORB keyframe IF PnP succeeded
+        if (pnpOk) {
+          vioOnKeyframe(ts);
+        }
+
         if (pnpOk && shouldInsertKF(lastKFInliers_, lastTS_)) {
           insertKeyframeAndTriangulate();
         }
@@ -1275,10 +1303,16 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
   // ===== Mapping track (PnP) + KF insertion =====
   if (mapInitialized_) {
     const bool pnpOk = trackWithPnP();
+
+    // Tight VIO update: run on every ORB keyframe IF PnP succeeded
+    if (pnpOk) {
+      vioOnKeyframe(ts);
+    }
+
     if (pnpOk && shouldInsertKF(lastKFInliers_, lastTS_)) {
       insertKeyframeAndTriangulate();
     }
-  }  
+  }
 
   // 6) roll to next frame
   // Remove hidden per-frame allocations and reuse old
@@ -1333,6 +1367,15 @@ void System::feedImu(double ts,
     cv::Vec3d(ax, ay, az),
     cv::Vec3d(gx, gy, gz)
   });
+
+  imuMeas_.push_back(ImuMeas{
+    ts,
+    cv::Vec3d(ax, ay, az),
+    cv::Vec3d(gx, gy, gz)
+  });
+
+  // keep bounded
+  if (imuMeas_.size() > 6000) imuMeas_.erase(imuMeas_.begin(), imuMeas_.begin() + 3000);
 }
 
 cv::Matx33d System::integrateImuDeltaRotationAccCorr(double t0, double t1, bool* used)
@@ -1407,4 +1450,103 @@ cv::Matx33d System::integrateImuDeltaRotationAccCorr(double t0, double t1, bool*
   }
   imuSamplesUsedThisFrame_ = usedCount;
   return dRcc;
+}
+
+void System::vioOnKeyframe(double ts)
+{
+  // 1) Initialize VIO orientation from accel mean (once)
+  if (!vioInitDone_) {
+    VioState s0;
+    // use a short window ending at ts
+    const double t0 = std::max(0.0, ts - 1.0);
+    if (vioInitFromAccelMean(imuMeas_, t0, ts, g_world_, s0)) {
+      s0.ts = ts;
+      // seed position/velocity from your current camera pose (rough)
+      // Convert your current camera pose to an IMU pose guess using calib (t_ci=0 for now).
+      // We just use Rwc_ as orientation prior (not perfect, but helps).
+      // World-from-camera -> world-from-imu approx:
+      // R_wi ≈ R_wc * R_ci
+      // Since R_wc = R_wi * R_ci^T  => R_wi ≈ R_wc * R_ci
+      VioCalib c; c.K = K(); c.R_ci = Rcb_; c.t_ci = cv::Vec3d(0,0,0); c.g_w = g_world_;
+      s0.R_wi = ortho(s0.R_wi); // keep from accel init
+      // optional: mix vision rotation slightly
+      s0.R_wi = ortho(0.7*s0.R_wi + 0.3*(Rwc_ * c.R_ci));
+
+      vio_.addKeyframe(s0, /*obs=*/vioLastObs_, /*pim=*/ImuPreint{});
+      vioInitDone_ = true;
+      vioLastKfTs_ = ts;
+    }
+    return;
+  }
+
+  // 2) Preintegrate IMU between last keyframe and now
+  ImuPreint pim = preintegrateImu(imuMeas_, vioLastKfTs_, ts,
+                                  /*bg=*/cv::Vec3d(0,0,0),
+                                  /*ba=*/cv::Vec3d(0,0,0));
+
+  // 3) Initial guess for current state: propagate previous using preint
+  VioState init = vio_.latest();
+  init.ts = ts;
+
+  if (pim.dt > 1e-6) {
+    init.R_wi = ortho(init.R_wi * pim.dR);
+    init.v_wi = init.v_wi + g_world_ * pim.dt + init.R_wi * pim.dv;
+    init.p_wi = init.p_wi + init.v_wi * pim.dt + 0.5 * g_world_ * (pim.dt*pim.dt) + init.R_wi * pim.dp;
+  }
+
+  // 4) Push node + optimize (tight: IMU + reprojection)
+  vio_.addKeyframe(init, vioLastObs_, pim);
+  (void)vio_.optimize(/*max_iters=*/8);
+
+  // 5) Publish optimized pose back into your existing (camera) pose variables
+  const VioState& s = vio_.latest();
+  VioCalib c; c.K = K(); c.R_ci = Rcb_; c.t_ci = cv::Vec3d(0,0,0); c.g_w = g_world_;
+
+  // camera pose from imu state
+  cv::Matx33d R_wc;
+  cv::Vec3d   p_wc;
+  // same conversion used in backend
+  const cv::Matx33d R_ic = c.R_ci.t();
+  R_wc = s.R_wi * R_ic;
+  p_wc = s.p_wi - s.R_wi * (R_ic * c.t_ci);
+
+  Rwc_ = ortho(R_wc);
+  twc_ = p_wc;
+
+  path_.emplace_back((float)twc_[0], (float)twc_[1], (float)twc_[2]);
+  if (path_.size() > 4096) path_.erase(path_.begin(), path_.begin() + (path_.size() - 4096));
+
+  vioLastKfTs_ = ts;
+}
+
+bool System::setKittiCalibFromTexts(const std::string& cam2cam,
+  const std::string& velo2cam,
+  const std::string& imu2velo)
+{
+KittiCalibOut out;
+if (!parseKittiCalibFromTexts_Image02(cam2cam, velo2cam, imu2velo, out)) {
+return false;
+}
+
+// Update intrinsics used by VO/VIO
+fx_ = out.K(0,0);
+fy_ = out.K(1,1);
+cx_ = out.K(0,2);
+cy_ = out.K(1,2);
+
+// Update IMU->Cam extrinsics (camera-from-imu)
+Rcb_ = out.R_ci;
+// If you store translation anywhere else, keep it for backend:
+// We'll store in VIO calib via vio_.setCalib below.
+
+// Update VIO backend calib immediately
+VioCalib c;
+c.K = out.K;
+c.R_ci = out.R_ci;
+c.t_ci = out.t_ci;
+c.g_w  = g_world_; // keep your existing gravity convention for now
+
+vio_.setCalib(c);
+
+return true;
 }

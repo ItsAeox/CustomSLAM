@@ -83,6 +83,10 @@ val getPoints2D() {
   return jsArr;
 }
 
+bool setKittiCalibFromTexts(std::string cam2cam, std::string velo2cam, std::string imu2velo) {
+  return gSys.setKittiCalibFromTexts(cam2cam, velo2cam, imu2velo);
+}
+
 emscripten::val getPoints2D_Typed() {
   static std::vector<float> buf; // lifetime stable
   auto pts = gSys.getPoints2D(); // doubles
@@ -158,5 +162,5 @@ EMSCRIPTEN_BINDINGS(vio_bindings_pointtrack) {
   function("getImuDeltaYPR", &GetImuDeltaYPR);
   function("getImuDeltaRod", &GetImuDeltaRod);
   function("getImuDeltaAngleDeg", &GetImuDeltaAngleDeg);
-
+  function("setKittiCalibFromTexts", &setKittiCalibFromTexts);
 }

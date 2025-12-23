@@ -179,34 +179,60 @@ els.btnLoad.addEventListener('click', async () => {
     return;
   }
 
-  // timestamps: try image_02/timestamps.txt first, otherwise oxts/timestamps.txt
-  const tsImg = findFile(fileList, imgDir.replace(/\/+$/,'') + '/../timestamps.txt');
-  const tsOxts = findFile(fileList, oxtsDir.replace(/\/+$/,'') + '/../timestamps.txt');
+  // timestamps.txt live one level above the "data" folder
+  const imgBase  = imgDir.replace(/\/+$/,'').replace(/\/data$/,'');   // "image_02"
+  const oxtsBase = oxtsDir.replace(/\/+$/,'').replace(/\/data$/,'');  // "oxts"
+
+  const tsImgFile  = findFile(fileList, `${imgBase}/timestamps.txt`);
+  const tsOxtsFile = findFile(fileList, `${oxtsBase}/timestamps.txt`);
+
   let imageTS = [];
-  if (tsImg) imageTS = parseTimestamps(await readText(tsImg));
-  else if (tsOxts) imageTS = parseTimestamps(await readText(tsOxts));
-  else {
-    // fallback: fake timestamps at 10 Hz
-    imageTS = images.map((_,i)=> i * 0.1);
-    logMsg('No timestamps.txt found; using synthetic 10Hz timestamps');
+  if (tsImgFile) {
+    imageTS = parseTimestamps(await readText(tsImgFile));
+  } else if (tsOxtsFile) {
+    imageTS = parseTimestamps(await readText(tsOxtsFile));
+    logMsg('Using OXTS timestamps for images (image timestamps missing).');
+  } else {
+    imageTS = images.map((_, i) => i * 0.1);
+    logMsg('No image/oxts timestamps.txt found; using synthetic 10Hz timestamps');
   }
 
-  // OXTS samples
+  let oxtsTS = [];
+  if (tsOxtsFile) {
+    oxtsTS = parseTimestamps(await readText(tsOxtsFile));
+  } else {
+    logMsg('No OXTS timestamps.txt found; IMU will be aligned by index (less accurate).');
+  }
+
+  // --- OXTS samples (IMU) ---
   const oxtsFiles = findFilesUnder(fileList, oxtsDir, ['.txt']);
   oxtsFiles.sort(byName);
+
   let oxts = [];
   if (oxtsFiles.length) {
-    // One OXTS file per frame typically
     oxts = await Promise.all(oxtsFiles.map(async f => {
       const line = (await readText(f)).trim().split(/\r?\n/)[0] || '';
       return parseOxtsLine(line);
     }));
   }
 
-  // Clip to common length
-  const N = Math.min(images.length, imageTS.length || images.length, oxts.length || images.length);
+  // --- Build an IMU stream (time, accel, gyro) ---
+  // If oxtsTS exists, we use it. Otherwise assume 100 Hz (0.01s) as fallback.
+  const imuStream = [];
+  {
+    const M = Math.min(oxts.length, oxtsFiles.length, (oxtsTS.length ? oxtsTS.length : oxts.length));
+    for (let k = 0; k < M; k++) {
+      const s = oxts[k];
+      if (!s) continue;
+      const t = (oxtsTS.length ? oxtsTS[k] : (k * 0.1));
+      imuStream.push({ t, ax: s.ax, ay: s.ay, az: s.az, wx: s.wx, wy: s.wy, wz: s.wz });
+    }
+  }
 
-  seq = { images, imageTS, oxts, N };
+  // --- Clip to common length for images ---
+  const N = Math.min(images.length, imageTS.length || images.length);
+
+  seq = { images, imageTS, oxts, oxtsTS, imuStream, N };
 
   // Init canvas to first frame size
   const bmp = await createImageBitmap(images[0]);
@@ -214,7 +240,26 @@ els.btnLoad.addEventListener('click', async () => {
   canvas.height = bmp.height;
   bmp.close?.();
 
-  // Initialize intrinsics (same FOV trick you used)
+  // ---- Load KITTI calib texts (image_02 left camera) and pass into WASM ----
+  // Expect these files somewhere in the picked folder root (or sequence root):
+  const cam2cam = findFile(fileList, 'calib_cam_to_cam.txt');
+  const velo2cam = findFile(fileList, 'calib_velo_to_cam.txt');
+  const imu2velo = findFile(fileList, 'calib_imu_to_velo.txt');
+
+  if (cam2cam && velo2cam && imu2velo && Module.setKittiCalibFromTexts) {
+    const cam2camTxt = await readText(cam2cam);
+    const velo2camTxt = await readText(velo2cam);
+    const imu2veloTxt = await readText(imu2velo);
+
+    const ok = Module.setKittiCalibFromTexts(cam2camTxt, velo2camTxt, imu2veloTxt);
+    logMsg('KITTI calib applied:', ok ? 'YES' : 'NO');
+  } else {
+    logMsg('KITTI calib files not found or binding missing; using fallback intrinsics');
+  }
+
+  // ---- Init System ----
+  // If KITTI calib was applied, System now has correct fx/fy/cx/cy internally.
+  // But init still needs image size, so we call it with any intrinsics; they get overwritten by calib anyway.
   const FOVY = 45;
   const fy = canvas.height / (2 * Math.tan((FOVY * Math.PI/180) / 2));
   const fx = fy * (canvas.width / canvas.height);
@@ -257,17 +302,28 @@ els.btnRun.addEventListener('click', async () => {
   const startIdx = Math.min(N-1, skip);
   const limit = (maxFrames > 0) ? Math.min(N, startIdx + maxFrames) : N;
 
-  // helper: feed IMU samples between tPrev and tNow (relative seconds)
-  // For KITTI raw, OXTS is usually synchronized with images at ~10Hz. We'll feed one sample per frame.
-  function feedImuForFrame(i, tNow) {
+  // helper: feed ALL IMU samples in (tPrev, tNow]
+  // This is required for tight VIO: preintegration needs the high-rate stream.
+  let imuIdx = 0;
+
+  function feedImuWindow(tPrev, tNow) {
     if (!Module.feedImuSample) return;
-    const s = seq.oxts && seq.oxts[i] ? seq.oxts[i] : null;
-    if (!s) {
+
+    const S = seq.imuStream || [];
+    if (!S.length) {
+      // fallback: at least feed something so backend clocking doesn't stall
       Module.feedImuSample(tNow, 0,0,0, 0,0,0);
       return;
     }
-    // KITTI OXTS gives angular rates in rad/s and accel in m/s^2.
-    Module.feedImuSample(tNow, s.ax, s.ay, s.az, s.wx, s.wy, s.wz);
+
+    // advance index to first sample >= tPrev
+    while (imuIdx < S.length && S[imuIdx].t < tPrev) imuIdx++;
+
+    // feed through tNow
+    while (imuIdx < S.length && S[imuIdx].t <= tNow) {
+      const s = S[imuIdx++];
+      Module.feedImuSample(s.t, s.ax, s.ay, s.az, s.wx, s.wy, s.wz);
+    }
   }
 
   for (let i = startIdx; i < limit; i++) {
@@ -296,8 +352,9 @@ els.btnRun.addEventListener('click', async () => {
       gray[j++] = (77*img[k] + 150*img[k+1] + 29*img[k+2]) >> 8;
     }
 
-    // Feed IMU sample (best effort)
-    feedImuForFrame(i, tNow);
+    // Feed IMU window (tight VIO needs multiple samples between frames)
+    const tPrev = (i > startIdx) ? (seq.imageTS[i - 1] ?? (tNow - 0.1)) : (tNow - 0.1);
+    feedImuWindow(tPrev, tNow);
 
     // Feed frame to WASM (prefer ptr path)
     if (wasmView && wasmPtr && Module.feedFramePtr) {

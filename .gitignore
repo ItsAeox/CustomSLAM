@@ -1,8 +1,10 @@
 .vscode/
+.venv/
 build/
 webar-vio/third_party
 emsdk/
 dataset/
+outputs/
 build_wasm/
 build_opencv_wasm/
 *.pem

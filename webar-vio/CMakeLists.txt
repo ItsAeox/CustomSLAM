@@ -107,10 +107,11 @@ endif()
 # Library (your core)
 # ---------------------------
 add_library(vio
-  # src/common/camera.cc
-  # src/frontend/feature_tracker.cc
   src/system.cc
-  # src/slam/imu_initializer.cc
+  src/imu_preint.cc
+  src/vio_backend.cc
+  src/vio_init.cc
+  src/kitti_calib.cc
 )
 
 target_include_directories(vio PUBLIC
