@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 # --------------------------
 # Paths (edit if needed)
 # --------------------------
-DATASET_ROOT = "dataset/2011_09_26_drive_0101_sync"
+DATASET_ROOT = "dataset/2011_09_26_drive_0022_sync"
 EST_CSV      = os.path.join(DATASET_ROOT, "kitti_poses.csv")
 IMG_TS       = os.path.join(DATASET_ROOT, "image_02", "timestamps.txt")
 OXTS_TS      = os.path.join(DATASET_ROOT, "oxts", "timestamps.txt")

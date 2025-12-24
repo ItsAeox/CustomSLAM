@@ -117,18 +117,21 @@ bool VioBackend::optimize(int max_iters)
 
   auto buildResidual = [&](VioState ss, cv::Mat& r) {
     // IMU residuals
-    // Predicted from prev using preint (ignoring bias jacobians for now)
     const double dt = P.dt;
     const cv::Vec3d g = calib_.g_w;
-
-    cv::Matx33d R_pred = s_prev.R_wi * P.dR;
-    cv::Vec3d v_pred = s_prev.v_wi + g*dt + s_prev.R_wi * P.dv;
-    cv::Vec3d p_pred = s_prev.p_wi + s_prev.v_wi*dt + 0.5*g*(dt*dt) + s_prev.R_wi * P.dp;
-
-    cv::Matx33d dR = R_pred.t() * ss.R_wi;
-    cv::Vec3d rR = so3Log(dR);
-    cv::Vec3d rv = (ss.v_wi - v_pred);
-    cv::Vec3d rp = (ss.p_wi - p_pred);
+    
+    cv::Vec3d rR(0,0,0), rv(0,0,0), rp(0,0,0);
+    
+    if (dt > 1e-6) {
+      cv::Matx33d R_pred = s_prev.R_wi * P.dR;
+      cv::Vec3d v_pred = s_prev.v_wi + g*dt + s_prev.R_wi * P.dv;
+      cv::Vec3d p_pred = s_prev.p_wi + s_prev.v_wi*dt + 0.5*g*(dt*dt) + s_prev.R_wi * P.dp;
+    
+      cv::Matx33d dR = R_pred.t() * ss.R_wi;
+      rR = so3Log(dR);
+      rv = (ss.v_wi - v_pred);
+      rp = (ss.p_wi - p_pred);
+    }    
 
     // Reprojection residuals
     cv::Matx33d R_wc; cv::Vec3d p_wc;
@@ -158,8 +161,16 @@ bool VioBackend::optimize(int max_iters)
         r.at<double>(row++) = w_px * 50.0;
         r.at<double>(row++) = w_px * 50.0;
       } else {
-        r.at<double>(row++) = w_px * (uhat - ob.u);
-        r.at<double>(row++) = w_px * (vhat - ob.v);
+        auto huber = [](double e, double d=3.0) { // d in pixels (rough)
+            const double a = std::abs(e);
+            if (a <= d) return e;
+            return (e > 0 ? d : -d);
+          };
+          
+          double eu = (uhat - ob.u);
+          double ev = (vhat - ob.v);
+          r.at<double>(row++) = w_px * huber(eu, 3.0);
+          r.at<double>(row++) = w_px * huber(ev, 3.0);          
       }
     }
   };

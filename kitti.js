@@ -224,7 +224,7 @@ els.btnLoad.addEventListener('click', async () => {
     for (let k = 0; k < M; k++) {
       const s = oxts[k];
       if (!s) continue;
-      const t = (oxtsTS.length ? oxtsTS[k] : (k * 0.1));
+      const t = (oxtsTS.length ? oxtsTS[k] : (k * 0.01));
       imuStream.push({ t, ax: s.ax, ay: s.ay, az: s.az, wx: s.wx, wy: s.wy, wz: s.wz });
     }
   }
@@ -308,23 +308,29 @@ els.btnRun.addEventListener('click', async () => {
 
   function feedImuWindow(tPrev, tNow) {
     if (!Module.feedImuSample) return;
-
+  
     const S = seq.imuStream || [];
     if (!S.length) {
-      // fallback: at least feed something so backend clocking doesn't stall
       Module.feedImuSample(tNow, 0,0,0, 0,0,0);
       return;
     }
-
-    // advance index to first sample >= tPrev
+  
     while (imuIdx < S.length && S[imuIdx].t < tPrev) imuIdx++;
-
-    // feed through tNow
+  
+    let fed = 0;
     while (imuIdx < S.length && S[imuIdx].t <= tNow) {
       const s = S[imuIdx++];
       Module.feedImuSample(s.t, s.ax, s.ay, s.az, s.wx, s.wy, s.wz);
+      fed++;
     }
-  }
+  
+    // If no sample fell inside the window, feed the closest previous sample once.
+    if (fed === 0) {
+      const k = Math.max(0, imuIdx - 1);
+      const s = S[k];
+      Module.feedImuSample(tNow, s.ax, s.ay, s.az, s.wx, s.wy, s.wz);
+    }
+  }  
 
   for (let i = startIdx; i < limit; i++) {
     if (stopFlag) break;
@@ -392,10 +398,19 @@ els.btnRun.addEventListener('click', async () => {
     try { twc = Module.getTwc?.() || twc; } catch {}
     try { ypr = Module.getYPR?.() || ypr; } catch {}
 
+    // Convert from VO world (OpenCV-ish: x right, y down, z forward)
+    // to an ENU-like export where:
+    //   x = east-ish  (use VO x)
+    //   y = north-ish (use VO z)
+    //   z = up-ish    (use -VO y)
+    const x = Number(twc[1]);
+    const y = -Number(twc[2]);
+    const z = Number(twc[0]);
+    
     recorded.push({
       frame: i,
       t: tNow,
-      x: Number(twc[0]), y: Number(twc[1]), z: Number(twc[2]),
+      x, y, z,
       yaw: Number(ypr[0]), pitch: Number(ypr[1]), roll: Number(ypr[2]),
     });
 
@@ -406,6 +421,8 @@ els.btnRun.addEventListener('click', async () => {
       const wasmKLT = Number(Module.getLastKltMS?.() ?? 0);
       const imuUsed = Number(Module.getImuUsedThisFrame?.() ?? 0);
       const imuHz = Number(Module.getImuHz?.() ?? 0);
+      const mps = Number(Module.getNumMPs?.() ?? 0);
+      const kps = Number(Module.getNumKFs?.() ?? 0);
       updateHUDText([
         `Frame      ${i}/${limit-1}`,
         `t (s)      ${tNow.toFixed(3)}`,
@@ -414,6 +431,8 @@ els.btnRun.addEventListener('click', async () => {
         `IMU used   ${imuUsed ? 'YES' : 'NO'}`,
         `IMU Hz     ${imuHz ? imuHz.toFixed(1) : 'NA'}`,
         `Pos        ${Number(twc[0]).toFixed(3)} ${Number(twc[1]).toFixed(3)} ${Number(twc[2]).toFixed(3)}`,
+        'MPs        ' + mps,
+        'KFs        ' + kps,
       ].join('\n'));
       lastUI = now;
     }
@@ -443,25 +462,33 @@ els.btnStop.addEventListener('click', () => {
 els.btnExport.addEventListener('click', () => {
   if (!recorded.length) return;
 
-  // CSV header matches your internal pose convention
+  // Keep tiny numbers alive: use scientific notation with lots of digits.
+  function fmt(x) {
+    return Number.isFinite(x) ? Number(x).toExponential(16) : 'nan';
+  }
+  // (A) Export main pose CSV
   const lines = ['frame,t,x,y,z,yaw_rad,pitch_rad,roll_rad'];
   for (const r of recorded) {
     lines.push([
       r.frame,
-      r.t.toFixed(9),
-      r.x.toFixed(9), r.y.toFixed(9), r.z.toFixed(9),
-      r.yaw.toFixed(9), r.pitch.toFixed(9), r.roll.toFixed(9),
+      fmt(r.t),
+      fmt(r.x), fmt(r.y), fmt(r.z),
+      fmt(r.yaw), fmt(r.pitch), fmt(r.roll),
     ].join(','));
   }
-  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'kitti_poses.csv';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
 
+  // Download main CSV
+  {
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'kitti_poses.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
   logMsg('Exported kitti_poses.csv');
 });
+

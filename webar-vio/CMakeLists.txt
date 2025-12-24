@@ -112,6 +112,7 @@ add_library(vio
   src/vio_backend.cc
   src/vio_init.cc
   src/kitti_calib.cc
+  src/vio_initializer.cc
 )
 
 target_include_directories(vio PUBLIC

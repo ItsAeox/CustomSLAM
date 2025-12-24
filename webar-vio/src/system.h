@@ -12,7 +12,7 @@
 #include "vio_backend.h"
 #include "vio_init.h"
 #include "imu_preint.h"
-
+#include "vio_initializer.h"
 
 class System {
 public:
@@ -137,10 +137,19 @@ private:
   double imuAccKp_ = 2.5;  // start 1.5..5.0
   cv::Matx33d Rcb_ = cv::Matx33d::eye(); // camera-from-body (IMU->Cam). Calibrate later.
 
+  // Camera-from-IMU extrinsics (KITTI provides these)
+  cv::Vec3d t_ci_ = cv::Vec3d(0,0,0);   // camera-from-imu translation (meters)
+  bool haveKittiCalib_ = false;
+  cv::Matx33d kittiK_ = cv::Matx33d::eye();
+
   // ===== Tight-coupled VIO backend =====
   VioBackend vio_;
   bool vioInitDone_ = false;
   double vioLastKfTs_ = 0.0;
+
+  VioInitializer vioInit_;
+  bool vioMetricInitDone_ = false;
+  double vioScale_ = 1.0;
 
   // keep IMU in a backend-friendly vector
   std::vector<ImuMeas> imuMeas_;
@@ -212,6 +221,7 @@ private:
     int       seen   = 0;
     int       found  = 0;
     float     invScale = 1.f; // quick gating by distance (optional)
+    bool alive = true;
   };
 
   bool mapInitialized_ = false;

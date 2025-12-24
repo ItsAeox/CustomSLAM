@@ -198,23 +198,24 @@ export function drawPathXZ(flatXZ, W, H) {
   const margin = 8;
   const x0 = margin, y0 = H - boxH - margin;
 
-  // Compute bounds
-  let minX=Infinity, maxX=-Infinity, minZ=Infinity, maxZ=-Infinity;
-  for (let i = 0; i < flatXZ.length; i += 2) {
-    const x = flatXZ[i], z = flatXZ[i+1];
-    if (!Number.isFinite(x) || !Number.isFinite(z)) continue;
-    if (x < minX) minX = x; if (x > maxX) maxX = x;
-    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
-  }
-  if (!isFinite(minX) || !isFinite(minZ)) return;
+  // Fixed metric viewport centered on current position (shows true scale)
+  // If your units are meters, this is meters. If not, it's still a fixed unit window.
+  const VIEW_W = 500; // width in "units"
+  const VIEW_H = 500; // height in "units"
 
-  // Pad bounds a bit so path is not glued to edges
-  const pad = 1e-3;
-  minX -= pad; maxX += pad; minZ -= pad; maxZ += pad;
+  // Center the view around the latest point (current camera)
+  const lastX = flatXZ[flatXZ.length - 2];
+  const lastZ = flatXZ[flatXZ.length - 1];
+  if (!Number.isFinite(lastX) || !Number.isFinite(lastZ)) return;
+
+  let minX = lastX - VIEW_W * 0.5;
+  let maxX = lastX + VIEW_W * 0.5;
+  let minZ = lastZ - VIEW_H * 0.5;
+  let maxZ = lastZ + VIEW_H * 0.5;
 
   // Map (x,z) -> inset pixel
-  const sx = (maxX - minX) > 1e-6 ? (boxW - 12) / (maxX - minX) : 1.0;
-  const sz = (maxZ - minZ) > 1e-6 ? (boxH - 12) / (maxZ - minZ) : 1.0;
+  const sx = (boxW - 12) / (maxX - minX);
+  const sz = (boxH - 12) / (maxZ - minZ);
 
   // Background
   ctx2d.save();
