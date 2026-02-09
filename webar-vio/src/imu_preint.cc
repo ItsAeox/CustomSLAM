@@ -26,18 +26,56 @@ ImuPreint preintegrateImu(const std::vector<ImuMeas>& meas,
   if (t1 <= t0) return P;
   if (meas.empty()) return P;
 
-  // Collect samples in [t0, t1]
+  // ---- Collect samples around [t0, t1] (need bracketing for interpolation) ----
+  // We will build S such that S[0].t==t0 and S.back().t==t1.
   std::vector<ImuMeas> S;
   S.reserve(256);
-  for (auto& m: meas) if (m.t >= t0 && m.t <= t1) S.push_back(m);
+
+  // Find first index with meas[idx].t >= t0
+  int i0 = -1, i1 = -1;
+  for (int i=0; i<(int)meas.size(); ++i){
+    if (meas[i].t >= t0) { i0 = i; break; }
+  }
+  for (int i=0; i<(int)meas.size(); ++i){
+    if (meas[i].t >= t1) { i1 = i; break; }
+  }
+  if (i0 <= 0 || i1 < 0) return P;          // need a sample before t0, and a sample at/after t1
+
+  auto lerp = [](const cv::Vec3d& a, const cv::Vec3d& b, double u){
+    return (1.0-u)*a + u*b;
+  };
+
+  auto interpAt = [&](double t, int idx_hi)->ImuMeas{
+    // idx_hi is first index with meas[idx_hi].t >= t, so bracket is (idx_hi-1, idx_hi)
+    const auto& A = meas[idx_hi-1];
+    const auto& B = meas[idx_hi];
+    const double denom = std::max(1e-12, (B.t - A.t));
+    const double u = (t - A.t) / denom;
+    ImuMeas M;
+    M.t = t;
+    M.gyro = lerp(A.gyro, B.gyro, u);
+    M.acc  = lerp(A.acc , B.acc , u);
+    return M;
+  };
+
+  // Add interpolated t0 sample
+  S.push_back(interpAt(t0, i0));
+
+  // Add all real samples strictly inside (t0, t1)
+  for (int i=i0; i<i1; ++i){
+    if (meas[i].t > t0 && meas[i].t < t1) S.push_back(meas[i]);
+  }
+
+  // Add interpolated t1 sample (if i1 is exactly at t1, interpAt still works fine)
+  if (i1 == 0) return P;
+  S.push_back(interpAt(t1, i1));
+
   if (S.size() < 2) return P;
 
   cv::Matx33d dR = cv::Matx33d::eye();
   cv::Vec3d dv(0,0,0), dp(0,0,0);
-  double dtSum = 0.0;
 
-  // Simple midpoint integration (upgradeable)
-  for (size_t k=1;k<S.size();k++){
+  for (size_t k=1; k<S.size(); ++k){
     const double dt = S[k].t - S[k-1].t;
     if (dt <= 0) continue;
 
@@ -49,22 +87,28 @@ ImuPreint preintegrateImu(const std::vector<ImuMeas>& meas,
     const cv::Vec3d a1 = S[k].acc   - ba;
     const cv::Vec3d a  = 0.5*(a0+a1);
 
-    // Update rotation
     const cv::Matx33d dRk = so3Exp(w * dt);
-    // Use current dR to rotate accel into i-frame
+
+    // IMPORTANT:
+    // Treat accelerometer as measuring "specific force" (includes gravity in sensor frame).
+    // Then the propagation in System adds g_world_ separately.
+    // If your accel samples are actually "acc including gravity", this is correct.
+    //
+    // But if your accel samples are "linear acceleration" (gravity removed),
+    // you MUST NOT add g_world_ in propagation (System), OR you will double-count gravity.
+    //
+    // We'll keep the standard VIO assumption here: accel == specific force.
     const cv::Vec3d a_i = dR * a;
 
     dp += dv * dt + 0.5 * a_i * (dt*dt);
     dv += a_i * dt;
-    dR = dR * dRk;
-
-    dtSum += dt;
+    dR  = dR * dRk;
   }
 
   P.dR = dR;
   P.dv = dv;
   P.dp = dp;
-  P.dt = dtSum;
+  P.dt = (t1 - t0);
 
   // NOTE: For full tight coupling, fill Jacobians + covariance.
   // We can add that once you confirm noise params + calib.

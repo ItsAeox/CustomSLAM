@@ -64,8 +64,9 @@ bool VioInitializer::solveScaleGravityVelocity(const std::vector<ImuMeas>& imu,
     ImuPreint P = preintegrateImu(imu, Ki.ts, Kj.ts, bg, cv::Vec3d(0,0,0));
     if (P.dt <= 1e-6) continue;
 
-    // Use world-from-camera as world-from-IMU approx for init
-    cv::Matx33d Rwi = Ki.Rwc_vo; // approx
+    // Approx world-from-IMU using camera pose and extrinsic:
+    // R_ci = camera-from-IMU  =>  R_wi ≈ R_wc * R_ci
+    cv::Matx33d Rwi = Ki.Rwc_vo * calib.R_ci;
 
     // Visual delta position in VO world
     cv::Vec3d dp_vo = (Kj.twc_vo - Ki.twc_vo);

@@ -1,7 +1,26 @@
 let canvas, ctx2d, hudEl;
 
+function fitCanvasCSSToViewport(imgW, imgH) {
+  const vw = window.innerWidth  || imgW;
+  const vh = window.innerHeight || imgH;
+  const s = Math.min(vw / imgW, vh / imgH);
+
+  const cssW = Math.round(imgW * s);
+  const cssH = Math.round(imgH * s);
+
+  canvas.style.width  = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+  canvas.style.left   = Math.round((vw - cssW) * 0.5) + 'px';
+  canvas.style.top    = Math.round((vh - cssH) * 0.5) + 'px';
+}
+
 export async function initRenderer(cvs) {
   canvas = cvs;
+  window.addEventListener('resize', () => {
+    if (canvas && canvas.width && canvas.height) {
+      fitCanvasCSSToViewport(canvas.width, canvas.height);
+    }
+  });
   ctx2d = canvas.getContext('2d', { alpha: true });
   // Make sure the canvas itself is transparent; video sits behind it.
   ctx2d.clearRect(0, 0, canvas.width, canvas.height);
@@ -30,6 +49,8 @@ export function drawFrame(bmp, W, H) {
   // Ensure canvas backing buffer matches expected render size
   if (canvas.width !== W) canvas.width = W;
   if (canvas.height !== H) canvas.height = H;
+
+  fitCanvasCSSToViewport(W, H);
 
   // Clear, then draw the frame
   ctx2d.clearRect(0, 0, W, H);
@@ -192,12 +213,13 @@ export function drawAttitude(yawDeg, pitchDeg, rollDeg, W, H) {
 
 export function drawPathXZ(flatXZ, W, H) {
   if (!flatXZ || !flatXZ.length) return;
-  // Inset box
-  const boxW = Math.round(W * 0.35);
-  const boxH = Math.round(H * 0.35);
-  const margin = 8;
-  const x0 = margin, y0 = H - boxH - margin;
-
+  const margin = 12;
+  const boxS = 200;       // fixed square size in pixels
+  const boxW = boxS;
+  const boxH = boxS;
+  const x0 = margin;
+  const y0 = H - boxH - margin;
+  
   // Fixed metric viewport centered on current position (shows true scale)
   // If your units are meters, this is meters. If not, it's still a fixed unit window.
   const VIEW_W = 500; // width in "units"

@@ -99,6 +99,14 @@ public:
   std::array<double,3> getImuDeltaRodrigues() const { return { imuDeltaRod_[0], imuDeltaRod_[1], imuDeltaRod_[2] }; }
   double getImuDeltaAngleDeg() const { return imuDeltaAngleDeg_; }
   
+  void setImuToCamQuat(double qx, double qy, double qz, double qw,
+                         double px, double py, double pz);
+
+  void setKb4Distortion(double k1,double k2,double k3,double k4) {
+    D_kb4_ = cv::Vec4d(k1,k2,k3,k4);
+    useFisheye_ = true;
+  }
+  void setUseFisheye(bool on) { useFisheye_ = on; }
 
 private:
   int   procScale_      = 2;        // 2 => process at half-res (major speedup)
@@ -130,11 +138,11 @@ private:
   ImuState imuState_;
   
   // Gravity direction estimate in world (unit vector), and magnitude
-  cv::Vec3d gDirW_ = cv::Vec3d(0, -1, 0); // matches your current g_world_ convention
+  cv::Vec3d gDirW_   = cv::Vec3d(0, 1, 0);// world: X=Up => gravity points -X (Down)
   double    gMag_  = 9.81;
   
   // Complementary filter gain (tune)
-  double imuAccKp_ = 2.5;  // start 1.5..5.0
+  double imuAccKp_ = 2.0;
   cv::Matx33d Rcb_ = cv::Matx33d::eye(); // camera-from-body (IMU->Cam). Calibrate later.
 
   // Camera-from-IMU extrinsics (KITTI provides these)
@@ -151,6 +159,10 @@ private:
   bool vioMetricInitDone_ = false;
   double vioScale_ = 1.0;
 
+  // Map dataset IMU axes -> your IMU-body axes (start as identity).
+  // If yaw is weak/incorrect, this is where we fix axis order/signs.
+  cv::Matx33d R_b_imu_ = cv::Matx33d::eye();
+
   // keep IMU in a backend-friendly vector
   std::vector<ImuMeas> imuMeas_;
 
@@ -165,6 +177,12 @@ private:
   // Image geometry / intrinsics
   int imgW_ = 0, imgH_ = 0;
   double fx_ = 0., fy_ = 0., cx_ = 0., cy_ = 0.;
+
+  // --- Fisheye (KB4) support for TUM-VI ---
+  bool useFisheye_ = false;
+  cv::Vec4d D_kb4_ = cv::Vec4d(0,0,0,0); // k1,k2,k3,k4
+  cv::Mat map1_, map2_;                  // remap tables (proc-scale)
+  cv::Mat tmpProc_;                      // temp before undistort
 
   // Working images (reused every frame)
   cv::Mat prevGray_, curGray_;   // full-res gray
@@ -184,7 +202,7 @@ private:
   TrackerType trackerType_ = TrackerType::KLT;
 
   // Hybrid config/state
-  int hybridEveryN_ = 4;               // default: run ORB every 4th frame
+  int hybridEveryN_ = 8;               // default: run ORB every 4th frame
   uint64_t hybFrameIdx_ = 0;            // increments each feedFrame
   bool     ranOrbThisFrame_ = false;
   uint64_t lastOrbKF_ = 0;       // last frame idx that ran ORB
@@ -316,11 +334,9 @@ private:
   int    imuUsedThisFrame_   = 0;     // 0/1 (set in feedFrame)
   int    imuSamplesUsedThisFrame_ = 0;
   double lastImuSampleTS_    = 0.0;
-
   
   // Optional: gravity direction estimate in world (for later)
-  cv::Vec3d g_world_ = cv::Vec3d(0, -9.81, 0);
-  
+  cv::Vec3d g_world_ = cv::Vec3d(0, 9.81, 0);   // m/s^2 (down)
 
   // Compute E vs H on corresponding point pairs (processing-scale coords)
   void   runEvsHGate(const std::vector<cv::Point2f>& prevProcPts,

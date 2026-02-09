@@ -503,7 +503,7 @@ bool System::tryTwoViewInit(const std::vector<cv::Point2f>& prevProcPts,
 bool System::trackWithPnP()
 {
   const int N = harvestPnpCorrespondences(/*winPx=*/8.f, /*maxTake=*/800);
-  if (N < 20) return false;
+  if (N < 20) { vioLastObs_.clear(); return false; }
 
   // Build vectors cv::Mat-friendly
   cv::Mat rvec, tvec;
@@ -529,7 +529,7 @@ bool System::trackWithPnP()
               pnp_points_, pnp_pixels_, Kcv, cv::noArray(),
               rvec, tvec, /*useExtrinsicGuess=*/true,
               200, 2.0, 0.99, inliers, cv::SOLVEPNP_EPNP);
-  if (!ok || inliers.empty() || inliers.rows < 20) return false;
+  if (!ok || inliers.empty() || inliers.rows < 20) { vioLastObs_.clear(); return false; }
 
   // === Build VIO reprojection observations from PnP inliers ===
   vioLastObs_.clear();
@@ -960,6 +960,35 @@ void System::init(int width, int height, double fx, double fy, double cx, double
   pyrPrev_.clear(); pyrCur_.clear();
   ptsPrev_.clear(); ptsCur_.clear();
 
+  // --- Build proc-scale fisheye undistort maps (if enabled) ---
+  if (useFisheye_) {
+    // Scale intrinsics down to proc resolution
+    const double s = (double)procScale_;
+    cv::Matx33d Kp(
+      fx_/s, 0,    cx_/s,
+      0,    fy_/s, cy_/s,
+      0,    0,     1
+    );
+
+    cv::Mat Kcv(3,3,CV_64F);
+    cv::Mat Dcv(4,1,CV_64F);
+    for(int r=0;r<3;r++) for(int c=0;c<3;c++) Kcv.at<double>(r,c) = Kp(r,c);
+    Dcv.at<double>(0)=D_kb4_[0];
+    Dcv.at<double>(1)=D_kb4_[1];
+    Dcv.at<double>(2)=D_kb4_[2];
+    Dcv.at<double>(3)=D_kb4_[3];
+
+    cv::Mat R = cv::Mat::eye(3,3,CV_64F);
+    cv::Mat P = Kcv.clone(); // keep same intrinsics after rectification
+
+    cv::fisheye::initUndistortRectifyMap(
+      Kcv, Dcv, R, P, cv::Size(Wp, Hp),
+      CV_16SC2, map1_, map2_
+    );
+
+    tmpProc_.create(Hp, Wp, CV_8UC1);
+  }
+
   // Initialize ORB extractor (used by ORB tracker and optional descriptors)
   if (!orb_) {
     orb_ = cv::ORB::create(
@@ -981,12 +1010,16 @@ void System::init(int width, int height, double fx, double fy, double cx, double
   c.R_ci = Rcb_;
   c.t_ci = t_ci_;
   c.g_w  = g_world_;
-  vio_.setCalib(c);  
+  vio_.setCalib(c);
+
+  // Keep gravity direction estimate consistent with g_world_
+  gDirW_ = safeNormed(g_world_);
 
   vioInitDone_ = false;
   vioLastKfTs_ = 0.0;
   imuMeas_.clear();
   vioLastObs_.clear();
+  vioInit_.reset();
 
   trackingState_ = 0;
   frameCount_ = 0;
@@ -1053,169 +1086,182 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
   // 2) downscale to processing size
   const int Wp = std::max(1, imgW_ / procScale_);
   const int Hp = std::max(1, imgH_ / procScale_);
-  cv::resize(curGray_, curProc_, cv::Size(Wp, Hp), 0, 0, cv::INTER_AREA);
+
+  if (useFisheye_ && !map1_.empty() && !map2_.empty()) {
+    // resize first -> tmpProc_, then undistort -> curProc_
+    cv::resize(curGray_, tmpProc_, cv::Size(Wp, Hp), 0, 0, cv::INTER_AREA);
+    cv::remap(tmpProc_, curProc_, map1_, map2_, cv::INTER_LINEAR, cv::BORDER_CONSTANT);
+  } else {
+    cv::resize(curGray_, curProc_, cv::Size(Wp, Hp), 0, 0, cv::INTER_AREA);
+  }
   lastMeanY_ = cv::mean(curProc_)[0];
   ranOrbThisFrame_ = false;
   hybFrameIdx_++;
     const bool isKeyframe = (hybFrameIdx_ % std::max(1, hybridEveryN_)) == 0;
-    if (isKeyframe) {
-      const auto t_orb0 = std::chrono::high_resolution_clock::now();
-      // 1) Detect+compute on current processing-scale frame
-      orbCurKps_.clear();
-      orbCurDesc_.release();
-      orb_->detectAndCompute(curProc_, cv::noArray(), orbCurKps_, orbCurDesc_);
+    // if (isKeyframe) {
+    //   const auto t_orb0 = std::chrono::high_resolution_clock::now();
+    //   // 1) Detect+compute on current processing-scale frame
+    //   orbCurKps_.clear();
+    //   orbCurDesc_.release();
+    //   orb_->detectAndCompute(curProc_, cv::noArray(), orbCurKps_, orbCurDesc_);
   
-      ptsPrev_.clear();
-      ptsCur_.clear();
+    //   ptsPrev_.clear();
+    //   ptsCur_.clear();
   
-      std::vector<cv::Point2f> curPtsAll; curPtsAll.reserve(orbCurKps_.size());
-      for (auto& k : orbCurKps_) curPtsAll.push_back(k.pt);
+    //   std::vector<cv::Point2f> curPtsAll; curPtsAll.reserve(orbCurKps_.size());
+    //   for (auto& k : orbCurKps_) curPtsAll.push_back(k.pt);
   
-      std::vector<cv::Point2f> keepPrev, keepCur;
+    //   std::vector<cv::Point2f> keepPrev, keepCur;
   
-      if (!orbPrevDesc_.empty() && !orbCurDesc_.empty()) {
-        // 2) Ratio + mutual (symmetric) matching to stabilize correspondences
-        cv::BFMatcher bf(cv::NORM_HAMMING, /*crossCheck=*/false);
+    //   if (!orbPrevDesc_.empty() && !orbCurDesc_.empty()) {
+    //     // 2) Ratio + mutual (symmetric) matching to stabilize correspondences
+    //     cv::BFMatcher bf(cv::NORM_HAMMING, /*crossCheck=*/false);
   
-        std::vector<std::vector<cv::DMatch>> knnPC, knnCP;
-        bf.knnMatch(orbPrevDesc_, orbCurDesc_, knnPC, 2);
-        bf.knnMatch(orbCurDesc_, orbPrevDesc_, knnCP, 2);
+    //     std::vector<std::vector<cv::DMatch>> knnPC, knnCP;
+    //     bf.knnMatch(orbPrevDesc_, orbCurDesc_, knnPC, 2);
+    //     bf.knnMatch(orbCurDesc_, orbPrevDesc_, knnCP, 2);
   
-        const float ratio = 0.7f;
-        std::vector<cv::DMatch> candPC;
-        candPC.reserve(knnPC.size());
-        for (const auto& ks : knnPC) {
-          if (ks.size() < 2) continue;
-          if (ks[0].distance < ratio * ks[1].distance) candPC.push_back(ks[0]);
-        }
+    //     const float ratio = 0.7f;
+    //     std::vector<cv::DMatch> candPC;
+    //     candPC.reserve(knnPC.size());
+    //     for (const auto& ks : knnPC) {
+    //       if (ks.size() < 2) continue;
+    //       if (ks[0].distance < ratio * ks[1].distance) candPC.push_back(ks[0]);
+    //     }
   
-        // mutual check
-        std::vector<char> ok(candPC.size(), 0);
-        for (size_t i = 0; i < candPC.size(); ++i) {
-          const auto& m = candPC[i];
-          // find best in CP for m.trainIdx
-          const auto& rev = knnCP[m.trainIdx];
-          if (rev.size() < 2) continue;
-          if (rev[0].distance >= ratio * rev[1].distance) continue;
-          if (rev[0].trainIdx == m.queryIdx) ok[i] = 1;
-        }
+    //     // mutual check
+    //     std::vector<char> ok(candPC.size(), 0);
+    //     for (size_t i = 0; i < candPC.size(); ++i) {
+    //       const auto& m = candPC[i];
+    //       // find best in CP for m.trainIdx
+    //       const auto& rev = knnCP[m.trainIdx];
+    //       if (rev.size() < 2) continue;
+    //       if (rev[0].distance >= ratio * rev[1].distance) continue;
+    //       if (rev[0].trainIdx == m.queryIdx) ok[i] = 1;
+    //     }
   
-        std::vector<cv::Point2f> pPrev, pCur;
-        std::vector<int> idxPrev, idxCur;
-        for (size_t i = 0; i < candPC.size(); ++i) if (ok[i]) {
-          const auto& m = candPC[i];
-          pPrev.push_back(orbPrevKps_[m.queryIdx].pt);
-          pCur .push_back(orbCurKps_[m.trainIdx].pt);
-          idxPrev.push_back(m.queryIdx);
-          idxCur .push_back(m.trainIdx);
-        }
+    //     std::vector<cv::Point2f> pPrev, pCur;
+    //     std::vector<int> idxPrev, idxCur;
+    //     for (size_t i = 0; i < candPC.size(); ++i) if (ok[i]) {
+    //       const auto& m = candPC[i];
+    //       pPrev.push_back(orbPrevKps_[m.queryIdx].pt);
+    //       pCur .push_back(orbCurKps_[m.trainIdx].pt);
+    //       idxPrev.push_back(m.queryIdx);
+    //       idxCur .push_back(m.trainIdx);
+    //     }
   
-        // 3) Geometric gating (RANSAC). Use Fundamental matrix (no intrinsics needed).
-        cv::Mat inlierMask;
-        if (pPrev.size() >= 8) {
-          // ransacReprojThreshold = 1.5 px, confidence = 0.99
-          (void)cv::findFundamentalMat(pPrev, pCur, cv::FM_RANSAC, 1.5, 0.99, inlierMask);
-        } else {
-          inlierMask = cv::Mat::ones((int)pPrev.size(), 1, CV_8U);
-        }
+    //     // 3) Geometric gating (RANSAC). Use Fundamental matrix (no intrinsics needed).
+    //     cv::Mat inlierMask;
+    //     if (pPrev.size() >= 8) {
+    //       // ransacReprojThreshold = 1.5 px, confidence = 0.99
+    //       (void)cv::findFundamentalMat(pPrev, pCur, cv::FM_RANSAC, 1.5, 0.99, inlierMask);
+    //     } else {
+    //       inlierMask = cv::Mat::ones((int)pPrev.size(), 1, CV_8U);
+    //     }
         
-        for (int i = 0; i < inlierMask.rows; ++i) {
-          if (inlierMask.at<uchar>(i)) {
-            keepPrev.push_back(pPrev[(size_t)i]);
-            keepCur .push_back(pCur [(size_t)i]);
-          }
-        }      
-      }
-      // --- E/H gate on ORB correspondences (post-F check) ---
-      if (keepPrev.size() >= 8 && keepCur.size() >= 8) {
-        runEvsHGate(keepPrev, keepCur);
-        if (!mapInitialized_ && ehModel_ == 1) {
-          integrateVO_E(keepPrev, keepCur);
-          R_imu_delta_ = cv::Matx33d::eye();  // reset IMU delta after VO_E use
-        } else if (!mapInitialized_ && ehModel_ == 2) {
-          integrateVO_H(keepPrev, keepCur);   // only before mapping starts
-        }
-      } 
+    //     for (int i = 0; i < inlierMask.rows; ++i) {
+    //       if (inlierMask.at<uchar>(i)) {
+    //         keepPrev.push_back(pPrev[(size_t)i]);
+    //         keepCur .push_back(pCur [(size_t)i]);
+    //       }
+    //     }      
+    //   }
+    //   // --- E/H gate on ORB correspondences (post-F check) ---
+    //   if (keepPrev.size() >= 8 && keepCur.size() >= 8) {
+    //     runEvsHGate(keepPrev, keepCur);
+    //     if (!mapInitialized_ && ehModel_ == 1) {
+    //       integrateVO_E(keepPrev, keepCur);
+    //       R_imu_delta_ = cv::Matx33d::eye();  // reset IMU delta after VO_E use
+    //     } else if (!mapInitialized_ && ehModel_ == 2) {
+    //       integrateVO_H(keepPrev, keepCur);   // only before mapping starts
+    //     }
+    //   } 
 
-      // Two-view init trigger (only once)
-      if (!mapInitialized_ && ehModel_ == 1) {
-        (void)tryTwoViewInit(keepPrev, keepCur);
-      }
+    //   // Two-view init trigger (only once)
+    //   if (!mapInitialized_ && ehModel_ == 1) {
+    //     (void)tryTwoViewInit(keepPrev, keepCur);
+    //   }
 
   
-      // 4) Top-up: if too few tracked points, detect new ones away from current tracks
-      const int target = std::min(maxTracks_, 800);   // cap
-      const int minTracked = std::min(target, std::max(10, target * 6 / 10)); // keep ~60% tracked
-      if ((int)keepCur.size() < minTracked) {
-        cv::Mat mask;
-        buildSuppressionMask(curProc_.size(), keepCur, /*radius px=*/12, mask);
+    //   // 4) Top-up: if too few tracked points, detect new ones away from current tracks
+    //   const int target = std::min(maxTracks_, 800);   // cap
+    //   const int minTracked = std::min(target, std::max(10, target * 6 / 10)); // keep ~60% tracked
+    //   if ((int)keepCur.size() < minTracked) {
+    //     cv::Mat mask;
+    //     buildSuppressionMask(curProc_.size(), keepCur, /*radius px=*/12, mask);
   
-        // Detect more where we have no points; compute descriptors for those
-        std::vector<cv::KeyPoint> addKps;
-        cv::Mat addDesc;
-        orb_->detectAndCompute(curProc_, mask, addKps, addDesc);
+    //     // Detect more where we have no points; compute descriptors for those
+    //     std::vector<cv::KeyPoint> addKps;
+    //     cv::Mat addDesc;
+    //     orb_->detectAndCompute(curProc_, mask, addKps, addDesc);
   
-        // Append until we reach target
-        for (int i = 0; i < (int)addKps.size() && (int)keepCur.size() < target; ++i) {
-          keepCur.push_back(addKps[i].pt);
-          // no need to maintain keepPrev for new points (they are new births)
-        }
-      }
+    //     // Append until we reach target
+    //     for (int i = 0; i < (int)addKps.size() && (int)keepCur.size() < target; ++i) {
+    //       keepCur.push_back(addKps[i].pt);
+    //       // no need to maintain keepPrev for new points (they are new births)
+    //     }
+    //   }
   
-      // 5) Enforce spatial spread (bucket/grid). Works on keepCur only.
-      std::vector<int> uniformIdx;
-      bucketUniform(keepCur, curProc_.cols, curProc_.rows, /*cell=*/cellSize_, /*maxKeep=*/target, uniformIdx);
+    //   // 5) Enforce spatial spread (bucket/grid). Works on keepCur only.
+    //   std::vector<int> uniformIdx;
+    //   bucketUniform(keepCur, curProc_.cols, curProc_.rows, /*cell=*/cellSize_, /*maxKeep=*/target, uniformIdx);
   
-      ptsCur_.reserve(uniformIdx.size());
-      for (int j : uniformIdx) ptsCur_.push_back(keepCur[j]);
+    //   ptsCur_.reserve(uniformIdx.size());
+    //   for (int j : uniformIdx) ptsCur_.push_back(keepCur[j]);
   
-      // Tracking state
-      trackingState_ = (ptsCur_.size() >= 10) ? 1 : 0;
+    //   // Tracking state
+    //   trackingState_ = (ptsCur_.size() >= 10) ? 1 : 0;
   
-      // 6) Prepare "prev" for next frame: set prev = current (re-compute descriptors to align sets)
-      //    Recompute descriptors at the positions we actually kept, so next matching is clean.
-      {
-        std::vector<cv::KeyPoint> kpForPrev; kpForPrev.reserve(ptsCur_.size());
-        for (auto& p : ptsCur_) kpForPrev.emplace_back(cv::Point2f(p.x, p.y), /*size=*/orbPatchSize_);
-        orbPrevKps_.swap(kpForPrev);
-        orb_->compute(curProc_, orbPrevKps_, orbPrevDesc_); // descriptors for next frame
-      }
+    //   // 6) Prepare "prev" for next frame: set prev = current (re-compute descriptors to align sets)
+    //   //    Recompute descriptors at the positions we actually kept, so next matching is clean.
+    //   {
+    //     std::vector<cv::KeyPoint> kpForPrev; kpForPrev.reserve(ptsCur_.size());
+    //     for (auto& p : ptsCur_) kpForPrev.emplace_back(cv::Point2f(p.x, p.y), /*size=*/orbPatchSize_);
+    //     orbPrevKps_.swap(kpForPrev);
+    //     orb_->compute(curProc_, orbPrevKps_, orbPrevDesc_); // descriptors for next frame
+    //   }
   
-      // Also keep a copy of the current image for any downstream assumptions
-      if (prevProc_.size() != curProc_.size()) prevProc_.create(curProc_.rows, curProc_.cols, CV_8UC1);
-      curProc_.copyTo(prevProc_);
-      ptsPrev_ = ptsCur_;  // hand off these ORB points to KLT for the next frame
+    //   // Also keep a copy of the current image for any downstream assumptions
+    //   if (prevProc_.size() != curProc_.size()) prevProc_.create(curProc_.rows, curProc_.cols, CV_8UC1);
+    //   curProc_.copyTo(prevProc_);
+    //   ptsPrev_ = ptsCur_;  // hand off these ORB points to KLT for the next frame
 
-      pyrPrev_.clear();
-      int maxLevel = std::max(0, kltLevels_);
-      cv::buildOpticalFlowPyramid(prevProc_, pyrPrev_, cv::Size(kltWin_, kltWin_), maxLevel);
+    //   pyrPrev_.clear();
+    //   int maxLevel = std::max(0, kltLevels_);
+    //   cv::buildOpticalFlowPyramid(prevProc_, pyrPrev_, cv::Size(kltWin_, kltWin_), maxLevel);
 
-      const auto t_orb1 = std::chrono::high_resolution_clock::now();
-      t_last_orb_ms_ = std::chrono::duration<double,std::milli>(t_orb1 - t_orb0).count();
+    //   const auto t_orb1 = std::chrono::high_resolution_clock::now();
+    //   t_last_orb_ms_ = std::chrono::duration<double,std::milli>(t_orb1 - t_orb0).count();
 
-      ranOrbThisFrame_ = true;
-      lastOrbKF_ = hybFrameIdx_;
-      orbKFCount_++;
+    //   ranOrbThisFrame_ = true;
+    //   lastOrbKF_ = hybFrameIdx_;
+    //   orbKFCount_++;
 
-      // ===== Mapping track (PnP) + KF insertion (RUN ALSO ON ORB FRAMES) =====
-      if (mapInitialized_) {
-        const bool pnpOk = trackWithPnP();
+    //   // ===== Mapping track (PnP) + KF insertion (RUN ALSO ON ORB FRAMES) =====
+    //   if (mapInitialized_) {
+    //     const bool pnpOk = trackWithPnP();
 
-        // Run metric init regardless of pnpOk so scale converges quickly.
-        // Once metric init is done, you can choose to require pnpOk for tight coupling.
-        vioOnKeyframe(ts);
-        if (pnpOk && shouldInsertKF(lastKFInliers_, lastTS_)) {
-          insertKeyframeAndTriangulate();
-        }
-      }
+    //     // CRITICAL: never use stale reprojection obs
+    //     if (!pnpOk) {
+    //       vioLastObs_.clear();   // ensure IMU-only step (or skip)
+    //     }
 
-      // Roll state is already updated above (prevProc_, pyrPrev_, ptsPrev_ set).
-      trackingState_ = (ptsPrev_.size() >= 10) ? 1 : 0;
+    //     // Always allow metric init to proceed (IMU-only is fine),
+    //     // but only do tight reprojection when PnP succeeded.
+    //     vioOnKeyframe(ts);
 
-      auto t_all1 = std::chrono::high_resolution_clock::now();
-      t_last_total_ms_ = std::chrono::duration<double, std::milli>(t_all1 - t0).count();
-      return;
-    }
+    //     if (pnpOk && shouldInsertKF(lastKFInliers_, lastTS_)) {
+    //       insertKeyframeAndTriangulate();
+    //     }
+    //   }
+
+    //   // Roll state is already updated above (prevProc_, pyrPrev_, ptsPrev_ set).
+    //   trackingState_ = (ptsPrev_.size() >= 10) ? 1 : 0;
+
+    //   auto t_all1 = std::chrono::high_resolution_clock::now();
+    //   t_last_total_ms_ = std::chrono::duration<double, std::milli>(t_all1 - t0).count();
+    //   return;
+    // }
   
 
   // 3) build pyramids (processing scale)
@@ -1324,18 +1370,20 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
     // store or expose descs if/when mapping is added
   }
 
-  // ===== Mapping track (PnP) + KF insertion =====
   if (mapInitialized_) {
     const bool pnpOk = trackWithPnP();
-  
-    // Run metric init regardless of pnpOk so scale converges quickly.
-    // Once metric init is done, you can choose to require pnpOk for tight coupling.
+
+    // CRITICAL: never use stale reprojection obs
+    if (!pnpOk) {
+      vioLastObs_.clear();
+    }
+
     vioOnKeyframe(ts);
-  
+
     if (pnpOk && shouldInsertKF(lastKFInliers_, lastTS_)) {
       insertKeyframeAndTriangulate();
     }
-  }  
+  }
 
   // 6) roll to next frame
   // Remove hidden per-frame allocations and reuse old
@@ -1385,17 +1433,17 @@ void System::feedImu(double ts,
   }
   lastImuSampleTS_ = ts;
 
-  imuBuf_.push_back(ImuSample{
-    ts,
-    cv::Vec3d(ax, ay, az),
-    cv::Vec3d(gx, gy, gz)
-  });
+  cv::Vec3d a_imu(ax, ay, az);
+  cv::Vec3d w_imu(gx, gy, gz);
+  
+  // Apply dataset->body axis map
+  cv::Vec3d a = R_b_imu_ * a_imu;
+  cv::Vec3d w = R_b_imu_ * w_imu;
+  
+  imuBuf_.push_back(ImuSample{ ts, a, w });  
 
-  imuMeas_.push_back(ImuMeas{
-    ts,
-    cv::Vec3d(ax, ay, az),
-    cv::Vec3d(gx, gy, gz)
-  });
+  imuMeas_.push_back(ImuMeas{ ts, a, w });
+
 
   // keep bounded
   if (imuMeas_.size() > 6000) imuMeas_.erase(imuMeas_.begin(), imuMeas_.begin() + 3000);
@@ -1434,8 +1482,11 @@ cv::Matx33d System::integrateImuDeltaRotationAccCorr(double t0, double t1, bool*
     // Rough gate: accept ~ [7, 13] m/s^2
     if (an > 7.0 && an < 13.0) {
       // measured gravity direction in body frame (points "down" in device sense)
-      const cv::Vec3d gMeas_b = safeNormed(a);
-
+      // For most IMUs, accel measures specific force f = a - g.
+      // When stationary, accel ~ -g in world -> in body it points "up".
+      // Gravity direction (down) is therefore approximately -accel direction.
+      const cv::Vec3d gMeas_b = safeNormed(-a);
+      
       // predicted gravity direction in body frame from current world gravity dir:
       // gDirW_ is unit vector in world, so in body: Rwb^T * gDirW_
       const cv::Vec3d gPred_b = safeNormed(imuState_.Rwb.t() * gDirW_);
@@ -1462,8 +1513,9 @@ cv::Matx33d System::integrateImuDeltaRotationAccCorr(double t0, double t1, bool*
 
   // Delta rotation between t0 and t1 in world frame (world-from-body)
   cv::Matx33d Rwb1 = imuState_.Rwb;
-  cv::Matx33d dRwb = Rwb0.t() * Rwb1; // body0->body1 expressed in body0 frame
-
+  // Rotation that maps a vector from body0 coords into body1 coords (b1 <- b0)
+  cv::Matx33d dRwb = Rwb1.t() * Rwb0;
+  
   // Convert to camera delta: Rc = Rcb * Rb * Rcb^T
   cv::Matx33d dRcc = Rcb_ * dRwb * Rcb_.t();
 
@@ -1490,7 +1542,8 @@ void System::vioOnKeyframe(double ts)
       c.K = K();
       c.R_ci = Rcb_;
       c.t_ci = cv::Vec3d(0,0,0);     // OK to ignore lever arm during init
-      c.g_w  = cv::Vec3d(0,-9.81,0); // placeholder, initializer will solve g direction/mag
+      c.g_w = g_world_;
+
 
       VioInitResult R = vioInit_.solve(imuMeas_, c);
       if (R.ok) {
@@ -1509,6 +1562,10 @@ void System::vioOnKeyframe(double ts)
 
         // 2) Update gravity in System + VIO calib
         g_world_ = R.g_w;
+
+        // Keep IMU accel correction gravity-direction aligned with backend gravity
+        gDirW_ = safeNormed(g_world_);
+
         VioCalib cc = c;
         cc.g_w = g_world_;
         vio_.setCalib(cc);
@@ -1582,9 +1639,19 @@ void System::vioOnKeyframe(double ts)
     // Rotation
     init.R_wi = ortho(Rwi0 * pim.dR);
 
-    // Translate dv/dp from i-frame using Rwi0 (NOT the updated rotation)
-    init.v_wi = v0 + g_world_ * dt + Rwi0 * pim.dv;
-    init.p_wi = p0 + v0 * dt + 0.5 * g_world_ * (dt*dt) + Rwi0 * pim.dp;
+    // If your accel measurements already include gravity compensation (e.g., phone "linearAcceleration"),
+    // then adding g_world_ here will double-count gravity and cause huge drift.
+    //
+    // Quick robust approach: add a toggle. Default to STANDARD VIO (add gravity).
+    const bool accel_is_specific_force = true; // <-- set false if your feed already removed gravity
+
+    if (accel_is_specific_force) {
+      init.v_wi = v0 + g_world_ * dt + Rwi0 * pim.dv;
+      init.p_wi = p0 + v0 * dt + 0.5 * g_world_ * (dt*dt) + Rwi0 * pim.dp;
+    } else {
+      init.v_wi = v0 + Rwi0 * pim.dv;
+      init.p_wi = p0 + v0 * dt + Rwi0 * pim.dp;
+    }
   }
 
   // 4) Push node + optimize (tight: IMU + reprojection)
@@ -1647,4 +1714,43 @@ bool System::setKittiCalibFromTexts(const std::string& cam2cam,
   vio_.setCalib(c);
   kittiK_ = out.K;
   return true;
+}
+
+static cv::Matx33d quatToR(double qx,double qy,double qz,double qw){
+  // normalize
+  double n = std::sqrt(qx*qx+qy*qy+qz*qz+qw*qw);
+  if (n < 1e-12) return cv::Matx33d::eye();
+  qx/=n; qy/=n; qz/=n; qw/=n;
+
+  const double xx=qx*qx, yy=qy*qy, zz=qz*qz;
+  const double xy=qx*qy, xz=qx*qz, yz=qy*qz;
+  const double wx=qw*qx, wy=qw*qy, wz=qw*qz;
+
+  return cv::Matx33d(
+    1-2*(yy+zz), 2*(xy-wz),   2*(xz+wy),
+    2*(xy+wz),   1-2*(xx+zz), 2*(yz-wx),
+    2*(xz-wy),   2*(yz+wx),   1-2*(xx+yy)
+  );
+}
+
+void System::setImuToCamQuat(double qx, double qy, double qz, double qw,
+                             double px, double py, double pz)
+{
+  // camera-from-imu (IMU->Cam)
+  cv::Matx33d R = quatToR(qx,qy,qz,qw);
+
+  // Toggle this if rotation feels wrong/restricted.
+  // If T_imu_cam is actually "imu-from-cam", we need transpose (inverse).
+  const bool T_is_cam_from_imu = true; // <-- flip to false to test
+  
+  Rcb_ = T_is_cam_from_imu ? R : R.t();
+  t_ci_ = cv::Vec3d(px,py,pz);  
+
+  // also refresh backend calib if already initialized
+  VioCalib c;
+  c.K    = haveKittiCalib_ ? kittiK_ : K();
+  c.R_ci = Rcb_;
+  c.t_ci = t_ci_;
+  c.g_w  = g_world_;
+  vio_.setCalib(c);
 }

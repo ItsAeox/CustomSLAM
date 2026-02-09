@@ -106,6 +106,18 @@ void feedImuSample(double ts, double ax, double ay, double az, double gx, double
   gSys.feedImu(ts, ax, ay, az, gx, gy, gz);
 }
 
+void setImuToCamQuat(double qx, double qy, double qz, double qw,
+  double px, double py, double pz) {
+gSys.setImuToCamQuat(qx,qy,qz,qw,px,py,pz);
+}
+
+static void SetKb4Distortion(double k1,double k2,double k3,double k4) {
+  gSys.setKb4Distortion(k1,k2,k3,k4);
+}
+static void SetUseFisheye(bool on) {
+  gSys.setUseFisheye(on);
+}
+
 static emscripten::val GetImuDeltaYPR() {
   auto r = gSys.getImuDeltaYPR();
   emscripten::val a = emscripten::val::array();
@@ -119,8 +131,6 @@ static emscripten::val GetImuDeltaRod() {
   return a;
 }
 static double GetImuDeltaAngleDeg() { return gSys.getImuDeltaAngleDeg(); }
-
-
 
 EMSCRIPTEN_BINDINGS(vio_bindings_pointtrack) {
   function("initSystem",   &initSystem);
@@ -163,4 +173,8 @@ EMSCRIPTEN_BINDINGS(vio_bindings_pointtrack) {
   function("getImuDeltaRod", &GetImuDeltaRod);
   function("getImuDeltaAngleDeg", &GetImuDeltaAngleDeg);
   function("setKittiCalibFromTexts", &setKittiCalibFromTexts);
+  function("setImuToCamQuat", &setImuToCamQuat);
+  function("setKb4Distortion", &SetKb4Distortion);
+  function("setUseFisheye",   &SetUseFisheye);
+
 }

@@ -33,7 +33,12 @@
       padding:6px; white-space:pre-wrap; z-index:60;
     }
     #hud{ position:fixed; right:8px; top:8px; z-index:55; }
-    #view{ position:fixed; inset:0; width:100vw; height:100vh; }
+    html, body { margin:0; width:100%; height:100%; background:#000; overflow:hidden; }
+    #view{
+      position:fixed;
+      left:0; top:0;
+      /* JS will set width/height/left/top for letterboxing */
+    }
   </style>
 </head>
 <body>
@@ -42,7 +47,26 @@
   <div id="log"></div>
 
   <div id="ui">
-    <h1>KITTI dataset runner</h1>
+    <h1>Dataset runner</h1>
+
+    <div class="row">
+      <label>Dataset</label>
+      <select id="dataset" style="padding:6px 10px;border-radius:10px;border:1px solid rgba(0,255,0,.25);background:rgba(0,0,0,.75);color:#d8ffd8;">
+        <option value="kitti" selected>KITTI (raw)</option>
+        <option value="tumvi">TUM-VI (your loop-floor0)</option>
+      </select>
+    
+      <span class="hint">Pick one root folder. Paths below are relative to that root.</span>
+    </div>
+    
+    <div class="row" id="tumviRow" style="display:none">
+      <label>Left dir</label>
+      <input id="leftDir" type="text" value="left_images" />
+      <label>Right dir</label>
+      <input id="rightDir" type="text" value="right_images" />
+      <label class="pill">KB4</label>
+      <span class="hint">We will start pinhole-only (distortion ignored) until we add rectification in C++.</span>
+    </div>    
 
     <div class="row">
       <label class="pill">Step 1</label>
@@ -88,6 +112,24 @@
       </ul>
     </div> -->
   </div>
+
+  <script>
+    const dsEl = document.getElementById('dataset');
+    const tumviRow = document.getElementById('tumviRow');
+    const kittiImgDir = document.getElementById('imgDir');
+    const kittiOxtsDir = document.getElementById('oxtsDir');
+  
+    function syncUI() {
+      const isTumvi = dsEl.value === 'tumvi';
+      tumviRow.style.display = isTumvi ? '' : 'none';
+  
+      // KITTI-only inputs
+      kittiImgDir.disabled = isTumvi;
+      kittiOxtsDir.disabled = isTumvi;
+    }
+    dsEl.addEventListener('change', syncUI);
+    syncUI();
+  </script>  
 
   <script type="module" src="./kitti.js"></script>
 </body>

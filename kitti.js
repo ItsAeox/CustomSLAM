@@ -1,16 +1,17 @@
 import { initRenderer, drawFrame, drawPoints, updateHUDText, drawPathXZ, drawAttitude } from './renderer.js';
+import { loadTumviSequence } from './tumvi.js';
 
 // ===== utilities ============================================================
-function ensureLogEl() {
-  const d = document.getElementById('log');
-  return d;
-}
-const _logEl = ensureLogEl();
+// function ensureLogEl() {
+//   const d = document.getElementById('log');
+//   return d;
+// }
+// const _logEl = ensureLogEl();
 function logMsg(...args) {
   const line = args.map(x => (typeof x === 'object' ? JSON.stringify(x) : String(x))).join(' ');
   console.log(...args);
-  _logEl.textContent += line + '\n';
-  _logEl.scrollTop = _logEl.scrollHeight;
+  // _logEl.textContent += line + '\n';
+  // _logEl.scrollTop = _logEl.scrollHeight;
 }
 
 function byName(a, b) {
@@ -47,25 +48,35 @@ async function readText(file) {
   return await file.text();
 }
 
-function parseTimestamps(txt) {
-  // KITTI raw timestamps: one per line, like "2011-09-26 13:02:39.123456789"
-  // We convert to seconds relative to first.
-  const lines = txt.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-  if (!lines.length) return [];
-  const t0 = Date.parse(lines[0].replace(' ', 'T') + 'Z');
-  // Date.parse loses sub-ms. We'll keep relative using the string fractional part.
-  function toSec(line) {
-    const [datePart, timePart] = line.split(' ');
-    const [hhmmss, frac=''] = timePart.split('.');
-    const baseMs = Date.parse(`${datePart}T${hhmmss}Z`);
-    const fracSec = frac ? Number('0.' + frac) : 0;
-    return (baseMs - t0) * 1e-3 + fracSec;
+function parseTimestamps(text) {
+  // Return absolute timestamps in seconds (do NOT normalize here).
+  // KITTI timestamp lines look like: "2011-09-26 13:02:34.123456789"
+  const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  const out = [];
+  for (const s of lines) {
+    // split date + time
+    const parts = s.split(/\s+/);
+    if (parts.length < 2) continue;
+    const dateStr = parts[0];
+    const timeStr = parts[1];
+
+    // timeStr may have nanoseconds: HH:MM:SS.NNNNNNNNN
+    const [hms, fracStrRaw = "0"] = timeStr.split(".");
+    const [hh, mm, ss] = hms.split(":").map(Number);
+
+    // Build a Date in UTC-like way using the date part, then add h/m/s
+    // KITTI timestamps are local time, but we only need consistent relative deltas.
+    const base = new Date(dateStr + "T00:00:00");
+    const sec = hh * 3600 + mm * 60 + ss;
+
+    // keep sub-second precision
+    const frac = Number("0." + fracStrRaw.replace(/[^\d]/g, "").slice(0, 9).padEnd(9, "0"));
+
+    out.push(base.getTime() / 1000 + sec + frac);
   }
-  const arr = lines.map(toSec);
-  // normalize to 0
-  const first = arr[0];
-  return arr.map(x => x - first);
+  return out;
 }
+
 
 function parseOxtsLine(line) {
   // KITTI raw oxts/data line is 30 values.
@@ -110,6 +121,9 @@ const els = {
   speed: document.getElementById('speed'),
   skip: document.getElementById('skip'),
   maxFrames: document.getElementById('maxFrames'),
+  dataset: document.getElementById('dataset'),
+  leftDir: document.getElementById('leftDir'),
+  rightDir: document.getElementById('rightDir'),
 };
 
 let fileList = [];
@@ -151,14 +165,39 @@ els.dirPick.addEventListener('change', () => {
 els.btnScan.addEventListener('click', () => {
   if (!fileList.length) return;
 
-  // Quick presence checks
+  const ds = els.dataset?.value || 'kitti';
+
+  if (ds === 'tumvi') {
+    const leftDir = (els.leftDir?.value || 'left_images').trim();
+
+    const imgs = findFilesUnder(fileList, leftDir, ['.png', '.jpg', '.jpeg']);
+    const ts = findFile(fileList, `${leftDir}/image_timestamps_left.txt`);
+    const imu = findFile(fileList, `imu_data.txt`);
+    const cam = findFile(fileList, `camera-calibration.json`);
+
+    logMsg('Scan (TUM-VI):', {
+      leftDir,
+      imgCount: imgs.length,
+      hasTimestamps: !!ts,
+      hasImu: !!imu,
+      hasCalib: !!cam,
+    });
+
+    els.btnLoad.disabled = imgs.length === 0 || !ts;
+    els.seqInfo.textContent = imgs.length
+      ? `Found ${imgs.length} left images. timestamps: ${ts ? 'YES' : 'NO'} imu: ${imu ? 'YES' : 'NO'} calib: ${cam ? 'YES' : 'NO'}`
+      : 'No images found. Check Left dir path.';
+    return;
+  }
+
+  // ---- KITTI scan (original) ----
   const imgDir = els.imgDir.value.trim();
   const oxtsDir = els.oxtsDir.value.trim();
 
   const imgs = findFilesUnder(fileList, imgDir, ['.png', '.jpg', '.jpeg']);
   const oxtsTxt = findFilesUnder(fileList, oxtsDir, ['.txt']);
 
-  logMsg('Scan:', {
+  logMsg('Scan (KITTI):', {
     imgDir, imgCount: imgs.length,
     oxtsDir, oxtsCount: oxtsTxt.length,
   });
@@ -167,9 +206,104 @@ els.btnScan.addEventListener('click', () => {
   els.seqInfo.textContent = imgs.length ? `Found ${imgs.length} images. Found ${oxtsTxt.length} OXTS files.` : 'No images found. Check Image dir path.';
 });
 
+
 els.btnLoad.addEventListener('click', async () => {
   if (!fileList.length) return;
 
+  const ds = els.dataset?.value || 'kitti';
+  if (ds === 'tumvi') {
+    const leftDir  = (els.leftDir?.value || 'left_images').trim();
+    const rightDir = (els.rightDir?.value || 'right_images').trim();
+
+    seq = await loadTumviSequence(fileList, { leftDir, rightDir, Module });
+
+    // Init canvas to first frame size (same as KITTI path)
+    const bmp = await createImageBitmap(seq.leftImgs[0]);
+    canvas.width = bmp.width;
+    canvas.height = bmp.height;
+    bmp.close?.();
+
+    // Pick a pinhole intrinsics guess from calibration json if present
+    // IMPORTANT: KB4 distortion is ignored for now (will hurt edges).
+    let fx, fy, cx, cy;
+    let cam = null; // <-- ADD THIS
+    
+    // camera-calibration.json is shaped like { value0: {...} }, so normalize it:
+    const calib = seq.calib?.value0 ?? seq.calib;
+
+    if (calib && Array.isArray(calib.intrinsics) && Array.isArray(calib.resolution) && calib.intrinsics.length) {
+      const W = canvas.width, H = canvas.height;
+
+      // pick cam index by resolution match (your left/right are 1024x1024)
+      let camIdx = calib.resolution.findIndex(r => r && r[0] === W && r[1] === H);
+      if (camIdx < 0) camIdx = 0;
+
+      cam = calib.intrinsics[camIdx];
+      const intr = cam?.intrinsics || {};
+
+      fx = intr.fx; fy = intr.fy; cx = intr.cx; cy = intr.cy;
+
+      logMsg('Using calib intrinsics (pinhole approx):', {
+        camIdx, W, H, camera_type: cam?.camera_type, fx, fy, cx, cy
+      });
+    } else {
+      // fallback: your existing fovy-based guess
+      const FOVY = 45;
+      fy = canvas.height / (2 * Math.tan((FOVY * Math.PI/180) / 2));
+      fx = fy * (canvas.width / canvas.height);
+      cx = canvas.width * 0.5;
+      cy = canvas.height * 0.5;
+      logMsg('No usable camera calibration found; using FOV guess intrinsics.');
+    }
+
+    // --- KB4 fisheye: pass k1..k4 into WASM before initSystem() ---
+    try {
+      // Default off unless we detect KB4
+      Module.setUseFisheye?.(false);
+
+      const ct = String(cam?.camera_type || '').toLowerCase();
+
+      // Common shapes you might see:
+      //  - cam.distortion_parameters = [k1,k2,k3,k4]
+      //  - cam.distortion = { parameters:[...] }
+      const intrObj = cam?.intrinsics || {};
+
+      // Accept multiple possible shapes, including TUM-VI's: intrinsics.k1..k4
+      const dp =
+        (Array.isArray(cam?.distortion_parameters) ? cam.distortion_parameters : null) ||
+        (Array.isArray(cam?.distortion?.parameters) ? cam.distortion.parameters : null) ||
+        (Number.isFinite(intrObj.k1) && Number.isFinite(intrObj.k2) &&
+         Number.isFinite(intrObj.k3) && Number.isFinite(intrObj.k4)
+           ? [intrObj.k1, intrObj.k2, intrObj.k3, intrObj.k4]
+           : null);      
+
+      // Only enable if it's actually KB4 and we have 4 params
+      if ((ct.includes('kb4') || ct.includes('fisheye')) && dp && dp.length >= 4) {
+        const k1 = Number(dp[0]), k2 = Number(dp[1]), k3 = Number(dp[2]), k4 = Number(dp[3]);
+        if ([k1,k2,k3,k4].every(Number.isFinite) && Module.setKb4Distortion) {
+          Module.setKb4Distortion(k1, k2, k3, k4);
+          Module.setUseFisheye?.(true);
+          logMsg('KB4 distortion enabled:', { k1, k2, k3, k4 });
+        } else {
+          logMsg('KB4 distortion found but invalid params; fisheye disabled.', { dp });
+        }
+      } else {
+        logMsg('No KB4 distortion in calib for selected camera; fisheye disabled.', { camera_type: cam?.camera_type });
+      }
+    } catch (e) {
+      logMsg('KB4 setup error (ignored):', String(e));
+    }
+
+    Module.initSystem(canvas.width, canvas.height, fx, fy, cx, cy);
+
+    els.seqInfo.textContent = `Loaded TUM-VI: ${seq.N} frames (${canvas.width}x${canvas.height}).`;
+    els.btnRun.disabled = false;
+    els.btnExport.disabled = true;
+    recorded = [];
+
+    logMsg('Sequence loaded (TUM-VI):', { N: seq.N, hasImu: !!seq.imuStream?.length, hasMocap: !!seq.mocap?.length });
+    return;
+  }
   const imgDir = els.imgDir.value.trim();
   const oxtsDir = els.oxtsDir.value.trim();
 
@@ -200,6 +334,11 @@ els.btnLoad.addEventListener('click', async () => {
   let oxtsTS = [];
   if (tsOxtsFile) {
     oxtsTS = parseTimestamps(await readText(tsOxtsFile));
+    // IMPORTANT: rebase BOTH streams to the SAME t0
+    // (image timestamps and oxts timestamps can start at slightly different absolute times)
+    const tBase = Math.min(imageTS[0], oxtsTS[0]);
+    imageTS = imageTS.map(t => t - tBase);
+    oxtsTS  = oxtsTS.map(t => t - tBase);
   } else {
     logMsg('No OXTS timestamps.txt found; IMU will be aligned by index (less accurate).');
   }
@@ -297,6 +436,9 @@ els.btnRun.addEventListener('click', async () => {
 
   const start = performance.now();
   let lastUI = performance.now();
+  let prevTsForRates = null;
+  let prevTwcForRates = null;
+  let prevYprForRates = null;
 
   const N = seq.N;
   const startIdx = Math.min(N-1, skip);
@@ -340,8 +482,10 @@ els.btnRun.addEventListener('click', async () => {
     const tNow = tRel;
 
     // Decode image
-    const bmp = await createImageBitmap(seq.images[i]);
-
+    const ds = els.dataset?.value || 'kitti';
+    const imgFile = (ds === 'tumvi') ? seq.leftImgs[i] : seq.images[i];
+    const bmp = await createImageBitmap(imgFile);
+    
     // 1) Draw to visible canvas (so you see the sequence)
     drawFrame(bmp, canvas.width, canvas.height);
     
@@ -398,11 +542,6 @@ els.btnRun.addEventListener('click', async () => {
     try { twc = Module.getTwc?.() || twc; } catch {}
     try { ypr = Module.getYPR?.() || ypr; } catch {}
 
-    // Convert from VO world (OpenCV-ish: x right, y down, z forward)
-    // to an ENU-like export where:
-    //   x = east-ish  (use VO x)
-    //   y = north-ish (use VO z)
-    //   z = up-ish    (use -VO y)
     const x = Number(twc[1]);
     const y = -Number(twc[2]);
     const z = Number(twc[0]);
@@ -417,6 +556,28 @@ els.btnRun.addEventListener('click', async () => {
     // HUD update (throttled)
     const now = performance.now();
     if (now - lastUI > 80) {
+      const tNow = Number(seq.imageTS[i] ?? (i * 0.1)); // or whatever timestamp you use
+      let vStr = 'V (m/s)    NA';
+      let wStr = 'W (deg/s)  NA';
+
+      if (prevTsForRates !== null) {
+        const dt = Math.max(1e-6, tNow - prevTsForRates);
+
+        const vx = (Number(twc[0]) - prevTwcForRates[0]) / dt;
+        const vy = (Number(twc[1]) - prevTwcForRates[1]) / dt;
+        const vz = (Number(twc[2]) - prevTwcForRates[2]) / dt;
+        vStr = `V (m/s)    ${vx.toFixed(2)} ${vy.toFixed(2)} ${vz.toFixed(2)}`;
+
+        const wy = (Number(ypr[0]) - prevYprForRates[0]) * 180/Math.PI / dt;
+        const wp = (Number(ypr[1]) - prevYprForRates[1]) * 180/Math.PI / dt;
+        const wr = (Number(ypr[2]) - prevYprForRates[2]) * 180/Math.PI / dt;
+        wStr = `W (deg/s)  ${wy.toFixed(1)} ${wp.toFixed(1)} ${wr.toFixed(1)}`;
+      }
+
+      prevTsForRates = tNow;
+      prevTwcForRates = [Number(twc[0]), Number(twc[1]), Number(twc[2])];
+      prevYprForRates = [Number(ypr[0]), Number(ypr[1]), Number(ypr[2])];
+
       const wasmTotal = Number(Module.getLastTotalMS?.() ?? 0);
       const wasmKLT = Number(Module.getLastKltMS?.() ?? 0);
       const imuUsed = Number(Module.getImuUsedThisFrame?.() ?? 0);
@@ -433,6 +594,7 @@ els.btnRun.addEventListener('click', async () => {
         `Pos        ${Number(twc[0]).toFixed(3)} ${Number(twc[1]).toFixed(3)} ${Number(twc[2]).toFixed(3)}`,
         'MPs        ' + mps,
         'KFs        ' + kps,
+        `IMU Δang   ${(Number(Module.getImuDeltaAngleDeg?.() ?? 0)).toFixed(1)} deg`
       ].join('\n'));
       lastUI = now;
     }
@@ -483,8 +645,9 @@ els.btnExport.addEventListener('click', () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'kitti_poses.csv';
-    document.body.appendChild(a);
+    const ds = els.dataset?.value || 'kitti';
+    a.download = (ds === 'tumvi') ? 'tumvi_poses.csv' : 'kitti_poses.csv';
+        document.body.appendChild(a);
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
