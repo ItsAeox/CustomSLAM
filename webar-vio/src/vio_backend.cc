@@ -72,9 +72,19 @@ void VioBackend::addKeyframe(const VioState& init,
 
   // keep window bounded
   while ((int)states_.size() > window_) {
+    // Remove oldest state/obs
     states_.erase(states_.begin());
     obs_.erase(obs_.begin());
-    pim_.erase(pim_.begin());
+
+    // IMPORTANT: pim_[i] represents factor (i-1 -> i), with pim_[0] dummy.
+    // When we drop the oldest state (old index 0), we must drop the factor
+    // that connected old0 -> old1, which is pim_[1], not pim_[0].
+    if ((int)pim_.size() >= 2) {
+      pim_.erase(pim_.begin() + 1);
+    }
+
+    // Keep a dummy at index 0
+    if (!pim_.empty()) pim_[0] = ImuPreint{};
   }
 }
 

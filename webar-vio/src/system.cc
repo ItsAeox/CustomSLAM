@@ -1097,171 +1097,171 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
   lastMeanY_ = cv::mean(curProc_)[0];
   ranOrbThisFrame_ = false;
   hybFrameIdx_++;
-    const bool isKeyframe = (hybFrameIdx_ % std::max(1, hybridEveryN_)) == 0;
-    // if (isKeyframe) {
-    //   const auto t_orb0 = std::chrono::high_resolution_clock::now();
-    //   // 1) Detect+compute on current processing-scale frame
-    //   orbCurKps_.clear();
-    //   orbCurDesc_.release();
-    //   orb_->detectAndCompute(curProc_, cv::noArray(), orbCurKps_, orbCurDesc_);
-  
-    //   ptsPrev_.clear();
-    //   ptsCur_.clear();
-  
-    //   std::vector<cv::Point2f> curPtsAll; curPtsAll.reserve(orbCurKps_.size());
-    //   for (auto& k : orbCurKps_) curPtsAll.push_back(k.pt);
-  
-    //   std::vector<cv::Point2f> keepPrev, keepCur;
-  
-    //   if (!orbPrevDesc_.empty() && !orbCurDesc_.empty()) {
-    //     // 2) Ratio + mutual (symmetric) matching to stabilize correspondences
-    //     cv::BFMatcher bf(cv::NORM_HAMMING, /*crossCheck=*/false);
-  
-    //     std::vector<std::vector<cv::DMatch>> knnPC, knnCP;
-    //     bf.knnMatch(orbPrevDesc_, orbCurDesc_, knnPC, 2);
-    //     bf.knnMatch(orbCurDesc_, orbPrevDesc_, knnCP, 2);
-  
-    //     const float ratio = 0.7f;
-    //     std::vector<cv::DMatch> candPC;
-    //     candPC.reserve(knnPC.size());
-    //     for (const auto& ks : knnPC) {
-    //       if (ks.size() < 2) continue;
-    //       if (ks[0].distance < ratio * ks[1].distance) candPC.push_back(ks[0]);
-    //     }
-  
-    //     // mutual check
-    //     std::vector<char> ok(candPC.size(), 0);
-    //     for (size_t i = 0; i < candPC.size(); ++i) {
-    //       const auto& m = candPC[i];
-    //       // find best in CP for m.trainIdx
-    //       const auto& rev = knnCP[m.trainIdx];
-    //       if (rev.size() < 2) continue;
-    //       if (rev[0].distance >= ratio * rev[1].distance) continue;
-    //       if (rev[0].trainIdx == m.queryIdx) ok[i] = 1;
-    //     }
-  
-    //     std::vector<cv::Point2f> pPrev, pCur;
-    //     std::vector<int> idxPrev, idxCur;
-    //     for (size_t i = 0; i < candPC.size(); ++i) if (ok[i]) {
-    //       const auto& m = candPC[i];
-    //       pPrev.push_back(orbPrevKps_[m.queryIdx].pt);
-    //       pCur .push_back(orbCurKps_[m.trainIdx].pt);
-    //       idxPrev.push_back(m.queryIdx);
-    //       idxCur .push_back(m.trainIdx);
-    //     }
-  
-    //     // 3) Geometric gating (RANSAC). Use Fundamental matrix (no intrinsics needed).
-    //     cv::Mat inlierMask;
-    //     if (pPrev.size() >= 8) {
-    //       // ransacReprojThreshold = 1.5 px, confidence = 0.99
-    //       (void)cv::findFundamentalMat(pPrev, pCur, cv::FM_RANSAC, 1.5, 0.99, inlierMask);
-    //     } else {
-    //       inlierMask = cv::Mat::ones((int)pPrev.size(), 1, CV_8U);
-    //     }
-        
-    //     for (int i = 0; i < inlierMask.rows; ++i) {
-    //       if (inlierMask.at<uchar>(i)) {
-    //         keepPrev.push_back(pPrev[(size_t)i]);
-    //         keepCur .push_back(pCur [(size_t)i]);
-    //       }
-    //     }      
-    //   }
-    //   // --- E/H gate on ORB correspondences (post-F check) ---
-    //   if (keepPrev.size() >= 8 && keepCur.size() >= 8) {
-    //     runEvsHGate(keepPrev, keepCur);
-    //     if (!mapInitialized_ && ehModel_ == 1) {
-    //       integrateVO_E(keepPrev, keepCur);
-    //       R_imu_delta_ = cv::Matx33d::eye();  // reset IMU delta after VO_E use
-    //     } else if (!mapInitialized_ && ehModel_ == 2) {
-    //       integrateVO_H(keepPrev, keepCur);   // only before mapping starts
-    //     }
-    //   } 
+  const bool isKeyframe = (hybFrameIdx_ % std::max(1, hybridEveryN_)) == 0;
+  // if (isKeyframe) {
+  //   const auto t_orb0 = std::chrono::high_resolution_clock::now();
+  //   // 1) Detect+compute on current processing-scale frame
+  //   orbCurKps_.clear();
+  //   orbCurDesc_.release();
+  //   orb_->detectAndCompute(curProc_, cv::noArray(), orbCurKps_, orbCurDesc_);
 
-    //   // Two-view init trigger (only once)
-    //   if (!mapInitialized_ && ehModel_ == 1) {
-    //     (void)tryTwoViewInit(keepPrev, keepCur);
-    //   }
+  //   ptsPrev_.clear();
+  //   ptsCur_.clear();
 
-  
-    //   // 4) Top-up: if too few tracked points, detect new ones away from current tracks
-    //   const int target = std::min(maxTracks_, 800);   // cap
-    //   const int minTracked = std::min(target, std::max(10, target * 6 / 10)); // keep ~60% tracked
-    //   if ((int)keepCur.size() < minTracked) {
-    //     cv::Mat mask;
-    //     buildSuppressionMask(curProc_.size(), keepCur, /*radius px=*/12, mask);
-  
-    //     // Detect more where we have no points; compute descriptors for those
-    //     std::vector<cv::KeyPoint> addKps;
-    //     cv::Mat addDesc;
-    //     orb_->detectAndCompute(curProc_, mask, addKps, addDesc);
-  
-    //     // Append until we reach target
-    //     for (int i = 0; i < (int)addKps.size() && (int)keepCur.size() < target; ++i) {
-    //       keepCur.push_back(addKps[i].pt);
-    //       // no need to maintain keepPrev for new points (they are new births)
-    //     }
-    //   }
-  
-    //   // 5) Enforce spatial spread (bucket/grid). Works on keepCur only.
-    //   std::vector<int> uniformIdx;
-    //   bucketUniform(keepCur, curProc_.cols, curProc_.rows, /*cell=*/cellSize_, /*maxKeep=*/target, uniformIdx);
-  
-    //   ptsCur_.reserve(uniformIdx.size());
-    //   for (int j : uniformIdx) ptsCur_.push_back(keepCur[j]);
-  
-    //   // Tracking state
-    //   trackingState_ = (ptsCur_.size() >= 10) ? 1 : 0;
-  
-    //   // 6) Prepare "prev" for next frame: set prev = current (re-compute descriptors to align sets)
-    //   //    Recompute descriptors at the positions we actually kept, so next matching is clean.
-    //   {
-    //     std::vector<cv::KeyPoint> kpForPrev; kpForPrev.reserve(ptsCur_.size());
-    //     for (auto& p : ptsCur_) kpForPrev.emplace_back(cv::Point2f(p.x, p.y), /*size=*/orbPatchSize_);
-    //     orbPrevKps_.swap(kpForPrev);
-    //     orb_->compute(curProc_, orbPrevKps_, orbPrevDesc_); // descriptors for next frame
-    //   }
-  
-    //   // Also keep a copy of the current image for any downstream assumptions
-    //   if (prevProc_.size() != curProc_.size()) prevProc_.create(curProc_.rows, curProc_.cols, CV_8UC1);
-    //   curProc_.copyTo(prevProc_);
-    //   ptsPrev_ = ptsCur_;  // hand off these ORB points to KLT for the next frame
+  //   std::vector<cv::Point2f> curPtsAll; curPtsAll.reserve(orbCurKps_.size());
+  //   for (auto& k : orbCurKps_) curPtsAll.push_back(k.pt);
 
-    //   pyrPrev_.clear();
-    //   int maxLevel = std::max(0, kltLevels_);
-    //   cv::buildOpticalFlowPyramid(prevProc_, pyrPrev_, cv::Size(kltWin_, kltWin_), maxLevel);
+  //   std::vector<cv::Point2f> keepPrev, keepCur;
 
-    //   const auto t_orb1 = std::chrono::high_resolution_clock::now();
-    //   t_last_orb_ms_ = std::chrono::duration<double,std::milli>(t_orb1 - t_orb0).count();
+  //   if (!orbPrevDesc_.empty() && !orbCurDesc_.empty()) {
+  //     // 2) Ratio + mutual (symmetric) matching to stabilize correspondences
+  //     cv::BFMatcher bf(cv::NORM_HAMMING, /*crossCheck=*/false);
 
-    //   ranOrbThisFrame_ = true;
-    //   lastOrbKF_ = hybFrameIdx_;
-    //   orbKFCount_++;
+  //     std::vector<std::vector<cv::DMatch>> knnPC, knnCP;
+  //     bf.knnMatch(orbPrevDesc_, orbCurDesc_, knnPC, 2);
+  //     bf.knnMatch(orbCurDesc_, orbPrevDesc_, knnCP, 2);
 
-    //   // ===== Mapping track (PnP) + KF insertion (RUN ALSO ON ORB FRAMES) =====
-    //   if (mapInitialized_) {
-    //     const bool pnpOk = trackWithPnP();
+  //     const float ratio = 0.7f;
+  //     std::vector<cv::DMatch> candPC;
+  //     candPC.reserve(knnPC.size());
+  //     for (const auto& ks : knnPC) {
+  //       if (ks.size() < 2) continue;
+  //       if (ks[0].distance < ratio * ks[1].distance) candPC.push_back(ks[0]);
+  //     }
 
-    //     // CRITICAL: never use stale reprojection obs
-    //     if (!pnpOk) {
-    //       vioLastObs_.clear();   // ensure IMU-only step (or skip)
-    //     }
+  //     // mutual check
+  //     std::vector<char> ok(candPC.size(), 0);
+  //     for (size_t i = 0; i < candPC.size(); ++i) {
+  //       const auto& m = candPC[i];
+  //       // find best in CP for m.trainIdx
+  //       const auto& rev = knnCP[m.trainIdx];
+  //       if (rev.size() < 2) continue;
+  //       if (rev[0].distance >= ratio * rev[1].distance) continue;
+  //       if (rev[0].trainIdx == m.queryIdx) ok[i] = 1;
+  //     }
 
-    //     // Always allow metric init to proceed (IMU-only is fine),
-    //     // but only do tight reprojection when PnP succeeded.
-    //     vioOnKeyframe(ts);
+  //     std::vector<cv::Point2f> pPrev, pCur;
+  //     std::vector<int> idxPrev, idxCur;
+  //     for (size_t i = 0; i < candPC.size(); ++i) if (ok[i]) {
+  //       const auto& m = candPC[i];
+  //       pPrev.push_back(orbPrevKps_[m.queryIdx].pt);
+  //       pCur .push_back(orbCurKps_[m.trainIdx].pt);
+  //       idxPrev.push_back(m.queryIdx);
+  //       idxCur .push_back(m.trainIdx);
+  //     }
 
-    //     if (pnpOk && shouldInsertKF(lastKFInliers_, lastTS_)) {
-    //       insertKeyframeAndTriangulate();
-    //     }
-    //   }
+  //     // 3) Geometric gating (RANSAC). Use Fundamental matrix (no intrinsics needed).
+  //     cv::Mat inlierMask;
+  //     if (pPrev.size() >= 8) {
+  //       // ransacReprojThreshold = 1.5 px, confidence = 0.99
+  //       (void)cv::findFundamentalMat(pPrev, pCur, cv::FM_RANSAC, 1.5, 0.99, inlierMask);
+  //     } else {
+  //       inlierMask = cv::Mat::ones((int)pPrev.size(), 1, CV_8U);
+  //     }
+      
+  //     for (int i = 0; i < inlierMask.rows; ++i) {
+  //       if (inlierMask.at<uchar>(i)) {
+  //         keepPrev.push_back(pPrev[(size_t)i]);
+  //         keepCur .push_back(pCur [(size_t)i]);
+  //       }
+  //     }      
+  //   }
+  //   // --- E/H gate on ORB correspondences (post-F check) ---
+  //   if (keepPrev.size() >= 8 && keepCur.size() >= 8) {
+  //     runEvsHGate(keepPrev, keepCur);
+  //     if (!mapInitialized_ && ehModel_ == 1) {
+  //       integrateVO_E(keepPrev, keepCur);
+  //       R_imu_delta_ = cv::Matx33d::eye();  // reset IMU delta after VO_E use
+  //     } else if (!mapInitialized_ && ehModel_ == 2) {
+  //       integrateVO_H(keepPrev, keepCur);   // only before mapping starts
+  //     }
+  //   } 
 
-    //   // Roll state is already updated above (prevProc_, pyrPrev_, ptsPrev_ set).
-    //   trackingState_ = (ptsPrev_.size() >= 10) ? 1 : 0;
+  //   // Two-view init trigger (only once)
+  //   if (!mapInitialized_ && ehModel_ == 1) {
+  //     (void)tryTwoViewInit(keepPrev, keepCur);
+  //   }
 
-    //   auto t_all1 = std::chrono::high_resolution_clock::now();
-    //   t_last_total_ms_ = std::chrono::duration<double, std::milli>(t_all1 - t0).count();
-    //   return;
-    // }
+
+  //   // 4) Top-up: if too few tracked points, detect new ones away from current tracks
+  //   const int target = std::min(maxTracks_, 800);   // cap
+  //   const int minTracked = std::min(target, std::max(10, target * 6 / 10)); // keep ~60% tracked
+  //   if ((int)keepCur.size() < minTracked) {
+  //     cv::Mat mask;
+  //     buildSuppressionMask(curProc_.size(), keepCur, /*radius px=*/12, mask);
+
+  //     // Detect more where we have no points; compute descriptors for those
+  //     std::vector<cv::KeyPoint> addKps;
+  //     cv::Mat addDesc;
+  //     orb_->detectAndCompute(curProc_, mask, addKps, addDesc);
+
+  //     // Append until we reach target
+  //     for (int i = 0; i < (int)addKps.size() && (int)keepCur.size() < target; ++i) {
+  //       keepCur.push_back(addKps[i].pt);
+  //       // no need to maintain keepPrev for new points (they are new births)
+  //     }
+  //   }
+
+  //   // 5) Enforce spatial spread (bucket/grid). Works on keepCur only.
+  //   std::vector<int> uniformIdx;
+  //   bucketUniform(keepCur, curProc_.cols, curProc_.rows, /*cell=*/cellSize_, /*maxKeep=*/target, uniformIdx);
+
+  //   ptsCur_.reserve(uniformIdx.size());
+  //   for (int j : uniformIdx) ptsCur_.push_back(keepCur[j]);
+
+  //   // Tracking state
+  //   trackingState_ = (ptsCur_.size() >= 10) ? 1 : 0;
+
+  //   // 6) Prepare "prev" for next frame: set prev = current (re-compute descriptors to align sets)
+  //   //    Recompute descriptors at the positions we actually kept, so next matching is clean.
+  //   {
+  //     std::vector<cv::KeyPoint> kpForPrev; kpForPrev.reserve(ptsCur_.size());
+  //     for (auto& p : ptsCur_) kpForPrev.emplace_back(cv::Point2f(p.x, p.y), /*size=*/orbPatchSize_);
+  //     orbPrevKps_.swap(kpForPrev);
+  //     orb_->compute(curProc_, orbPrevKps_, orbPrevDesc_); // descriptors for next frame
+  //   }
+
+  //   // Also keep a copy of the current image for any downstream assumptions
+  //   if (prevProc_.size() != curProc_.size()) prevProc_.create(curProc_.rows, curProc_.cols, CV_8UC1);
+  //   curProc_.copyTo(prevProc_);
+  //   ptsPrev_ = ptsCur_;  // hand off these ORB points to KLT for the next frame
+
+  //   pyrPrev_.clear();
+  //   int maxLevel = std::max(0, kltLevels_);
+  //   cv::buildOpticalFlowPyramid(prevProc_, pyrPrev_, cv::Size(kltWin_, kltWin_), maxLevel);
+
+  //   const auto t_orb1 = std::chrono::high_resolution_clock::now();
+  //   t_last_orb_ms_ = std::chrono::duration<double,std::milli>(t_orb1 - t_orb0).count();
+
+  //   ranOrbThisFrame_ = true;
+  //   lastOrbKF_ = hybFrameIdx_;
+  //   orbKFCount_++;
+
+  //   // ===== Mapping track (PnP) + KF insertion (RUN ALSO ON ORB FRAMES) =====
+  //   if (mapInitialized_) {
+  //     const bool pnpOk = trackWithPnP();
+
+  //     // CRITICAL: never use stale reprojection obs
+  //     if (!pnpOk) {
+  //       vioLastObs_.clear();   // ensure IMU-only step (or skip)
+  //     }
+
+  //     // Always allow metric init to proceed (IMU-only is fine),
+  //     // but only do tight reprojection when PnP succeeded.
+  //     vioOnKeyframe(ts);
+
+  //     if (pnpOk && shouldInsertKF(lastKFInliers_, lastTS_)) {
+  //       insertKeyframeAndTriangulate();
+  //     }
+  //   }
+
+  //   // Roll state is already updated above (prevProc_, pyrPrev_, ptsPrev_ set).
+  //   trackingState_ = (ptsPrev_.size() >= 10) ? 1 : 0;
+
+  //   auto t_all1 = std::chrono::high_resolution_clock::now();
+  //   t_last_total_ms_ = std::chrono::duration<double, std::milli>(t_all1 - t0).count();
+  //   return;
+  // }
   
 
   // 3) build pyramids (processing scale)
