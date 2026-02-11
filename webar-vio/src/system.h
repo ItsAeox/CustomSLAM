@@ -115,7 +115,7 @@ private:
   float kltErrMax_      = 6.f;     // LK per-point error gate
   float fbMax_          = 1.6f;     // forward-backward gate (pixels)
   int   cellSize_       = 8;       // grid cell size for seeding (processing scale) ***** Scale DOWN 
-  int   targetKps_      = 180;      // feature budget at processing scale ***** Scale UP
+  int   targetKps_      = 1200;      // feature budget at processing scale ***** Scale UP
   int   descEveryN_     = 0;        // ORB compute cadence (frames); 0 disables
   int   maxTracks_    =200;  // hard ceiling after tracking+reseeding
   double t_last_total_ms_ = 0.0;
