@@ -1,4 +1,4 @@
-import { initRenderer, drawFrame, drawPoints, updateHUDText, drawPathXZ, drawAttitude } from './renderer.js';
+import { initRenderer, drawFrame, drawPoints, updateHUDText, drawPathXZ } from './renderer.js';
 import { loadTumviSequence } from './tumvi.js';
 
 // ===== utilities ============================================================
@@ -235,8 +235,7 @@ els.btnLoad.addEventListener('click', async () => {
       const W = canvas.width, H = canvas.height;
 
       // pick cam index by resolution match (your left/right are 1024x1024)
-      let camIdx = calib.resolution.findIndex(r => r && r[0] === W && r[1] === H);
-      if (camIdx < 0) camIdx = 0;
+      const camIdx = 0; // left camera
 
       cam = calib.intrinsics[camIdx];
       const intr = cam?.intrinsics || {};
@@ -404,6 +403,7 @@ els.btnLoad.addEventListener('click', async () => {
   const fx = fy * (canvas.width / canvas.height);
   const cx = canvas.width * 0.5;
   const cy = canvas.height * 0.5;
+  try { Module.setUseFisheye?.(false); } catch {}
   Module.initSystem(canvas.width, canvas.height, fx, fy, cx, cy);
 
   els.seqInfo.textContent = `Loaded: ${N} frames (${canvas.width}x${canvas.height}).`;
@@ -450,29 +450,17 @@ els.btnRun.addEventListener('click', async () => {
 
   function feedImuWindow(tPrev, tNow) {
     if (!Module.feedImuSample) return;
-  
+
     const S = seq.imuStream || [];
-    if (!S.length) {
-      Module.feedImuSample(tNow, 0,0,0, 0,0,0);
-      return;
-    }
-  
+    if (!S.length) return;
+
     while (imuIdx < S.length && S[imuIdx].t < tPrev) imuIdx++;
-  
-    let fed = 0;
+
     while (imuIdx < S.length && S[imuIdx].t <= tNow) {
       const s = S[imuIdx++];
       Module.feedImuSample(s.t, s.ax, s.ay, s.az, s.wx, s.wy, s.wz);
-      fed++;
     }
-  
-    // If no sample fell inside the window, feed the closest previous sample once.
-    if (fed === 0) {
-      const k = Math.max(0, imuIdx - 1);
-      const s = S[k];
-      Module.feedImuSample(tNow, s.ax, s.ay, s.az, s.wx, s.wy, s.wz);
-    }
-  }  
+  }
 
   for (let i = startIdx; i < limit; i++) {
     if (stopFlag) break;
@@ -522,14 +510,14 @@ els.btnRun.addEventListener('click', async () => {
     } catch {}
     drawPoints(pts, canvas.width, canvas.height);
 
-    // Attitude + path overlays (optional)
-    try {
-      const ypr = Module.getYPR?.();
-      if (ypr && ypr.length === 3) {
-        const RAD2DEG = 180 / Math.PI;
-        drawAttitude(Number(ypr[0]) * RAD2DEG, Number(ypr[1]) * RAD2DEG, Number(ypr[2]) * RAD2DEG, canvas.width, canvas.height);
-      }
-    } catch {}
+    // // Attitude + path overlays (optional)
+    // try {
+    //   const ypr = Module.getYPR?.();
+    //   if (ypr && ypr.length === 3) {
+    //     const RAD2DEG = 180 / Math.PI;
+    //     drawAttitude(Number(ypr[0]) * RAD2DEG, Number(ypr[1]) * RAD2DEG, Number(ypr[2]) * RAD2DEG, canvas.width, canvas.height);
+    //   }
+    // } catch {}
 
     try {
       const pathXZ = Module.getPathXZ?.();

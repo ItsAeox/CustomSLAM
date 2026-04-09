@@ -142,7 +142,7 @@ VioInitResult VioInitializer::solve(const std::vector<ImuMeas>& imu,
   cv::Vec3d bg(0,0,0);
   cv::Vec3d ba(0,0,0);
   double s = 1.0;
-  cv::Vec3d g(0,-9.81,0);
+  cv::Vec3d g(0,9.81,0);
   std::vector<cv::Vec3d> v;
 
   // --- Solve gyro bias by 1D GN on bg (simple numeric) ---

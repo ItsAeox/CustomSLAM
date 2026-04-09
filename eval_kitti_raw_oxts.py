@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 # --------------------------
 # Paths (edit if needed)
 # --------------------------
-DATASET_ROOT = "dataset/2011_09_26_drive_0022_sync"
+DATASET_ROOT = "dataset/2011_09_26_drive_0009_sync"
 EST_CSV      = os.path.join(DATASET_ROOT, "kitti_poses.csv")
 IMG_TS       = os.path.join(DATASET_ROOT, "image_02", "timestamps.txt")
 OXTS_TS      = os.path.join(DATASET_ROOT, "oxts", "timestamps.txt")
@@ -16,7 +16,7 @@ CALIB_CAM2CAM = os.path.join(DATASET_ROOT, "calib_cam_to_cam.txt")
 CALIB_VELO2CAM = os.path.join(DATASET_ROOT, "calib_velo_to_cam.txt")
 CALIB_IMU2VELO = os.path.join(DATASET_ROOT, "calib_imu_to_velo.txt")
 
-OUTPUT_DIR = "outputs"
+OUTPUT_DIR =  os.path.join(DATASET_ROOT, "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # --------------------------

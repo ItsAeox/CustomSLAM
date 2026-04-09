@@ -81,134 +81,134 @@ export function updateHUDText(t) {
 }
 
 // === Attitude overlay (yaw/pitch/roll) ======================================
-export function drawAttitude(yawDeg, pitchDeg, rollDeg, W, H) {
-  if (!ctx2d || !Number.isFinite(yawDeg) || !Number.isFinite(pitchDeg) || !Number.isFinite(rollDeg)) return;
+// export function drawAttitude(yawDeg, pitchDeg, rollDeg, W, H) {
+//   if (!ctx2d || !Number.isFinite(yawDeg) || !Number.isFinite(pitchDeg) || !Number.isFinite(rollDeg)) return;
 
-  // Tunable scales
-  const degPerHalfScreen = 30;               // ±30° pitch spans ~half the screen
-  const pitchPxPerDeg = (H * 0.5) / degPerHalfScreen;
+//   // Tunable scales
+//   const degPerHalfScreen = 30;               // ±30° pitch spans ~half the screen
+//   const pitchPxPerDeg = (H * 0.5) / degPerHalfScreen;
 
-  // Convert to radians (roll rotates the horizon)
-  const rollRad = rollDeg * Math.PI / 180;
-  const pitchPx = pitchDeg * pitchPxPerDeg;
+//   // Convert to radians (roll rotates the horizon)
+//   const rollRad = rollDeg * Math.PI / 180;
+//   const pitchPx = pitchDeg * pitchPxPerDeg;
 
-  ctx2d.save();
+//   ctx2d.save();
 
-  // semi-transparent layer so points remain visible underneath
-  ctx2d.globalAlpha = 0.9;
+//   // semi-transparent layer so points remain visible underneath
+//   ctx2d.globalAlpha = 0.9;
 
-  // Move to center, rotate by -roll (standard artificial horizon convention)
-  ctx2d.translate(W * 0.5, H * 0.5);
-  ctx2d.rotate(rollRad);
+//   // Move to center, rotate by -roll (standard artificial horizon convention)
+//   ctx2d.translate(W * 0.5, H * 0.5);
+//   ctx2d.rotate(rollRad);
 
-  // Draw horizon line (shifted by pitch)
-  ctx2d.beginPath();
-  ctx2d.moveTo(-W,  pitchPx);
-  ctx2d.lineTo( +W, pitchPx);
-  ctx2d.strokeStyle = '#00ffaa';
-  ctx2d.lineWidth = 2;
-  ctx2d.stroke();
+//   // Draw horizon line (shifted by pitch)
+//   ctx2d.beginPath();
+//   ctx2d.moveTo(-W,  pitchPx);
+//   ctx2d.lineTo( +W, pitchPx);
+//   ctx2d.strokeStyle = '#00ffaa';
+//   ctx2d.lineWidth = 2;
+//   ctx2d.stroke();
 
-  // Pitch ladder ticks every 10°
-  ctx2d.strokeStyle = '#00ffaa';
-  ctx2d.fillStyle = '#00ffaa';
-  ctx2d.lineWidth = 1;
+//   // Pitch ladder ticks every 10°
+//   ctx2d.strokeStyle = '#00ffaa';
+//   ctx2d.fillStyle = '#00ffaa';
+//   ctx2d.lineWidth = 1;
 
-  for (let d = -60; d <= 60; d += 10) {
-    const y = (d * pitchPxPerDeg) + pitchPx;
-    const len = (d % 20 === 0) ? 40 : 24;
-    ctx2d.beginPath();
-    ctx2d.moveTo(-len, y);
-    ctx2d.lineTo( len, y);
-    ctx2d.stroke();
+//   for (let d = -60; d <= 60; d += 10) {
+//     const y = (d * pitchPxPerDeg) + pitchPx;
+//     const len = (d % 20 === 0) ? 40 : 24;
+//     ctx2d.beginPath();
+//     ctx2d.moveTo(-len, y);
+//     ctx2d.lineTo( len, y);
+//     ctx2d.stroke();
 
-    // Label major lines (every 20°)
-    if (d % 20 === 0 && d !== 0) {
-      const txt = `${d > 0 ? '+' : ''}${d}°`;
-      ctx2d.font = '12px monospace';
-      ctx2d.textAlign = 'center';
-      ctx2d.textBaseline = 'middle';
-      ctx2d.fillText(txt, 0, y - 10);
-    }
-  }
+//     // Label major lines (every 20°)
+//     if (d % 20 === 0 && d !== 0) {
+//       const txt = `${d > 0 ? '+' : ''}${d}°`;
+//       ctx2d.font = '12px monospace';
+//       ctx2d.textAlign = 'center';
+//       ctx2d.textBaseline = 'middle';
+//       ctx2d.fillText(txt, 0, y - 10);
+//     }
+//   }
 
-  // Center marker (simple reticle)
-  ctx2d.beginPath();
-  ctx2d.moveTo(-10, 0);
-  ctx2d.lineTo( 10, 0);
-  ctx2d.moveTo(0, -10);
-  ctx2d.lineTo(0,  10);
-  ctx2d.strokeStyle = '#ffffff';
-  ctx2d.lineWidth = 1.5;
-  ctx2d.stroke();
+//   // Center marker (simple reticle)
+//   ctx2d.beginPath();
+//   ctx2d.moveTo(-10, 0);
+//   ctx2d.lineTo( 10, 0);
+//   ctx2d.moveTo(0, -10);
+//   ctx2d.lineTo(0,  10);
+//   ctx2d.strokeStyle = '#ffffff';
+//   ctx2d.lineWidth = 1.5;
+//   ctx2d.stroke();
 
-  ctx2d.restore();
+//   ctx2d.restore();
 
-  // Heading tape (yaw) across the top of the screen (not rotated)
-  const tapeH = 22;
-  const tapeY = 8;
-  const tickStepDeg = 10;  // small ticks
-  const majorEvery = 30;   // major ticks/labels
-  const pxPerDeg = W / 180; // ~180° span across width
+//   // Heading tape (yaw) across the top of the screen (not rotated)
+//   const tapeH = 22;
+//   const tapeY = 8;
+//   const tickStepDeg = 10;  // small ticks
+//   const majorEvery = 30;   // major ticks/labels
+//   const pxPerDeg = W / 180; // ~180° span across width
 
-  // Wrap yaw to [0, 360)
-  const yaw360 = ((yawDeg % 360) + 360) % 360;
+//   // Wrap yaw to [0, 360)
+//   const yaw360 = ((yawDeg % 360) + 360) % 360;
 
-  ctx2d.save();
-  ctx2d.globalAlpha = 0.85;
-  ctx2d.fillStyle = '#000000';
-  ctx2d.fillRect(0, tapeY, W, tapeH);
-  ctx2d.strokeStyle = '#0f0';
-  ctx2d.strokeRect(0.5, tapeY + 0.5, W - 1, tapeH - 1);
+//   ctx2d.save();
+//   ctx2d.globalAlpha = 0.85;
+//   ctx2d.fillStyle = '#000000';
+//   ctx2d.fillRect(0, tapeY, W, tapeH);
+//   ctx2d.strokeStyle = '#0f0';
+//   ctx2d.strokeRect(0.5, tapeY + 0.5, W - 1, tapeH - 1);
 
-  // Draw ticks centered at current yaw
-  const centerX = W * 0.5;
-  const startDeg = Math.floor(yaw360 - (W * 0.5) / pxPerDeg);
-  const endDeg   = Math.ceil (yaw360 + (W * 0.5) / pxPerDeg);
+//   // Draw ticks centered at current yaw
+//   const centerX = W * 0.5;
+//   const startDeg = Math.floor(yaw360 - (W * 0.5) / pxPerDeg);
+//   const endDeg   = Math.ceil (yaw360 + (W * 0.5) / pxPerDeg);
 
-  ctx2d.strokeStyle = '#66ccff';
-  ctx2d.fillStyle   = '#66ccff';
-  ctx2d.lineWidth = 1;
+//   ctx2d.strokeStyle = '#66ccff';
+//   ctx2d.fillStyle   = '#66ccff';
+//   ctx2d.lineWidth = 1;
 
-  for (let d = startDeg; d <= endDeg; d += tickStepDeg) {
-    // Wrap each tick label
-    const dd = ((d % 360) + 360) % 360;
-    const x = centerX + (d - yaw360) * pxPerDeg;
+//   for (let d = startDeg; d <= endDeg; d += tickStepDeg) {
+//     // Wrap each tick label
+//     const dd = ((d % 360) + 360) % 360;
+//     const x = centerX + (d - yaw360) * pxPerDeg;
 
-    const isMajor = (dd % majorEvery) === 0;
-    const h = isMajor ? tapeH - 6 : tapeH - 10;
+//     const isMajor = (dd % majorEvery) === 0;
+//     const h = isMajor ? tapeH - 6 : tapeH - 10;
 
-    ctx2d.beginPath();
-    ctx2d.moveTo(x + 0.5, tapeY + tapeH);
-    ctx2d.lineTo(x + 0.5, tapeY + h);
-    ctx2d.stroke();
+//     ctx2d.beginPath();
+//     ctx2d.moveTo(x + 0.5, tapeY + tapeH);
+//     ctx2d.lineTo(x + 0.5, tapeY + h);
+//     ctx2d.stroke();
 
-    if (isMajor) {
-      ctx2d.font = '11px monospace';
-      ctx2d.textAlign = 'center';
-      ctx2d.textBaseline = 'bottom';
-      ctx2d.fillText(String(dd), x, tapeY + h - 1);
-    }
-  }
+//     if (isMajor) {
+//       ctx2d.font = '11px monospace';
+//       ctx2d.textAlign = 'center';
+//       ctx2d.textBaseline = 'bottom';
+//       ctx2d.fillText(String(dd), x, tapeY + h - 1);
+//     }
+//   }
 
-  // Current heading readout
-  ctx2d.font = '12px monospace';
-  ctx2d.textAlign = 'center';
-  ctx2d.textBaseline = 'middle';
-  ctx2d.fillStyle = '#ffffff';
-  ctx2d.fillText(`${yaw360.toFixed(0)}°`, centerX, tapeY + tapeH * 0.5);
+//   // Current heading readout
+//   ctx2d.font = '12px monospace';
+//   ctx2d.textAlign = 'center';
+//   ctx2d.textBaseline = 'middle';
+//   ctx2d.fillStyle = '#ffffff';
+//   ctx2d.fillText(`${yaw360.toFixed(0)}°`, centerX, tapeY + tapeH * 0.5);
 
-  // Center caret
-  ctx2d.beginPath();
-  ctx2d.moveTo(centerX, tapeY + tapeH);
-  ctx2d.lineTo(centerX - 6, tapeY + tapeH - 6);
-  ctx2d.lineTo(centerX + 6, tapeY + tapeH - 6);
-  ctx2d.closePath();
-  ctx2d.fillStyle = '#ffffff';
-  ctx2d.fill();
+//   // Center caret
+//   ctx2d.beginPath();
+//   ctx2d.moveTo(centerX, tapeY + tapeH);
+//   ctx2d.lineTo(centerX - 6, tapeY + tapeH - 6);
+//   ctx2d.lineTo(centerX + 6, tapeY + tapeH - 6);
+//   ctx2d.closePath();
+//   ctx2d.fillStyle = '#ffffff';
+//   ctx2d.fill();
 
-  ctx2d.restore();
-}
+//   ctx2d.restore();
+// }
 
 
 export function drawPathXZ(flatXZ, W, H) {

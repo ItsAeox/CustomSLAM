@@ -13,7 +13,7 @@ struct InitKf {
 struct VioInitResult {
   bool ok = false;
   double scale = 1.0;             // meters per VO unit
-  cv::Vec3d g_w = cv::Vec3d(0,-9.81,0);
+  cv::Vec3d g_w = cv::Vec3d(0,9.81,0);
   cv::Vec3d b_g = cv::Vec3d(0,0,0);
   cv::Vec3d b_a = cv::Vec3d(0,0,0);
   std::vector<cv::Vec3d> v_w;     // velocity per KF (meters/sec)

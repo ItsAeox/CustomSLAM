@@ -503,7 +503,7 @@ bool System::tryTwoViewInit(const std::vector<cv::Point2f>& prevProcPts,
 bool System::trackWithPnP()
 {
   const int N = harvestPnpCorrespondences(/*winPx=*/8.f, /*maxTake=*/800);
-  if (N < 20) { vioLastObs_.clear(); return false; }
+  if (N < 30) { vioLastObs_.clear(); return false; }
 
   // Build vectors cv::Mat-friendly
   cv::Mat rvec, tvec;
@@ -529,8 +529,8 @@ bool System::trackWithPnP()
               pnp_points_, pnp_pixels_, Kcv, cv::noArray(),
               rvec, tvec, /*useExtrinsicGuess=*/true,
               200, 2.0, 0.99, inliers, cv::SOLVEPNP_EPNP);
-  if (!ok || inliers.empty() || inliers.rows < 20) { vioLastObs_.clear(); return false; }
-
+  if (!ok || inliers.empty() || inliers.rows < 25) { vioLastObs_.clear(); return false; }
+  
   // === Build VIO reprojection observations from PnP inliers ===
   vioLastObs_.clear();
   vioLastObs_.reserve((size_t)inliers.rows);
@@ -714,18 +714,31 @@ void System::runEvsHGate(const std::vector<cv::Point2f>& prevProcPts,
   toFullResPixels(prevProcPts, p0);
   toFullResPixels(curProcPts,  p1);
 
-  // 2) Median pixel displacement -> rough parallax (deg)
+  // 2) Median angular displacement of normalized rays (deg)
   {
-    std::vector<double> disp; disp.reserve(p0.size());
+    std::vector<double> angs;
+    angs.reserve(p0.size());
+
+    const cv::Matx33d Kinv = Ki();
     for (size_t i = 0; i < p0.size(); ++i) {
-      disp.push_back(cv::norm(p1[i] - p0[i]));
+      cv::Vec3d a = Kinv * cv::Vec3d(p0[i].x, p0[i].y, 1.0);
+      cv::Vec3d b = Kinv * cv::Vec3d(p1[i].x, p1[i].y, 1.0);
+
+      const double na = cv::norm(a), nb = cv::norm(b);
+      if (na < 1e-9 || nb < 1e-9) continue;
+
+      a *= (1.0 / na);
+      b *= (1.0 / nb);
+
+      double d = std::clamp(a.dot(b), -1.0, 1.0);
+      angs.push_back(std::acos(d) * 180.0 / M_PI);
     }
-    if (!disp.empty()) {
-      std::nth_element(disp.begin(), disp.begin()+disp.size()/2, disp.end());
-      const double medPx = disp[disp.size()/2];
-      // small-angle approx: angle ≈ atan(medPx / fx_)
-      const double ang = std::atan2(medPx, std::max(1e-6, fx_)) * 180.0 / M_PI;
-      ehParallaxDeg_ = ang;
+
+    if (!angs.empty()) {
+      std::nth_element(angs.begin(), angs.begin() + angs.size()/2, angs.end());
+      ehParallaxDeg_ = angs[angs.size()/2];
+    } else {
+      ehParallaxDeg_ = 0.0;
     }
   }
 
@@ -768,12 +781,22 @@ void System::runEvsHGate(const std::vector<cv::Point2f>& prevProcPts,
   ehInliersE_ = inlE;
   ehInliersH_ = inlH;
 
-  // 5) Simple model selection heuristic
-  // Prefer E when parallax is present and inliers are comparable; else H.
-  const bool hasParallax = (ehParallaxDeg_ >= 1.5);
+  // 5) Model selection heuristic
+  // Forward motion can have modest angular displacement, so do not require huge parallax for E.
   bool preferE = false;
-  if (inlE >= inlH + 15) preferE = true;
-  else if (inlE >= (int)std::round(0.7 * inlH) && hasParallax) preferE = true;
+
+  // Strong E win
+  if (inlE >= inlH + 15) {
+    preferE = true;
+  }
+  // Comparable support and at least some motion
+  else if (ehParallaxDeg_ >= 0.5 && inlE >= (int)std::round(0.90 * inlH)) {
+    preferE = true;
+  }
+  // For fisheye / TUM-VI, allow E more easily in forward motion if it is not clearly worse than H
+  else if (useFisheye_ && ehParallaxDeg_ >= 0.3 && inlE >= (int)std::round(0.95 * inlH)) {
+    preferE = true;
+  }
 
   ehModel_ = preferE ? 1 : 2; // 1=E, 2=H
 }
@@ -1043,6 +1066,12 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
     R_imu_delta_ = R_imu; // cache per-frame delta for other functions
     imuHadDeltaThisFrame_ = used;
     imuUsedThisFrame_ = imuHadDeltaThisFrame_ ? 1 : 0;
+  }
+  // Use IMU rotation as the default one-frame prior for downstream pose estimation.
+  if (imuHadDeltaThisFrame_) {
+    R_delta_prior_ = R_imu_delta_;
+  } else {
+    R_delta_prior_ = cv::Matx33d::eye();
   }
   // --- DEBUG: expose raw gyro-only delta rotation used between frames ---
   if (imuHadDeltaThisFrame_) {
@@ -1330,20 +1359,55 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
     std::vector<cv::Point2f> p0, p1;
     p0.reserve(ptsPrev_.size()); p1.reserve(ptsPrev_.size());
     for (size_t i = 0; i < ptsPrev_.size(); ++i) {
-      if (i < (size_t)alive.size() && alive[i]) { p0.push_back(ptsPrev_[i]); p1.push_back(ptsCur_[i]); }
-    }
-    if (p0.size() >= 8) {
-      runEvsHGate(p0, p1);
-      if (!mapInitialized_ && ehModel_ == 1) {
-        integrateVO_E(p0, p1);
-      } else if (!mapInitialized_ && ehModel_ == 2) {
-        integrateVO_H(p0, p1);              // only before mapping starts
-      }  
+      if (i < (size_t)alive.size() && alive[i]) {
+        p0.push_back(ptsPrev_[i]);
+        p1.push_back(ptsCur_[i]);
+      }
     }
 
-    if (!mapInitialized_ && ehModel_ == 1) {
+    if (p0.size() >= 8) {
+      runEvsHGate(p0, p1);
+
+      if (!mapInitialized_) {
+        // TUM-VI / fisheye:
+        // If parallax is weak, do NOT fully block visual motion.
+        // Keep IMU helping rotation selection, but still allow E translation when E has enough support.
+        if (useFisheye_ && imuHadDeltaThisFrame_ && ehParallaxDeg_ < 0.6) {
+          // Extremely weak motion: keep orientation alive from IMU
+          Rwc_ = Rwc_ * R_imu_delta_.t();
+          orthoMat(Rwc_);
+
+          path_.emplace_back((float)twc_[0], (float)twc_[1], (float)twc_[2]);
+          if (path_.size() > 4096) {
+            path_.erase(path_.begin(), path_.begin() + (path_.size() - 4096));
+          }
+        } else {
+          if (ehModel_ == 1 && ehInliersE_ >= 25) {
+            // Allow E integration again, including on TUM-VI, unless motion is almost pure rotation
+            integrateVO_E(p0, p1);
+          } else if (ehModel_ == 2 && ehInliersH_ >= 25) {
+            integrateVO_H(p0, p1);
+          } else if (useFisheye_ && imuHadDeltaThisFrame_) {
+            // Last-resort TUM-VI fallback when neither E nor H is trustworthy
+            Rwc_ = Rwc_ * R_imu_delta_.t();
+            orthoMat(Rwc_);
+
+            path_.emplace_back((float)twc_[0], (float)twc_[1], (float)twc_[2]);
+            if (path_.size() > 4096) {
+              path_.erase(path_.begin(), path_.begin() + (path_.size() - 4096));
+            }
+          }
+        }
+      }
+    }
+
+    if (!mapInitialized_ &&
+        ehModel_ == 1 &&
+        ehInliersE_ >= 30 &&
+        ehParallaxDeg_ >= 1.0 &&
+        p0.size() >= 30) {
       (void)tryTwoViewInit(p0, p1);
-    }  
+    }
   }
 
   // compact surviving tracks
@@ -1541,7 +1605,7 @@ void System::vioOnKeyframe(double ts)
       VioCalib c;
       c.K = K();
       c.R_ci = Rcb_;
-      c.t_ci = cv::Vec3d(0,0,0);     // OK to ignore lever arm during init
+      c.t_ci = t_ci_;
       c.g_w = g_world_;
 
 
