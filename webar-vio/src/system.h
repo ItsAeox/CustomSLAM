@@ -108,21 +108,31 @@ public:
   }
   void setUseFisheye(bool on) { useFisheye_ = on; }
 
+  int getOrbDescInputPtsThisFrame() const { return orbDescInputPtsThisFrame_; }
+  int getOrbDescRowsThisFrame() const { return orbDescRowsThisFrame_; }
+  int getOrbFullDetectCountThisFrame() const { return orbFullDetectCountThisFrame_; }
+
 private:
   int   procScale_      = 1;        // 2 => process at half-res (major speedup)
   int   kltWin_         = 25;
   int   kltLevels_      = 4;
-  float kltErrMax_      = 6.f;     // LK per-point error gate
+  float kltErrMax_      = 8.f;     // LK per-point error gate
   float fbMax_          = 1.6f;     // forward-backward gate (pixels)
   int   cellSize_       = 8;       // grid cell size for seeding (processing scale) ***** Scale DOWN 
   int   targetKps_      = 1200;      // feature budget at processing scale ***** Scale UP
-  int   descEveryN_     = 0;         // ORB compute cadence (frames); 0 disables
+  int   descEveryN_     = 4;         // ORB compute cadence (frames); 0 disables
   int   maxTracks_    =220;  // hard ceiling after tracking+reseeding
   double t_last_total_ms_ = 0.0;
   double t_last_klt_ms_   = 0.0;
   double t_last_seed_ms_  = 0.0;
   double lastMeanY_ = -1.0;
   bool imuHadDeltaThisFrame_ = false;
+
+  // ORB descriptor stats for debugging
+  int orbDescInputPtsThisFrame_ = 0;
+  int orbDescRowsThisFrame_ = 0;
+  int orbFullDetectCountThisFrame_ = 0;
+
   // --- per-frame gyro delta debug ---
   cv::Vec3d imuDeltaYPR_ = cv::Vec3d(0,0,0);      // radians (delta yaw/pitch/roll)
   cv::Vec3d imuDeltaRod_ = cv::Vec3d(0,0,0);      // Rodrigues vector (axis * angle), radians
@@ -275,7 +285,7 @@ private:
                           cv::Mat& outDesc);
 
   // Project MapPoints and collect 3D-2D with small reprojection window
-  int harvestPnpCorrespondences(float reprojThreshPx = 8.f, int maxTake = 500);
+  int harvestPnpCorrespondences(float reprojThreshPx = 12.f, int maxTake = 500);
 
   // Utility: K (intrinsics) and its inverse at **full-res**
   inline cv::Matx33d K()  const { return cv::Matx33d(fx_, 0,  cx_,

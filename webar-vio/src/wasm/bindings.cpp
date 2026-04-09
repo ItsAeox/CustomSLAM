@@ -31,6 +31,9 @@ static int    GetImuUsedThisFrame() { return gSys.getImuUsedThisFrame(); }
 static double GetImuHz()            { return gSys.getImuHz(); }
 static int    GetImuUsedCount()     { return gSys.getImuSamplesUsedThisFrame(); }
 static int    GetImuBufSize()       { return gSys.getImuBufSize(); }
+static int GetOrbDescInputPtsThisFrame() { return gSys.getOrbDescInputPtsThisFrame(); }
+static int GetOrbDescRowsThisFrame() { return gSys.getOrbDescRowsThisFrame(); }
+static int GetOrbFullDetectCountThisFrame() { return gSys.getOrbFullDetectCountThisFrame(); }
 
 static emscripten::val GetTwc() {
   auto t = gSys.getTwc();
@@ -176,5 +179,8 @@ EMSCRIPTEN_BINDINGS(vio_bindings_pointtrack) {
   function("setImuToCamQuat", &setImuToCamQuat);
   function("setKb4Distortion", &SetKb4Distortion);
   function("setUseFisheye",   &SetUseFisheye);
+  function("getOrbDescInputPtsThisFrame", &GetOrbDescInputPtsThisFrame);
+  function("getOrbDescRowsThisFrame", &GetOrbDescRowsThisFrame);
+  function("getOrbFullDetectCountThisFrame", &GetOrbFullDetectCountThisFrame);
 
 }

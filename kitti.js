@@ -115,6 +115,7 @@ const els = {
   btnRun: document.getElementById('btnRun'),
   btnStop: document.getElementById('btnStop'),
   btnExport: document.getElementById('btnExport'),
+  btnExportPerf: document.getElementById('btnExportPerf'),
   imgDir: document.getElementById('imgDir'),
   oxtsDir: document.getElementById('oxtsDir'),
   seqInfo: document.getElementById('seqInfo'),
@@ -131,7 +132,8 @@ let seq = null;
 let Module = null;
 
 let stopFlag = false;
-let recorded = []; // per-frame telemetry for export
+let recorded = [];     // pose CSV
+let recordedPerf = []; // performance CSV
 
 // ===== boot renderer and wasm ==============================================
 const canvas = document.getElementById('view');
@@ -156,8 +158,10 @@ els.dirPick.addEventListener('change', () => {
   els.btnLoad.disabled = true;
   els.btnRun.disabled = true;
   els.btnExport.disabled = true;
+  els.btnExportPerf.disabled = true;
   seq = null;
   recorded = [];
+  recordedPerf = [];
   updateHUDText('');
   logMsg(`Picked ${fileList.length} files`);
 });
@@ -298,7 +302,9 @@ els.btnLoad.addEventListener('click', async () => {
     els.seqInfo.textContent = `Loaded TUM-VI: ${seq.N} frames (${canvas.width}x${canvas.height}).`;
     els.btnRun.disabled = false;
     els.btnExport.disabled = true;
+    els.btnExportPerf.disabled = true;
     recorded = [];
+    recordedPerf = [];
 
     logMsg('Sequence loaded (TUM-VI):', { N: seq.N, hasImu: !!seq.imuStream?.length, hasMocap: !!seq.mocap?.length });
     return;
@@ -409,7 +415,9 @@ els.btnLoad.addEventListener('click', async () => {
   els.seqInfo.textContent = `Loaded: ${N} frames (${canvas.width}x${canvas.height}).`;
   els.btnRun.disabled = false;
   els.btnExport.disabled = true;
+  els.btnExportPerf.disabled = true;
   recorded = [];
+  recordedPerf = [];
 
   logMsg('Sequence loaded:', { N, w: canvas.width, h: canvas.height, hasOxts: !!oxts.length });
 });
@@ -420,7 +428,9 @@ els.btnRun.addEventListener('click', async () => {
   els.btnStop.disabled = false;
   els.btnRun.disabled = true;
   els.btnExport.disabled = true;
+  els.btnExportPerf.disabled = true;
   recorded = [];
+  recordedPerf = [];
 
   const speed = Math.max(0.05, Number(els.speed.value || 1));
   const skip = Math.max(0, Number(els.skip.value || 0) | 0);
@@ -541,6 +551,19 @@ els.btnRun.addEventListener('click', async () => {
       yaw: Number(ypr[0]), pitch: Number(ypr[1]), roll: Number(ypr[2]),
     });
 
+    recordedPerf.push({
+      frame: i,
+      t: tNow,
+      num_kfs: Number(Module.getNumKFs?.() ?? 0),
+      num_mps: Number(Module.getNumMPs?.() ?? 0),
+      num_keypoints: Number(Module.getNumKeypoints?.() ?? 0),
+      wasm_klt_ms: Number(Module.getLastKltMS?.() ?? 0),
+      wasm_total_ms: Number(Module.getLastTotalMS?.() ?? 0),
+      wasm_imu_ms: Number(Module.getLastImuMS?.() ?? 0),
+      wasm_seed_ms: Number(Module.getLastSeedMS?.() ?? 0),
+      imu_hz: Number(Module.getImuHz?.() ?? 0),
+    });
+
     // HUD update (throttled)
     const now = performance.now();
     if (now - lastUI > 80) {
@@ -572,6 +595,9 @@ els.btnRun.addEventListener('click', async () => {
       const imuHz = Number(Module.getImuHz?.() ?? 0);
       const mps = Number(Module.getNumMPs?.() ?? 0);
       const kps = Number(Module.getNumKFs?.() ?? 0);
+      const orbDescIn = Number(Module.getOrbDescInputPtsThisFrame?.() ?? 0);
+      const orbDescOut = Number(Module.getOrbDescRowsThisFrame?.() ?? 0);
+      const orbFullDetect = Number(Module.getOrbFullDetectCountThisFrame?.() ?? 0);
       updateHUDText([
         `Frame      ${i}/${limit-1}`,
         `t (s)      ${tNow.toFixed(3)}`,
@@ -582,7 +608,10 @@ els.btnRun.addEventListener('click', async () => {
         `Pos        ${Number(twc[0]).toFixed(3)} ${Number(twc[1]).toFixed(3)} ${Number(twc[2]).toFixed(3)}`,
         'MPs        ' + mps,
         'KFs        ' + kps,
-        `IMU Δang   ${(Number(Module.getImuDeltaAngleDeg?.() ?? 0)).toFixed(1)} deg`
+        `IMU Δang   ${(Number(Module.getImuDeltaAngleDeg?.() ?? 0)).toFixed(1)} deg`, 
+        `ORB desc in ${orbDescIn}`,
+        `ORB desc out ${orbDescOut}`,
+        `ORB full det ${orbFullDetect}`,
       ].join('\n'));
       lastUI = now;
     }
@@ -598,6 +627,7 @@ els.btnRun.addEventListener('click', async () => {
   els.btnStop.disabled = true;
   els.btnRun.disabled = false;
   els.btnExport.disabled = recorded.length === 0;
+  els.btnExportPerf.disabled = recordedPerf.length === 0;
 
   logMsg(`Run finished. Recorded ${recorded.length} frames.`);
 });
@@ -641,5 +671,47 @@ els.btnExport.addEventListener('click', () => {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   logMsg('Exported kitti_poses.csv');
+});
+
+els.btnExportPerf.addEventListener('click', () => {
+  if (!recordedPerf.length) return;
+
+  function fmt(x) {
+    return Number.isFinite(x) ? Number(x).toExponential(16) : 'nan';
+  }
+
+  const lines = [
+    'frame,t,num_kfs,num_mps,num_keypoints,wasm_klt_ms,wasm_total_ms,wasm_imu_ms,wasm_seed_ms,imu_hz'
+  ];
+
+  for (const r of recordedPerf) {
+    lines.push([
+      r.frame,
+      fmt(r.t),
+      fmt(r.num_kfs),
+      fmt(r.num_mps),
+      fmt(r.num_keypoints),
+      fmt(r.wasm_klt_ms),
+      fmt(r.wasm_total_ms),
+      fmt(r.wasm_imu_ms),
+      fmt(r.wasm_seed_ms),
+      fmt(r.imu_hz),
+    ].join(','));
+  }
+
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+
+  const ds = els.dataset?.value || 'kitti';
+  a.download = (ds === 'tumvi') ? 'tumvi_performance.csv' : 'kitti_performance.csv';
+
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+  logMsg(`Exported ${a.download}`);
 });
 

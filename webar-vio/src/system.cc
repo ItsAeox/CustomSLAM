@@ -276,10 +276,12 @@ void System::computeORBAtPoints(const cv::Mat& img,
                                 const std::vector<cv::Point2f>& pts,
                                 cv::Mat& outDesc)
 {
+  orbDescInputPtsThisFrame_ = static_cast<int>(pts.size());
   std::vector<cv::KeyPoint> kps; kps.reserve(pts.size());
   for (auto& p : pts) kps.emplace_back(p, (float)orbPatchSize_);
   outDesc.release();
   if (orb_) orb_->compute(img, kps, outDesc);
+  orbDescRowsThisFrame_ = outDesc.empty() ? 0 : outDesc.rows;
 }
 
 // Collect (Xw ↔ pixel) pairs by projection + small window gating.
@@ -602,9 +604,9 @@ bool System::shouldInsertKF(int pnpInliers, double nowTs) const
 {
   if (!mapInitialized_) return false;
   if (kfs_.empty()) return true;
-  if (pnpInliers < 80) return true;                    // tracking thinning
-  if ((nowTs - lastKFTs_) > 1.0) return true;          // time-based
-  if (pnpInliers < (lastKFInliers_ * 7) / 10) return true; // drop vs last KF
+  if (pnpInliers < 100) return true;                    // tracking thinning
+  if ((nowTs - lastKFTs_) > 0.5) return true;          // time-based
+  if (pnpInliers < (lastKFInliers_ * 8) / 10) return true; // drop vs last KF
   return false;
 }
 
@@ -618,6 +620,7 @@ void System::insertKeyframeAndTriangulate()
   // We can reuse orb_ detector (already configured).
   std::vector<cv::KeyPoint> kps; cv::Mat desc;
   orb_->detectAndCompute(curProc_, cv::noArray(), kps, desc);
+  orbFullDetectCountThisFrame_++;
   KF.kps.swap(kps); KF.desc = desc;
 
   // Triangulate vs previous KF (simple 2-KF baseline)
@@ -664,7 +667,7 @@ void System::insertKeyframeAndTriangulate()
       P1(0,3)=tcw1[0]; P1(1,3)=tcw1[1]; P1(2,3)=tcw1[2];
 
       cv::Mat X4; cv::triangulatePoints(P0,P1,n0,n1,X4);
-      const double cosMax = std::cos(70.0 * M_PI/180.0); // viewing angle gate
+      const double cosMax = std::cos(3.0 * M_PI/180.0); // viewing angle gate
 
       for (int i=0;i<X4.cols;++i){
         double X=X4.at<double>(0,i), Y=X4.at<double>(1,i), Z=X4.at<double>(2,i), W=X4.at<double>(3,i);
@@ -1053,6 +1056,9 @@ void System::init(int width, int height, double fx, double fy, double cx, double
 void System::feedFrame(const uint8_t* img, double ts, int width, int height, bool isRGBA) {
   auto t0 = std::chrono::high_resolution_clock::now();
   lastTS_ = ts;
+  orbDescInputPtsThisFrame_ = 0;
+  orbDescRowsThisFrame_ = 0;
+  orbFullDetectCountThisFrame_ = 0;
 
   // --- IMU: integrate gyro rotation between frames to seed pose/VO ---
   auto t_imu0 = std::chrono::high_resolution_clock::now();

@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 # --------------------------
 DATASET_ROOT = "dataset/2011_09_26_drive_0009_sync"
 EST_CSV      = os.path.join(DATASET_ROOT, "kitti_poses.csv")
+PERF_CSV     = os.path.join(DATASET_ROOT, "kitti_performance.csv")
 IMG_TS       = os.path.join(DATASET_ROOT, "image_02", "timestamps.txt")
 OXTS_TS      = os.path.join(DATASET_ROOT, "oxts", "timestamps.txt")
 OXTS_DIR     = os.path.join(DATASET_ROOT, "oxts", "data")
@@ -294,9 +295,37 @@ def load_est_csv(path):
 
     return frame, t, p, R, has_rpy
 
+def load_perf_csv(path):
+    lines = [l.strip() for l in open(path, "r").read().splitlines() if l.strip()]
+    header = lines[0].split(",")
+    idx = {name:i for i,name in enumerate(header)}
+
+    req = [
+        "frame", "t",
+        "num_kfs", "num_mps", "num_keypoints",
+        "wasm_klt_ms", "wasm_total_ms", "wasm_imu_ms", "wasm_seed_ms",
+        "imu_hz"
+    ]
+    for r in req:
+        if r not in idx:
+            raise ValueError(f"Performance CSV missing column '{r}'")
+
+    N = len(lines) - 1
+    out = {k: np.zeros(N, dtype=np.float64) for k in req}
+    out["frame"] = np.zeros(N, dtype=np.int64)
+
+    for i in range(N):
+        parts = lines[i+1].split(",")
+        out["frame"][i] = int(float(parts[idx["frame"]]))
+        for k in req[1:]:
+            out[k][i] = float(parts[idx[k]])
+
+    return out
+
 # --------------------------
 # Alignment: SE(3) only (no scale)
 # --------------------------
+
 def align_se3_by_first_frame(T_est, T_gt):
     # Align so that first pose matches exactly: T_est_aligned = A * T_est, where A = T_gt0 * inv(T_est0)
     A = T_gt[0] @ invT(T_est[0])
@@ -330,6 +359,10 @@ def rpe(T_est, T_gt, delta=1):
         rot.append(rot_angle(d_err[:3,:3]) * 180.0/math.pi)
     return np.array(trans), np.array(rot)
 
+def ate_translation_rmse_xy(T_est, T_gt):
+    e_xy = T_est[:, :2, 3] - T_gt[:, :2, 3]
+    return math.sqrt(np.mean(np.sum(e_xy * e_xy, axis=1)))
+
 # --------------------------
 # Main
 # --------------------------
@@ -352,6 +385,11 @@ def main():
     # Load estimator
     frame, t_est, p_est, R_est, has_rpy = load_est_csv(EST_CSV)
 
+    # Load performance CSV if present
+    perf = None
+    if os.path.exists(PERF_CSV):
+        perf = load_perf_csv(PERF_CSV)
+
     # Choose estimator timestamps:
     # If your CSV t is synthetic, you MUST switch to camera timestamps to be rigorous.
     # Here we map each CSV row i -> t_cam[i] (the real camera timebase).
@@ -373,10 +411,12 @@ def main():
 
     # Metrics
     ate_t = ate_translation_rmse(T_est_al, T_gt)
+    ate_xy = ate_translation_rmse_xy(T_est_al, T_gt)
     print("=== KITTI Raw VIO eval (SE(3), timestamps, cam frame) ===")
     print(f"Frames used: {N}")
-    print(f"ATE trans RMSE (m): {ate_t:.4f}")
-
+    print(f"ATE trans RMSE 3D (m): {ate_t:.4f}")
+    print(f"ATE trans RMSE XY (m): {ate_xy:.4f}")
+    
     if has_rpy:
         ate_r = ate_rotation_rmse_deg(T_est_al, T_gt)
         print(f"ATE rot  RMSE (deg): {ate_r:.4f}")
@@ -393,11 +433,13 @@ def main():
     # Save aligned trajectories
     out_csv = os.path.join(OUTPUT_DIR, "poses_aligned_se3.csv")
     with open(out_csv, "w") as f:
-        f.write("i,t,est_x,est_y,est_z,gt_x,gt_y,gt_z\n")
+        f.write("i,t,est_x,est_y,est_z,gt_x,gt_y,gt_z,err_xy,err_3d\n")
         for i in range(N):
             ex,ey,ez = T_est_al[i,:3,3]
             gx,gy,gz = T_gt[i,:3,3]
-            f.write(f"{i},{t_use[i]:.9f},{ex:.9f},{ey:.9f},{ez:.9f},{gx:.9f},{gy:.9f},{gz:.9f}\n")
+            err_xy = math.sqrt((ex - gx)**2 + (ey - gy)**2)
+            err_3d = math.sqrt((ex - gx)**2 + (ey - gy)**2 + (ez - gz)**2)
+            f.write(f"{i},{t_use[i]:.9f},{ex:.9f},{ey:.9f},{ez:.9f},{gx:.9f},{gy:.9f},{gz:.9f},{err_xy:.9f},{err_3d:.9f}\n")
     print(f"Wrote: {out_csv}")
 
     # Plots
@@ -410,7 +452,7 @@ def main():
     plt.plot(gtP[:,0], gtP[:,1], label="GT cam (ENU)")
     plt.plot(estP[:,0], estP[:,1], label="Est aligned SE(3)")
     plt.axis("equal"); plt.grid(True); plt.legend()
-    plt.title("Trajectory top-down (East-North)")
+    plt.title(f"Trajectory top-down (East-North), XY RMSE={ate_xy:.3f} m")
     plt.savefig(os.path.join(OUTPUT_DIR, "traj_EN.png"), dpi=160)
 
     # Up component
@@ -422,15 +464,81 @@ def main():
     plt.savefig(os.path.join(OUTPUT_DIR, "up_over_time.png"), dpi=160)
 
     # Error over time
+    err_xy = np.linalg.norm(estP[:, :2] - gtP[:, :2], axis=1)
+
+    plt.figure()
+    plt.plot(err_xy)
+    plt.grid(True)
+    plt.title(f"Bird's-eye position error (XY), RMSE={ate_xy:.3f} m")
+    plt.xlabel("frame")
+    plt.ylabel("meters")
+    plt.savefig(os.path.join(OUTPUT_DIR, "pos_error_xy.png"), dpi=160)
+
     plt.figure()
     plt.plot(err)
     plt.grid(True)
-    plt.title(f"Position error ||p_est - p_gt|| (m), ATE RMSE={ate_t:.3f}")
+    plt.title(f"Position error 3D ||p_est - p_gt|| (m), ATE RMSE={ate_t:.3f}")
     plt.xlabel("frame")
     plt.ylabel("meters")
-    plt.savefig(os.path.join(OUTPUT_DIR, "pos_error.png"), dpi=160)
+    plt.savefig(os.path.join(OUTPUT_DIR, "pos_error_3d.png"), dpi=160)
 
-    print(f"Wrote plots into: {OUTPUT_DIR}/ (traj_EN.png, up_over_time.png, pos_error.png)")
+    if perf is not None:
+        Np = min(
+            len(perf["frame"]),
+            len(perf["num_kfs"]),
+            len(perf["num_mps"]),
+            len(perf["num_keypoints"]),
+            len(perf["wasm_klt_ms"]),
+            len(perf["wasm_total_ms"]),
+            len(perf["wasm_imu_ms"]),
+            len(perf["wasm_seed_ms"]),
+            len(perf["imu_hz"]),
+        )
 
+        pf = perf["frame"][:Np]
+
+        plt.figure()
+        plt.plot(pf, perf["num_keypoints"][:Np])
+        plt.grid(True)
+        plt.title("Tracked keypoints over frames")
+        plt.xlabel("frame")
+        plt.ylabel("count")
+        plt.savefig(os.path.join(OUTPUT_DIR, "perf_keypoints.png"), dpi=160)
+
+        plt.figure()
+        plt.plot(pf, perf["num_kfs"][:Np], label="KFs")
+        plt.plot(pf, perf["num_mps"][:Np], label="MPs")
+        plt.grid(True)
+        plt.legend()
+        plt.title("Keyframes and map points over frames")
+        plt.xlabel("frame")
+        plt.ylabel("count")
+        plt.savefig(os.path.join(OUTPUT_DIR, "perf_map_structure.png"), dpi=160)
+
+        plt.figure()
+        plt.plot(pf, perf["wasm_total_ms"][:Np], label="Total")
+        plt.plot(pf, perf["wasm_klt_ms"][:Np], label="KLT")
+        plt.plot(pf, perf["wasm_imu_ms"][:Np], label="IMU")
+        plt.plot(pf, perf["wasm_seed_ms"][:Np], label="Seed")
+        plt.grid(True)
+        plt.legend()
+        plt.title("WASM timing over frames")
+        plt.xlabel("frame")
+        plt.ylabel("ms")
+        plt.savefig(os.path.join(OUTPUT_DIR, "perf_wasm_timing.png"), dpi=160)
+
+        plt.figure()
+        plt.plot(pf, perf["imu_hz"][:Np])
+        plt.grid(True)
+        plt.title("IMU rate over frames")
+        plt.xlabel("frame")
+        plt.ylabel("Hz")
+        plt.savefig(os.path.join(OUTPUT_DIR, "perf_imu_hz.png"), dpi=160)
+
+    print(f"Wrote plots into: {OUTPUT_DIR}/")
+    print("Trajectory/Error plots: traj_EN.png, up_over_time.png, pos_error_xy.png, pos_error_3d.png")
+    if perf is not None:
+        print("Performance plots: perf_keypoints.png, perf_map_structure.png, perf_wasm_timing.png, perf_imu_hz.png")
+        
 if __name__ == "__main__":
     main()
