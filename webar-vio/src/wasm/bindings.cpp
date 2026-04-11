@@ -121,6 +121,10 @@ static void SetUseFisheye(bool on) {
   gSys.setUseFisheye(on);
 }
 
+static void SetAccelIsSpecificForce(bool on) {
+  gSys.setAccelIsSpecificForce(on);
+}
+
 static emscripten::val GetImuDeltaYPR() {
   auto r = gSys.getImuDeltaYPR();
   emscripten::val a = emscripten::val::array();
@@ -179,6 +183,7 @@ EMSCRIPTEN_BINDINGS(vio_bindings_pointtrack) {
   function("setImuToCamQuat", &setImuToCamQuat);
   function("setKb4Distortion", &SetKb4Distortion);
   function("setUseFisheye",   &SetUseFisheye);
+  function("setAccelIsSpecificForce", &SetAccelIsSpecificForce);
   function("getOrbDescInputPtsThisFrame", &GetOrbDescInputPtsThisFrame);
   function("getOrbDescRowsThisFrame", &GetOrbDescRowsThisFrame);
   function("getOrbFullDetectCountThisFrame", &GetOrbFullDetectCountThisFrame);

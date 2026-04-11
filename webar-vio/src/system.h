@@ -107,6 +107,7 @@ public:
     useFisheye_ = true;
   }
   void setUseFisheye(bool on) { useFisheye_ = on; }
+  void setAccelIsSpecificForce(bool on) { accelIsSpecificForce_ = on; }
 
   int getOrbDescInputPtsThisFrame() const { return orbDescInputPtsThisFrame_; }
   int getOrbDescRowsThisFrame() const { return orbDescRowsThisFrame_; }
@@ -344,6 +345,15 @@ private:
   int    imuUsedThisFrame_   = 0;     // 0/1 (set in feedFrame)
   int    imuSamplesUsedThisFrame_ = 0;
   double lastImuSampleTS_    = 0.0;
+
+  // ---- IMU-driven pose prior for current frame ----
+  cv::Matx33d Rwc_prior_ = cv::Matx33d::eye();
+  cv::Vec3d   twc_prior_ = cv::Vec3d(0,0,0);
+  bool        imuPosePriorValid_ = false;
+
+  // false = accel already gravity-compensated / linear acceleration
+  // true  = accel is specific force and must be combined with g_world_
+  bool accelIsSpecificForce_ = false;
   
   // Optional: gravity direction estimate in world (for later)
   cv::Vec3d g_world_ = cv::Vec3d(0, 9.81, 0);   // m/s^2 (down)
@@ -355,7 +365,11 @@ private:
   // Utility: build full-res pixel pairs from processing-scale points
   void   toFullResPixels(const std::vector<cv::Point2f>& procPts,
                          std::vector<cv::Point2f>& fullResPx) const;
-  
+
   cv::Matx33d integrateImuDeltaRotationAccCorr(double t0, double t1, bool* used);
+  bool buildImuPosePrior(double t0, double t1,
+                        cv::Matx33d& Rwc_pred,
+                        cv::Vec3d& twc_pred,
+                        cv::Matx33d* dR_cam = nullptr);
 };
 

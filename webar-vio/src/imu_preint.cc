@@ -39,8 +39,10 @@ ImuPreint preintegrateImu(const std::vector<ImuMeas>& meas,
   for (int i=0; i<(int)meas.size(); ++i){
     if (meas[i].t >= t1) { i1 = i; break; }
   }
-  if (i0 <= 0 || i1 < 0) return P;          // need a sample before t0, and a sample at/after t1
-
+  if (i0 < 0 || i1 < 0) return P;  // not found at all → bail
+  
+  // If i0 == 0 there's no prior sample for interpolation at t0.
+  // Just start from the first available sample.
   auto lerp = [](const cv::Vec3d& a, const cv::Vec3d& b, double u){
     return (1.0-u)*a + u*b;
   };
@@ -58,8 +60,15 @@ ImuPreint preintegrateImu(const std::vector<ImuMeas>& meas,
     return M;
   };
 
-  // Add interpolated t0 sample
-  S.push_back(interpAt(t0, i0));
+  if (i0 == 0) {
+    if (std::abs(meas[0].t - t0) < 1e-9) {
+        S.push_back(meas[0]);
+    } else {
+        return P;
+    }
+  } else {
+      S.push_back(interpAt(t0, i0));
+  }
 
   // Add all real samples strictly inside (t0, t1)
   for (int i=i0; i<i1; ++i){
@@ -103,6 +112,18 @@ ImuPreint preintegrateImu(const std::vector<ImuMeas>& meas,
     dp += dv * dt + 0.5 * a_i * (dt*dt);
     dv += a_i * dt;
     dR  = dR * dRk;
+
+    // keep preintegrated rotation numerically clean
+    cv::Mat M(3,3,CV_64F);
+    for (int r=0;r<3;r++) for (int c=0;c<3;c++) M.at<double>(r,c) = dR(r,c);
+    cv::SVD svd(M);
+    cv::Mat Rn = svd.u * svd.vt;
+    if (cv::determinant(Rn) < 0.0) {
+      cv::Mat U = svd.u.clone();
+      U.col(2) *= -1.0;
+      Rn = U * svd.vt;
+    }
+    for (int r=0;r<3;r++) for (int c=0;c<3;c++) dR(r,c) = Rn.at<double>(r,c);
   }
 
   P.dR = dR;

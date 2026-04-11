@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 # Paths (edit if needed)
 # --------------------------
 
-DATASET_NAME = "2011_10_03_drive_0042_sync"
+DATASET_NAME = "2011_09_26_drive_0101_sync"
 DATASET_ROOT = f"dataset/{DATASET_NAME}"
 EST_CSV      = os.path.join(DATASET_ROOT, "kitti_poses.csv")
 PERF_CSV     = os.path.join(DATASET_ROOT, "kitti_performance.csv")

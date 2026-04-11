@@ -330,6 +330,8 @@ int System::harvestPnpCorrespondences(float winPx, int maxTake)
   const float win2 = winProc * winProc;
 
   int taken = 0;
+  std::vector<char> usedTrack(ptsCur_.size(), 0);
+
   for (int mi = 0; mi < (int)mps_.size(); ++mi) {
     const auto& M = mps_[mi];
     if (!M.alive) continue;
@@ -348,17 +350,33 @@ int System::harvestPnpCorrespondences(float winPx, int maxTake)
 
     // Search a few neighbor buckets
     int cx = int(up / cell), cy = int(vp / cell);
-    int hits = 0, bestIdx = -1; float bestD2 = win2;
+    int bestIdx = -1;
+    float bestD2 = win2;
+    int ambiguityHits = 0;
 
     auto scan = [&](int idx){
+      if (idx < 0 || idx >= (int)ptsCur_.size()) return;
+      if (usedTrack[idx]) return;
+
       const auto& q = ptsCur_[idx];
       float dx = q.x - up, dy = q.y - vp;
       float d2 = dx*dx + dy*dy;
-      if (d2 <= bestD2) { bestD2 = d2; bestIdx = idx; }
+
+      if (d2 <= win2) {
+        ambiguityHits++;
+        if (d2 < bestD2) {
+          bestD2 = d2;
+          bestIdx = idx;
+        }
+      }
     };
+
     visitBucket(cx,cy,scan);
     visitBucket(cx+1,cy,scan); visitBucket(cx-1,cy,scan);
     visitBucket(cx,cy+1,scan); visitBucket(cx,cy-1,scan);
+
+    // Too many nearby candidates means this match is ambiguous
+    if (ambiguityHits >= 3) continue;
 
     // if (bestIdx >= 0) {
     //   pnp_indices_.push_back(mi);
@@ -382,9 +400,14 @@ int System::harvestPnpCorrespondences(float winPx, int maxTake)
         }
       }
       if (pass) {
+        usedTrack[bestIdx] = 1;
         pnp_indices_.push_back(mi);
         pnp_points_.emplace_back((float)mps_[mi].Xw[0], (float)mps_[mi].Xw[1], (float)mps_[mi].Xw[2]);
-        pnp_pixels_.emplace_back(up * s, vp * s);
+
+        // IMPORTANT: use the observed current track position, not the map projection
+        const auto& q = ptsCur_[bestIdx];
+        pnp_pixels_.emplace_back(q.x * s, q.y * s);
+
         if (++taken >= maxTake) break;
       }
     }
@@ -521,60 +544,93 @@ bool System::tryTwoViewInit(const std::vector<cv::Point2f>& prevProcPts,
 // PnP on harvested correspondences; refines pose; returns true on success.
 bool System::trackWithPnP()
 {
-  const int N = harvestPnpCorrespondences(/*winPx=*/8.f, /*maxTake=*/800);
-  if (N < 30) { vioLastObs_.clear(); return false; }
+  const int N = harvestPnpCorrespondences(/*winPx=*/10.f, /*maxTake=*/800);
 
-  // Build vectors cv::Mat-friendly
+  // If visual correspondences are too weak, immediately hand control to IMU prior
+  if (N < 25) {
+    vioLastObs_.clear();
+    if (imuPosePriorValid_) {
+      Rwc_ = Rwc_prior_;
+      twc_ = twc_prior_;
+      orthoMat(Rwc_);
+
+      path_.emplace_back((float)twc_[0], (float)twc_[1], (float)twc_[2]);
+      if (path_.size() > 4096) {
+        path_.erase(path_.begin(), path_.begin() + (path_.size() - 4096));
+      }
+
+      lastKFInliers_ = 0;
+      return true;
+    }
+    return false;
+  }
+
   cv::Mat rvec, tvec;
-  // Start from predicted pose (cw), using rotation prior if available
+
+  // Start PnP from IMU pose prior if available
   {
-    // Predict world-from-camera by applying the cached delta once
-    cv::Matx33d Rwc_pred = Rwc_ * R_delta_prior_;
-    cv::Matx33d Rcw_init = Rwc_pred.t();
+    cv::Matx33d Rwc_seed = imuPosePriorValid_ ? Rwc_prior_ : (Rwc_ * R_delta_prior_);
+    cv::Vec3d   twc_seed = imuPosePriorValid_ ? twc_prior_ : twc_;
+
+    cv::Matx33d Rcw_init = Rwc_seed.t();
     cv::Rodrigues(Rcw_init, rvec);
-  
-    // Translation seed consistent with predicted rotation
-    cv::Vec3d tcw_init = -(Rwc_pred.t() * twc_);
+
+    cv::Vec3d tcw_init = -(Rwc_seed.t() * twc_seed);
     tvec = (cv::Mat_<double>(3,1) << tcw_init[0], tcw_init[1], tcw_init[2]);
-  
-    // Consume the prior (one-shot)
+
     R_delta_prior_ = cv::Matx33d::eye();
   }
-  
 
   cv::Mat inliers;
   const cv::Mat Kcv = (cv::Mat_<double>(3,3) << fx_,0,cx_, 0,fy_,cy_, 0,0,1);
+
   bool ok = cv::solvePnPRansac(
               pnp_points_, pnp_pixels_, Kcv, cv::noArray(),
               rvec, tvec, /*useExtrinsicGuess=*/true,
-              200, 2.0, 0.99, inliers, cv::SOLVEPNP_EPNP);
-  if (!ok || inliers.empty() || inliers.rows < 25) { vioLastObs_.clear(); return false; }
-  
-  // === Build VIO reprojection observations from PnP inliers ===
+              200, 2.5, 0.99, inliers, cv::SOLVEPNP_EPNP);
+
+  if (!ok || inliers.empty() || inliers.rows < 20) {
+    vioLastObs_.clear();
+
+    if (imuPosePriorValid_) {
+      Rwc_ = Rwc_prior_;
+      twc_ = twc_prior_;
+      orthoMat(Rwc_);
+
+      path_.emplace_back((float)twc_[0], (float)twc_[1], (float)twc_[2]);
+      if (path_.size() > 4096) {
+        path_.erase(path_.begin(), path_.begin() + (path_.size() - 4096));
+      }
+
+      lastKFInliers_ = 0;
+      return true;
+    }
+    return false;
+  }
+
+  // Build VIO reprojection observations from PnP inliers
   vioLastObs_.clear();
   vioLastObs_.reserve((size_t)inliers.rows);
 
   for (int ii = 0; ii < inliers.rows; ++ii) {
-    const int matchIdx = inliers.at<int>(ii);     // index into pnp_* arrays
-    const int mpIdx    = pnp_indices_[matchIdx];  // index into mps_
-
+    const int matchIdx = inliers.at<int>(ii);
+    const int mpIdx    = pnp_indices_[matchIdx];
     if (mpIdx < 0 || mpIdx >= (int)mps_.size()) continue;
 
     FeatureObs ob;
     ob.mp_id = mpIdx;
-    ob.Xw    = mps_[mpIdx].Xw;                    // map point position (your map “world”)
-    ob.u     = (double)pnp_pixels_[matchIdx].x;   // full-res pixel
+    ob.Xw    = mps_[mpIdx].Xw;
+    ob.u     = (double)pnp_pixels_[matchIdx].x;
     ob.v     = (double)pnp_pixels_[matchIdx].y;
-
     vioLastObs_.push_back(ob);
   }
 
-  // === Update MP stats and gently prune weak correspondences ===
   std::vector<char> isInl(mps_.size(), 0);
   for (int i = 0; i < inliers.rows; ++i) {
     int mi = pnp_indices_[inliers.at<int>(i)];
     if (mi >= 0 && mi < (int)mps_.size()) isInl[mi] = 1;
   }
+
   for (size_t i = 0; i < pnp_indices_.size(); ++i) {
     int mi = pnp_indices_[i];
     if (mi >= 0 && mi < (int)mps_.size()) {
@@ -582,7 +638,7 @@ bool System::trackWithPnP()
       if (isInl[mi]) mps_[mi].found++;
     }
   }
-  // Cull a small number per frame to avoid bursts
+
   int removed = 0;
   for (size_t i = 0; i < mps_.size() && removed < 64; ++i) {
     auto& M = mps_[i];
@@ -593,20 +649,37 @@ bool System::trackWithPnP()
     }
   }
 
-  // Motion-only refine (optional LM)
   cv::solvePnP(pnp_points_, pnp_pixels_, Kcv, cv::noArray(),
                rvec, tvec, true, cv::SOLVEPNP_ITERATIVE);
 
-  // Update Twc
-  cv::Mat Rcv; cv::Rodrigues(rvec, Rcv);
-  cv::Matx33d Rcw;
-  for (int r=0;r<3;++r) for (int c=0;c<3;++c) Rcw(r,c) = Rcv.at<double>(r,c);
-  cv::Vec3d tcw(tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2));
-  Rwc_ = Rcw.t();
-  twc_ = -(Rcw.t() * tcw);
-  orthoMat(Rwc_);  
+  cv::Mat Rcv;
+  cv::Rodrigues(rvec, Rcv);
 
-  // Append trail position (keeps your on-screen path in sync)
+  cv::Matx33d Rcw_vis;
+  for (int r=0;r<3;++r) for (int c=0;c<3;++c) Rcw_vis(r,c) = Rcv.at<double>(r,c);
+  cv::Vec3d tcw_vis(tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2));
+
+  cv::Matx33d Rwc_vis = Rcw_vis.t();
+  cv::Vec3d   twc_vis = -(Rcw_vis.t() * tcw_vis);
+  orthoMat(Rwc_vis);
+
+  // IMU-dominant fusion: trust IMU more when visual support is weak
+  if (imuPosePriorValid_) {
+    const bool weakVisual = (inliers.rows < 60);
+
+    const double visionRotW = weakVisual ? 0.20 : 0.70;
+    const double visionPosW = weakVisual ? 0.15 : 0.60;
+
+    cv::Matx33d Rmix = visionRotW * Rwc_vis + (1.0 - visionRotW) * Rwc_prior_;
+    Rwc_ = ortho(Rmix);
+    twc_ = visionPosW * twc_vis + (1.0 - visionPosW) * twc_prior_;
+  } else {
+    Rwc_ = Rwc_vis;
+    twc_ = twc_vis;
+  }
+
+  orthoMat(Rwc_);
+
   path_.emplace_back((float)twc_[0], (float)twc_[1], (float)twc_[2]);
   if (path_.size() > 4096) {
     path_.erase(path_.begin(), path_.begin() + (path_.size() - 4096));
@@ -621,9 +694,26 @@ bool System::shouldInsertKF(int pnpInliers, double nowTs) const
 {
   if (!mapInitialized_) return false;
   if (kfs_.empty()) return true;
-  if (pnpInliers < 100) return true;                    // tracking thinning
-  if ((nowTs - lastKFTs_) > 0.4) return true;          // time-based
-  if (pnpInliers < (lastKFInliers_ * 8) / 10) return true; // drop vs last KF
+
+  const Keyframe& Klast = kfs_.back();
+
+  const double dt = nowTs - lastKFTs_;
+  const double trans = cv::norm(twc_ - Klast.twc);
+
+  cv::Matx33d dR = Klast.Rwc.t() * Rwc_;
+  const double tr = dR(0,0) + dR(1,1) + dR(2,2);
+  const double angDeg = std::acos(std::clamp((tr - 1.0) * 0.5, -1.0, 1.0)) * 180.0 / M_PI;
+
+  const double minTrans = vioMetricInitDone_ ? 0.20 : 0.05;
+
+  // Do NOT insert weak-baseline KFs unless tracking is collapsing
+  if (trans < minTrans && angDeg < 5.0 && pnpInliers >= 80) return false;
+
+  if (pnpInliers < 80) return true;
+  if (trans > (vioMetricInitDone_ ? 0.50 : 0.12)) return true;
+  if (angDeg > 8.0) return true;
+  if (dt > 0.75 && trans > minTrans) return true;
+
   return false;
 }
 
@@ -631,6 +721,18 @@ bool System::shouldInsertKF(int pnpInliers, double nowTs) const
 void System::insertKeyframeAndTriangulate()
 {
   if (!mapInitialized_) return;
+
+  if (!kfs_.empty()) {
+    const Keyframe& KprevPose = kfs_.back();
+    const double trans = cv::norm(twc_ - KprevPose.twc);
+
+    cv::Matx33d dR = KprevPose.Rwc.t() * Rwc_;
+    const double tr = dR(0,0) + dR(1,1) + dR(2,2);
+    const double angDeg = std::acos(std::clamp((tr - 1.0) * 0.5, -1.0, 1.0)) * 180.0 / M_PI;
+
+    const double minTrans = vioMetricInitDone_ ? 0.20 : 0.05;
+    if (trans < minTrans && angDeg < 5.0) return;
+  }
 
   // Build KF from current frame using current KLT points only
   Keyframe KF;
@@ -816,7 +918,7 @@ void System::runEvsHGate(const std::vector<cv::Point2f>& prevProcPts,
     preferE = true;
   }
   // Comparable support and at least some motion
-  else if (ehParallaxDeg_ >= 0.5 && inlE >= (int)std::round(0.90 * inlH)) {
+  else if (ehParallaxDeg_ >= 0.5 && inlE >= (int)std::round(0.85 * inlH)) {
     preferE = true;
   }
   // For fisheye / TUM-VI, allow E more easily in forward motion if it is not clearly worse than H
@@ -862,8 +964,17 @@ void System::integrateVO_E(const std::vector<cv::Point2f>& prevProcPts,
   const double medPx = disp[disp.size()/2];
   // Keep translation magnitude stable (arbitrary VO units).
   // VIO initializer will solve meters-per-VO-unit later.
-  t10 *= 1.0;  
-
+  // If IMU prior exists, use its translation magnitude as the monocular scale hint.
+  if (imuPosePriorValid_) {
+    cv::Vec3d dt_imu = twc_prior_ - twc_;
+    const double s_imu = cv::norm(dt_imu);
+    const double nt = cv::norm(t10);
+    if (s_imu > 1e-6 && nt > 1e-9) {
+      t10 *= (s_imu / nt);
+    }
+  } else {
+    t10 *= 1.0;
+  }
   // Compose world pose. If Twc0 = [Rwc|twc], and cam1 = R10,t10 in cam0 frame:
   // Twc1 = Twc0 * inv(Tc1c0) = Twc0 * [R10^T | -R10^T t10]
   cv::Matx33d R_next = Rwc_ * R10.t();
@@ -1087,19 +1198,30 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
   auto t_imu0 = std::chrono::high_resolution_clock::now();
 
   imuHadDeltaThisFrame_ = false;
+  imuPosePriorValid_ = false;
   cv::Matx33d R_imu = cv::Matx33d::eye();
 
   if (lastImuFuseTS_ > 0.0) {
-    bool used = false;
-    R_imu = integrateImuDeltaRotationAccCorr(lastImuFuseTS_, ts, &used);
-    R_imu_delta_ = R_imu; // cache per-frame delta for other functions
-    imuHadDeltaThisFrame_ = used;
-    imuUsedThisFrame_ = imuHadDeltaThisFrame_ ? 1 : 0;
-  }
-  // Use IMU rotation as the default one-frame prior for downstream pose estimation.
-  if (imuHadDeltaThisFrame_) {
-    R_delta_prior_ = R_imu_delta_;
+    cv::Matx33d Rwc_pred, dR_cam;
+    cv::Vec3d twc_pred;
+
+    bool used = buildImuPosePrior(lastImuFuseTS_, ts, Rwc_pred, twc_pred, &dR_cam);
+    if (used) {
+      imuPosePriorValid_ = true;
+      Rwc_prior_ = Rwc_pred;
+      twc_prior_ = twc_pred;
+
+      R_imu = dR_cam;
+      R_imu_delta_ = dR_cam;
+      imuHadDeltaThisFrame_ = true;
+      imuUsedThisFrame_ = 1;
+      R_delta_prior_ = dR_cam.t();
+    } else {
+      imuUsedThisFrame_ = 0;
+      R_delta_prior_ = cv::Matx33d::eye();
+    }
   } else {
+    imuUsedThisFrame_ = 0;
     R_delta_prior_ = cv::Matx33d::eye();
   }
   // --- DEBUG: expose raw gyro-only delta rotation used between frames ---
@@ -1398,12 +1520,12 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
       runEvsHGate(p0, p1);
 
       if (!mapInitialized_) {
-        // TUM-VI / fisheye:
-        // If parallax is weak, do NOT fully block visual motion.
-        // Keep IMU helping rotation selection, but still allow E translation when E has enough support.
-        if (useFisheye_ && imuHadDeltaThisFrame_ && ehParallaxDeg_ < 0.6) {
-          // Extremely weak motion: keep orientation alive from IMU
-          Rwc_ = Rwc_ * R_imu_delta_.t();
+        const bool weakVisualMotion = (ehParallaxDeg_ < 0.8) || (ehInliersE_ < 25 && ehInliersH_ < 25);
+
+        if (weakVisualMotion && imuPosePriorValid_) {
+          // IMU dominates when visual motion is weak
+          Rwc_ = Rwc_prior_;
+          twc_ = twc_prior_;
           orthoMat(Rwc_);
 
           path_.emplace_back((float)twc_[0], (float)twc_[1], (float)twc_[2]);
@@ -1412,13 +1534,23 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
           }
         } else {
           if (ehModel_ == 1 && ehInliersE_ >= 25) {
-            // Allow E integration again, including on TUM-VI, unless motion is almost pure rotation
             integrateVO_E(p0, p1);
+
+            // pull the visual estimate slightly toward IMU prior
+            if (imuPosePriorValid_) {
+              Rwc_ = ortho(0.65 * Rwc_ + 0.35 * Rwc_prior_);
+              twc_ = 0.65 * twc_ + 0.35 * twc_prior_;
+            }
           } else if (ehModel_ == 2 && ehInliersH_ >= 25) {
             integrateVO_H(p0, p1);
-          } else if (useFisheye_ && imuHadDeltaThisFrame_) {
-            // Last-resort TUM-VI fallback when neither E nor H is trustworthy
-            Rwc_ = Rwc_ * R_imu_delta_.t();
+
+            if (imuPosePriorValid_) {
+              Rwc_ = ortho(0.50 * Rwc_ + 0.50 * Rwc_prior_);
+              twc_ = 0.30 * twc_ + 0.70 * twc_prior_;
+            }
+          } else if (imuPosePriorValid_) {
+            Rwc_ = Rwc_prior_;
+            twc_ = twc_prior_;
             orthoMat(Rwc_);
 
             path_.emplace_back((float)twc_[0], (float)twc_[1], (float)twc_[2]);
@@ -1470,16 +1602,11 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
 
   if (mapInitialized_) {
     const bool pnpOk = trackWithPnP();
+    if (!pnpOk) vioLastObs_.clear();
 
-    // CRITICAL: never use stale reprojection obs
-    if (!pnpOk) {
-      vioLastObs_.clear();
-    }
-
-    vioOnKeyframe(ts);
-
-    if (pnpOk && shouldInsertKF(lastKFInliers_, lastTS_)) {
-      insertKeyframeAndTriangulate();
+    if (shouldInsertKF(lastKFInliers_, lastTS_)) {
+        insertKeyframeAndTriangulate();
+        vioOnKeyframe(ts);  // ← only on actual keyframes
     }
   }
 
@@ -1545,6 +1672,71 @@ void System::feedImu(double ts,
 
   // keep bounded
   if (imuMeas_.size() > 6000) imuMeas_.erase(imuMeas_.begin(), imuMeas_.begin() + 3000);
+}
+
+bool System::buildImuPosePrior(double t0, double t1,
+  cv::Matx33d& Rwc_pred,
+  cv::Vec3d& twc_pred,
+  cv::Matx33d* dR_cam)
+{
+  Rwc_pred = Rwc_;
+  twc_pred = twc_;
+  if (dR_cam) *dR_cam = cv::Matx33d::eye();
+
+  if (t1 <= t0) return false;
+  if (imuMeas_.empty()) return false;
+
+  // Use latest backend biases if metric VIO is already active
+  cv::Vec3d bg = imuState_.bg;
+  cv::Vec3d ba = imuState_.ba;
+  cv::Vec3d v0 = imuState_.vwb;
+
+  if (vioInitDone_) {
+  const VioState& s = vio_.latest();
+  bg = s.b_g;
+  ba = s.b_a;
+  v0 = s.v_wi;
+  }
+
+  ImuPreint P = preintegrateImu(imuMeas_, t0, t1, bg, ba);
+  if (P.dt <= 1e-6) return false;
+
+  // Current camera pose -> IMU pose
+  const cv::Matx33d R_ic = Rcb_.t();       // imu-from-camera
+  const cv::Matx33d Rwi0 = ortho(Rwc_ * Rcb_);
+  const cv::Vec3d   pwi0 = twc_ + Rwi0 * (R_ic * t_ci_);
+
+  const double dt = P.dt;
+
+  cv::Matx33d Rwi1 = ortho(Rwi0 * P.dR);
+  cv::Vec3d vwi1, pwi1;
+
+  if (accelIsSpecificForce_) {
+  vwi1 = v0 + g_world_ * dt + Rwi0 * P.dv;
+  pwi1 = pwi0 + v0 * dt + 0.5 * g_world_ * (dt * dt) + Rwi0 * P.dp;
+  } else {
+  vwi1 = v0 + Rwi0 * P.dv;
+  pwi1 = pwi0 + v0 * dt + Rwi0 * P.dp;
+  }
+
+  // Back to camera pose
+  Rwc_pred = ortho(Rwi1 * R_ic);
+  twc_pred = pwi1 - Rwi1 * (R_ic * t_ci_);
+
+  // Persist IMU-side propagated state
+  imuState_.Rwb = Rwi1;
+  imuState_.vwb = vwi1;
+  imuState_.pwb = pwi1;
+  imuState_.bg  = bg;
+  imuState_.ba  = ba;
+
+  if (dR_cam) {
+  cv::Matx33d Rcw0 = Rwc_.t();
+  cv::Matx33d Rcw1 = Rwc_pred.t();
+  *dR_cam = ortho(Rcw1 * Rwc_); // camera relative rotation
+  }
+
+  return true;
 }
 
 cv::Matx33d System::integrateImuDeltaRotationAccCorr(double t0, double t1, bool* used)
@@ -1635,7 +1827,7 @@ void System::vioOnKeyframe(double ts)
     kf.twc_vo = twc_;   // VO units currently
     vioInit_.push(kf);
 
-    if (vioInit_.ready(/*minSpanSec=*/2.0, /*minKfs=*/12)) {
+    if (vioInit_.ready(/*minSpanSec=*/1.0, /*minKfs=*/6)) {
       VioCalib c;
       c.K = K();
       c.R_ci = Rcb_;
@@ -1737,13 +1929,7 @@ void System::vioOnKeyframe(double ts)
     // Rotation
     init.R_wi = ortho(Rwi0 * pim.dR);
 
-    // If your accel measurements already include gravity compensation (e.g., phone "linearAcceleration"),
-    // then adding g_world_ here will double-count gravity and cause huge drift.
-    //
-    // Quick robust approach: add a toggle. Default to STANDARD VIO (add gravity).
-    const bool accel_is_specific_force = true; // <-- set false if your feed already removed gravity
-
-    if (accel_is_specific_force) {
+    if (accelIsSpecificForce_) {
       init.v_wi = v0 + g_world_ * dt + Rwi0 * pim.dv;
       init.p_wi = p0 + v0 * dt + 0.5 * g_world_ * (dt*dt) + Rwi0 * pim.dp;
     } else {

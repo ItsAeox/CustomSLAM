@@ -297,8 +297,8 @@ els.btnLoad.addEventListener('click', async () => {
       logMsg('KB4 setup error (ignored):', String(e));
     }
 
+    Module.setAccelIsSpecificForce?.(true);   // TUM-VI IMU behaves like normal VIO specific force
     Module.initSystem(canvas.width, canvas.height, fx, fy, cx, cy);
-
     els.seqInfo.textContent = `Loaded TUM-VI: ${seq.N} frames (${canvas.width}x${canvas.height}).`;
     els.btnRun.disabled = false;
     els.btnExport.disabled = true;
@@ -417,6 +417,7 @@ els.btnLoad.addEventListener('click', async () => {
   const cx = canvas.width * 0.5;
   const cy = canvas.height * 0.5;
   try { Module.setUseFisheye?.(false); } catch {}
+  Module.setAccelIsSpecificForce?.(false);   // KITTI OXTS path: safer to treat accel as already gravity-compensated
   Module.initSystem(canvas.width, canvas.height, fx, fy, cx, cy);
 
   els.seqInfo.textContent = `Loaded: ${N} frames (${canvas.width}x${canvas.height}).`;
