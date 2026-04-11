@@ -42,6 +42,9 @@
   </style>
 </head>
 <body>
+  <video id="bgVideo" playsinline muted autoplay style="display:none;"></video>
+  <canvas id="arView"></canvas>
+  <button id="placeBtn" style="display:none;" disabled>Place Balloon</button>
   <canvas id="view"></canvas>
   <div id="hud"></div>
   <div id="log"></div>
@@ -50,58 +53,64 @@
     <h1>Dataset runner</h1>
 
     <div class="row">
-      <label>Dataset</label>
+      <label>Mode</label>
       <select id="dataset" style="padding:6px 10px;border-radius:10px;border:1px solid rgba(0,255,0,.25);background:rgba(0,0,0,.75);color:#d8ffd8;">
-        <option value="kitti" selected>KITTI (raw)</option>
-        <option value="tumvi">TUM-VI (your loop-floor0)</option>
+        <option value="kitti" selected>KITTI </option>
+        <option value="tumvi">TUM-VI </option>
+        <option value="realtime">Realtime / Human Eval</option>
       </select>
-    
-      <span class="hint">Pick one root folder. Paths below are relative to that root.</span>
     </div>
-    
-    <div class="row" id="tumviRow" style="display:none">
-      <label>Left dir</label>
-      <input id="leftDir" type="text" value="left_images" />
-      <label>Right dir</label>
-      <input id="rightDir" type="text" value="right_images" />
-      <label class="pill">KB4</label>
-      <span class="hint">We will start pinhole-only (distortion ignored) until we add rectification in C++.</span>
-    </div>    
+    <div id="datasetControls">
+      <div class="row" id="tumviRow" style="display:none">
+        <label>Left dir</label>
+        <input id="leftDir" type="text" value="left_images" />
+        <label>Right dir</label>
+        <input id="rightDir" type="text" value="right_images" />
+        <label class="pill">KB4</label>
+      </div>    
 
-    <div class="row">
-      <label class="pill">Step 1</label>
-      <input id="dirPick" type="file" webkitdirectory multiple />
-      <button id="btnScan" disabled>Scan</button>
+      <div class="row">
+        <label class="pill">Step 1</label>
+        <input id="dirPick" type="file" webkitdirectory multiple />
+        <button id="btnScan" disabled>Scan</button>
+      </div>
+
+      <div class="row">
+        <label>Image dir</label>
+        <input id="imgDir" type="text" value="image_02/data" title="Path inside the selected KITTI root" />
+        <label>OXTS dir</label>
+        <input id="oxtsDir" type="text" value="oxts/data" title="Path inside the selected KITTI root" />
+      </div>
+
+      <div class="row">
+        <label class="pill">Step 2</label>
+        <button id="btnLoad" disabled>Load sequence</button>
+        <span id="seqInfo" class="hint">No sequence loaded.</span>
+      </div>
+
+      <div class="row">
+        <label>Playback</label>
+        <input id="speed" type="number" min="0.1" step="0.1" value="1.0" />
+        <label>Skip</label>
+        <input id="skip" type="number" min="0" step="1" value="0" />
+        <label>Max frames</label>
+        <input id="maxFrames" type="number" min="0" step="100" value="0" title="0 = no limit" />
+      </div>
+
+      <div class="row">
+        <label class="pill">Step 3</label>
+        <button id="btnRun" disabled>Run</button>
+        <button id="btnStop" disabled>Stop</button>
+        <button id="btnExport" disabled>Export poses CSV</button>
+        <button id="btnExportPerf" disabled>Export performance CSV</button>
+      </div>
     </div>
 
-    <div class="row">
-      <label>Image dir</label>
-      <input id="imgDir" type="text" value="image_02/data" title="Path inside the selected KITTI root" />
-      <label>OXTS dir</label>
-      <input id="oxtsDir" type="text" value="oxts/data" title="Path inside the selected KITTI root" />
-    </div>
-
-    <div class="row">
-      <label class="pill">Step 2</label>
-      <button id="btnLoad" disabled>Load sequence</button>
-      <span id="seqInfo" class="hint">No sequence loaded.</span>
-    </div>
-
-    <div class="row">
-      <label>Playback</label>
-      <input id="speed" type="number" min="0.1" step="0.1" value="1.0" />
-      <label>Skip</label>
-      <input id="skip" type="number" min="0" step="1" value="0" />
-      <label>Max frames</label>
-      <input id="maxFrames" type="number" min="0" step="100" value="0" title="0 = no limit" />
-    </div>
-
-    <div class="row">
-      <label class="pill">Step 3</label>
-      <button id="btnRun" disabled>Run</button>
-      <button id="btnStop" disabled>Stop</button>
-      <button id="btnExport" disabled>Export poses CSV</button>
-      <button id="btnExportPerf" disabled>Export performance CSV</button>
+    <div class="row" id="realtimeRow" style="display:none">
+      <label class="pill">Realtime</label>
+      <button id="btnStartRealtime">Start camera + IMU</button>
+      <button id="btnStopRealtime" disabled>Stop realtime</button>
+      <span id="rtInfo" class="hint">Waiting to start.</span>
     </div>
 
     <!-- <div class="hint">
@@ -117,20 +126,51 @@
   <script>
     const dsEl = document.getElementById('dataset');
     const tumviRow = document.getElementById('tumviRow');
+    const realtimeRow = document.getElementById('realtimeRow');
+    const datasetControls = document.getElementById('datasetControls');
     const kittiImgDir = document.getElementById('imgDir');
     const kittiOxtsDir = document.getElementById('oxtsDir');
   
-    function syncUI() {
-      const isTumvi = dsEl.value === 'tumvi';
-      tumviRow.style.display = isTumvi ? '' : 'none';
+    const dirPick = document.getElementById('dirPick');
+    const btnScan = document.getElementById('btnScan');
+    const btnLoad = document.getElementById('btnLoad');
+    const btnRun  = document.getElementById('btnRun');
+    const btnStop = document.getElementById('btnStop');
+    const btnExport = document.getElementById('btnExport');
+    const btnExportPerf = document.getElementById('btnExportPerf');
   
-      // KITTI-only inputs
-      kittiImgDir.disabled = isTumvi;
-      kittiOxtsDir.disabled = isTumvi;
+    function syncUI() {
+      const mode = dsEl.value;
+      const isTumvi = mode === 'tumvi';
+      const isRealtime = mode === 'realtime';
+  
+      tumviRow.style.display = isTumvi ? '' : 'none';
+      realtimeRow.style.display = isRealtime ? '' : 'none';
+      datasetControls.style.display = isRealtime ? 'none' : '';
+  
+      kittiImgDir.disabled = isTumvi || isRealtime;
+      kittiOxtsDir.disabled = isTumvi || isRealtime;
+  
+      dirPick.disabled = isRealtime;
+      btnStop.disabled = true;
+      btnExport.disabled = true;
+      btnExportPerf.disabled = true;
+  
+      if (isRealtime) {
+        btnScan.disabled = true;
+        btnLoad.disabled = true;
+        btnRun.disabled = true;
+      } else {
+        // Keep normal runner behavior. Scan remains disabled until files are picked.
+        btnScan.disabled = !(dirPick.files && dirPick.files.length > 0);
+        btnLoad.disabled = true;
+        btnRun.disabled = true;
+      }
     }
+  
     dsEl.addEventListener('change', syncUI);
     syncUI();
-  </script>  
+  </script>
 
   <script type="module" src="./kitti.js"></script>
 </body>

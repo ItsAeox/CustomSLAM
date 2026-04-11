@@ -125,6 +125,10 @@ const els = {
   dataset: document.getElementById('dataset'),
   leftDir: document.getElementById('leftDir'),
   rightDir: document.getElementById('rightDir'),
+  btnStartRealtime: document.getElementById('btnStartRealtime'),
+  btnStopRealtime: document.getElementById('btnStopRealtime'),
+  rtInfo: document.getElementById('rtInfo'),
+  placeBtn: document.getElementById('placeBtn'),
 };
 
 let fileList = [];
@@ -140,6 +144,40 @@ const canvas = document.getElementById('view');
 await initRenderer(canvas);
 Module = await loadWasm();
 window.Module = Module;
+let realtime = null;
+
+let RealtimeARSessionClass = null;
+let realtimeImportPromise = null;
+
+async function loadRealtimeModule() {
+  if (RealtimeARSessionClass) return RealtimeARSessionClass;
+  if (!realtimeImportPromise) {
+    realtimeImportPromise = import('./realtime_ar.js')
+      .then(mod => {
+        RealtimeARSessionClass = mod.RealtimeARSession;
+        return RealtimeARSessionClass;
+      });
+  }
+  return realtimeImportPromise;
+}
+
+async function ensureRealtimeSession() {
+  if (realtime) return realtime;
+
+  const RealtimeARSession = await loadRealtimeModule();
+
+  realtime = new RealtimeARSession({
+    Module,
+    overlayCanvas: canvas,
+    hudEl: document.getElementById('hud'),
+    logEl: document.getElementById('log'),
+    rtInfoEl: els.rtInfo,
+    placeBtn: els.placeBtn,
+  });
+
+  return realtime;
+}
+
 logMsg('WASM ready:', {
   feedFramePtr: !!Module.feedFramePtr,
   feedFrameJS: !!Module.feedFrameJS,
@@ -170,7 +208,7 @@ els.btnScan.addEventListener('click', () => {
   if (!fileList.length) return;
 
   const ds = els.dataset?.value || 'kitti';
-
+  if (ds === 'realtime') return;
   if (ds === 'tumvi') {
     const leftDir = (els.leftDir?.value || 'left_images').trim();
 
@@ -215,6 +253,7 @@ els.btnLoad.addEventListener('click', async () => {
   if (!fileList.length) return;
 
   const ds = els.dataset?.value || 'kitti';
+  if (ds === 'realtime') return;
   if (ds === 'tumvi') {
     const leftDir  = (els.leftDir?.value || 'left_images').trim();
     const rightDir = (els.rightDir?.value || 'right_images').trim();
@@ -431,6 +470,8 @@ els.btnLoad.addEventListener('click', async () => {
 });
 
 els.btnRun.addEventListener('click', async () => {
+  const ds = els.dataset?.value || 'kitti';
+  if (ds === 'realtime') return;
   if (!seq) return;
   stopFlag = false;
   els.btnStop.disabled = false;
@@ -488,7 +529,6 @@ els.btnRun.addEventListener('click', async () => {
     const tNow = tRel;
 
     // Decode image
-    const ds = els.dataset?.value || 'kitti';
     const imgFile = (ds === 'tumvi') ? seq.leftImgs[i] : seq.images[i];
     const bmp = await createImageBitmap(imgFile);
     
@@ -679,6 +719,25 @@ els.btnExport.addEventListener('click', () => {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   logMsg('Exported kitti_poses.csv');
+});
+
+els.btnStartRealtime?.addEventListener('click', async () => {
+  try {
+    els.rtInfo.textContent = 'Starting realtime...';
+    const rt = await ensureRealtimeSession();
+    await rt.start();
+    els.btnStartRealtime.disabled = true;
+    els.btnStopRealtime.disabled = false;
+  } catch (e) {
+    console.error(e);
+    els.rtInfo.textContent = `Realtime failed: ${e.message || e}`;
+  }
+});
+
+els.btnStopRealtime?.addEventListener('click', () => {
+  if (realtime) realtime.stop();
+  els.btnStartRealtime.disabled = false;
+  els.btnStopRealtime.disabled = true;
 });
 
 els.btnExportPerf.addEventListener('click', () => {

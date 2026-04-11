@@ -113,6 +113,17 @@ public:
   int getOrbDescRowsThisFrame() const { return orbDescRowsThisFrame_; }
   int getOrbFullDetectCountThisFrame() const { return orbFullDetectCountThisFrame_; }
 
+  bool getMapInitialized() const { return mapInitialized_; }
+  bool getMetricReady()    const { return vioMetricInitDone_; }
+
+  std::array<double,9> getRwcFlat() const {
+    return {
+      Rwc_(0,0), Rwc_(0,1), Rwc_(0,2),
+      Rwc_(1,0), Rwc_(1,1), Rwc_(1,2),
+      Rwc_(2,0), Rwc_(2,1), Rwc_(2,2)
+    };
+  }
+
 private:
   int   procScale_      = 1;        // 2 => process at half-res (major speedup)
   int   kltWin_         = 25;

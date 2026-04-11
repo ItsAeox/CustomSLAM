@@ -19,3 +19,26 @@ html,body { margin:0; height:100%; background:#000; }
 #hud { position:fixed; right:8px; top:8px; z-index:20; color:#0f0; font:12px monospace; }
 #log { position:fixed; left:8px; bottom:8px; z-index:30; color:#0f0; font:12px monospace; }
 #placeBtn { position:fixed; right:8px; bottom:8px; z-index:20; }
+
+#arView{
+  position:fixed;
+  inset:0;
+  width:100vw;
+  height:100vh;
+  z-index:15;
+  pointer-events:none;
+  background:transparent;
+}
+
+#placeBtn{
+  display:none;
+  position:fixed;
+  right:8px;
+  bottom:8px;
+  z-index:80;
+  padding:10px 14px;
+  border-radius:12px;
+  border:1px solid rgba(0,255,0,.25);
+  background:rgba(0,0,0,.82);
+  color:#d8ffd8;
+}

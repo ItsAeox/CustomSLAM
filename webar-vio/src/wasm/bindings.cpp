@@ -34,6 +34,15 @@ static int    GetImuBufSize()       { return gSys.getImuBufSize(); }
 static int GetOrbDescInputPtsThisFrame() { return gSys.getOrbDescInputPtsThisFrame(); }
 static int GetOrbDescRowsThisFrame() { return gSys.getOrbDescRowsThisFrame(); }
 static int GetOrbFullDetectCountThisFrame() { return gSys.getOrbFullDetectCountThisFrame(); }
+static int GetMapInitialized() { return gSys.getMapInitialized() ? 1 : 0; }
+static int GetMetricReady()    { return gSys.getMetricReady() ? 1 : 0; }
+
+static emscripten::val GetRwc() {
+  auto r = gSys.getRwcFlat();
+  emscripten::val a = emscripten::val::array();
+  for (int i = 0; i < 9; ++i) a.set(i, r[i]);
+  return a;
+}
 
 static emscripten::val GetTwc() {
   auto t = gSys.getTwc();
@@ -187,5 +196,7 @@ EMSCRIPTEN_BINDINGS(vio_bindings_pointtrack) {
   function("getOrbDescInputPtsThisFrame", &GetOrbDescInputPtsThisFrame);
   function("getOrbDescRowsThisFrame", &GetOrbDescRowsThisFrame);
   function("getOrbFullDetectCountThisFrame", &GetOrbFullDetectCountThisFrame);
-
+  function("getMapInitialized", &GetMapInitialized);
+  function("getMetricReady",    &GetMetricReady);
+  function("getRwc",            &GetRwc);
 }
