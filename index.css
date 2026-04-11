@@ -1,6 +1,15 @@
 html,body { margin:0; height:100%; background:#000; }
 
 /* index.css */
+
+#bgVideo { z-index: 0; pointer-events: none; }
+#view    { z-index: 10; }
+#arView  { z-index: 15; pointer-events: none; }
+#ui      { z-index: 150; }
+#hud     { z-index: 200; }
+#log     { z-index: 210; }
+#placeBtn{ z-index: 220; }
+
 #bgVideo{
   position:fixed; inset:0;
   width:100vw; height:100vh;
@@ -16,7 +25,25 @@ html,body { margin:0; height:100%; background:#000; }
 }
 
 
-#hud { position:fixed; right:8px; top:8px; z-index:20; color:#0f0; font:12px monospace; }
+#hud{
+  position: fixed;
+  right: 8px;
+  top: 8px;
+  z-index: 200;
+  color: #0f0;
+  font: 12px monospace;
+  width: 320px;
+  min-height: 120px;
+  box-sizing: border-box;
+  white-space: pre-wrap;
+  overflow: hidden;
+  text-align: left;
+  padding: 8px 10px;
+  background: rgba(0,0,0,.60);
+  border: 1px solid rgba(0,255,0,.25);
+  border-radius: 10px;
+}
+
 #log { position:fixed; left:8px; bottom:8px; z-index:30; color:#0f0; font:12px monospace; }
 #placeBtn { position:fixed; right:8px; bottom:8px; z-index:20; }
 
@@ -41,4 +68,14 @@ html,body { margin:0; height:100%; background:#000; }
   border:1px solid rgba(0,255,0,.25);
   background:rgba(0,0,0,.82);
   color:#d8ffd8;
+}
+
+#rtOverlay{
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 12;
+  pointer-events: none;
+  background: transparent;
 }

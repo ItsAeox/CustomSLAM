@@ -165,10 +165,15 @@ async function ensureRealtimeSession() {
   if (realtime) return realtime;
 
   const RealtimeARSession = await loadRealtimeModule();
+  const rtOverlay = document.getElementById('rtOverlay');
+
+  if (!rtOverlay) {
+    throw new Error('Missing <canvas id="rtOverlay"> in index.html');
+  }
 
   realtime = new RealtimeARSession({
     Module,
-    overlayCanvas: canvas,
+    overlayCanvas: rtOverlay,
     hudEl: document.getElementById('hud'),
     logEl: document.getElementById('log'),
     rtInfoEl: els.rtInfo,

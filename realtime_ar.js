@@ -68,6 +68,23 @@ function scaleVec(v, s) {
   return { x: v.x * s, y: v.y * s, z: v.z * s };
 }
 
+function fitElementToViewport(el, imgW, imgH) {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const s = Math.min(vw / imgW, vh / imgH);
+
+    const cssW = Math.round(imgW * s);
+    const cssH = Math.round(imgH * s);
+    const left = Math.round((vw - cssW) * 0.5);
+    const top  = Math.round((vh - cssH) * 0.5);
+
+    el.style.position = 'fixed';
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
+    el.style.width = `${cssW}px`;
+    el.style.height = `${cssH}px`;
+}
+
 export class RealtimeARSession {
   constructor({ Module, overlayCanvas, hudEl, logEl, rtInfoEl, placeBtn }) {
     this.Module = Module;
@@ -77,6 +94,9 @@ export class RealtimeARSession {
     this.rtInfoEl = rtInfoEl;
     this.placeBtn = placeBtn;
     this.lastHudMs = 0;
+    this.framesFed = 0;
+    this.imuEvents = 0;
+    this.isProcessingFrame = false;
 
     this.video = document.getElementById('bgVideo');
     this.arCanvas = document.getElementById('arView');
@@ -121,6 +141,12 @@ export class RealtimeARSession {
       this.renderer.setSize(window.innerWidth, window.innerHeight, false);
       this.camera.aspect = window.innerWidth / window.innerHeight;
       this.camera.updateProjectionMatrix();
+
+      if (this.frameWidth && this.frameHeight) {
+        fitElementToViewport(this.video, this.frameWidth, this.frameHeight);
+        fitElementToViewport(this.overlayCanvas, this.frameWidth, this.frameHeight);
+        fitElementToViewport(this.arCanvas, this.frameWidth, this.frameHeight);
+      }
     });
   }
 
@@ -158,33 +184,18 @@ export class RealtimeARSession {
     const [track] = this.stream.getVideoTracks();
     const settings = track.getSettings();
 
-    this.frameWidth = settings.width || this.video.videoWidth || 1280;
-    this.frameHeight = settings.height || this.video.videoHeight || 720;
-
-    this.overlayCanvas.width = this.frameWidth;
-    this.overlayCanvas.height = this.frameHeight;
+    // Do not trust settings/video dimensions yet for processing.
+    // We will adopt the first real VideoFrame size in handleVideoFrame().
+    this.frameWidth = 0;
+    this.frameHeight = 0;
 
     this.Module.setAccelIsSpecificForce?.(true);
-
-    const intr = estimateIntrinsics(this.frameWidth, this.frameHeight, 60);
-    this.Module.initSystem(
-      this.frameWidth,
-      this.frameHeight,
-      intr.fx,
-      intr.fy,
-      intr.cx,
-      intr.cy
-    );
-
-    const grayBytes = this.frameWidth * this.frameHeight;
-    this.wasmGrayPtr = this.Module._malloc(grayBytes);
-    this.wasmGrayView = new Uint8Array(this.Module.HEAPU8.buffer, this.wasmGrayPtr, grayBytes);
 
     this.trackProcessor = new MediaStreamTrackProcessor({ track });
     this.reader = this.trackProcessor.readable.getReader();
 
     this.camera.fov = 60;
-    this.camera.aspect = this.frameWidth / this.frameHeight;
+    this.camera.aspect = window.innerWidth / Math.max(1, window.innerHeight);
     this.camera.updateProjectionMatrix();
 
     await this.loadBalloon();
@@ -260,6 +271,7 @@ export class RealtimeARSession {
       const ay = acc.y || 0;
       const az = acc.z || 0;
 
+      this.imuEvents++;
       this.Module.feedImuSample?.(ts, ax, ay, az, gx, gy, gz);
     };
 
@@ -300,11 +312,19 @@ export class RealtimeARSession {
       const { value: frame, done } = await this.reader.read();
       if (done || !frame) break;
 
+      if (this.isProcessingFrame) {
+        frame.close();
+        continue; // drop stale frame
+      }
+
+      this.isProcessingFrame = true;
       try {
         await this.handleVideoFrame(frame);
       } catch (e) {
         console.error(e);
+        this.rtInfoEl.textContent = `Frame processing failed: ${e?.message || e}`;
       } finally {
+        this.isProcessingFrame = false;
         frame.close();
       }
     }
@@ -314,33 +334,89 @@ export class RealtimeARSession {
     const ts = (frame.timestamp != null)
       ? frame.timestamp * 1e-6
       : performance.now() * 1e-3;
-
-    const W = frame.displayWidth || frame.codedWidth || this.frameWidth;
-    const H = frame.displayHeight || frame.codedHeight || this.frameHeight;
-
-    if (W !== this.frameWidth || H !== this.frameHeight) {
+  
+      const W = frame.codedWidth || frame.displayWidth || this.frameWidth;
+      const H = frame.codedHeight || frame.displayHeight || this.frameHeight;
+    
+      // Adopt the first actual frame size as ground truth.
+      if (!this.frameWidth || !this.frameHeight) {
+        this.frameWidth = W;
+        this.frameHeight = H;
+    
+        this.overlayCanvas.width = W;
+        this.overlayCanvas.height = H;
+        this.arCanvas.width = W;
+        this.arCanvas.height = H;
+    
+        fitElementToViewport(this.video, W, H);
+        fitElementToViewport(this.overlayCanvas, W, H);
+        fitElementToViewport(this.arCanvas, W, H);
+    
+        const intr = estimateIntrinsics(W, H, 60);
+        this.Module.initSystem(W, H, intr.fx, intr.fy, intr.cx, intr.cy);
+    
+        const grayBytes = W * H;
+        if (this.wasmGrayPtr) this.Module._free(this.wasmGrayPtr);
+        this.wasmGrayPtr = this.Module._malloc(grayBytes);
+        this.wasmGrayView = new Uint8Array(this.Module.HEAPU8.buffer, this.wasmGrayPtr, grayBytes);
+    
+        this.camera.aspect = W / H;
+        this.camera.updateProjectionMatrix();
+    
+        this.log('Adopted first frame size:', W, 'x', H);
+      }
+    
+      // If later frames differ, log it and skip them.
+      if (W !== this.frameWidth || H !== this.frameHeight) {
+        this.rtInfoEl.textContent = `Frame size mismatch: got ${W}x${H}, expected ${this.frameWidth}x${this.frameHeight}`;
+        return;
+      }
+  
+    // Ask the frame how much space it needs in its OWN native format.
+    const total = frame.allocationSize();
+  
+    if (!this.nativeBuffer || this.nativeBuffer.length !== total) {
+      this.nativeBuffer = new Uint8Array(total);
+    }
+  
+    // IMPORTANT: no explicit format here.
+    const layout = await frame.copyTo(this.nativeBuffer);
+  
+    const fmt = frame.format || '';
+    this.lastFrameFormat = fmt;
+  
+    // We want the Y plane directly when native format is planar 4:2:0.
+    // Common values include "I420". Some browsers may expose other YUV variants.
+    if (fmt === 'I420' && layout && layout.length >= 1) {
+      const yPlane = layout[0];
+      const yOffset = yPlane.offset;
+      const yStride = yPlane.stride;
+  
+      // Fast path if tightly packed
+      if (yStride === W) {
+        this.wasmGrayView.set(this.nativeBuffer.subarray(yOffset, yOffset + W * H));
+      } else {
+        // Row-by-row copy if stride has padding
+        for (let r = 0; r < H; r++) {
+          const srcStart = yOffset + r * yStride;
+          const srcEnd = srcStart + W;
+          const dstStart = r * W;
+          this.wasmGrayView.set(this.nativeBuffer.subarray(srcStart, srcEnd), dstStart);
+        }
+      }
+  
+      this.Module.feedFramePtr(this.wasmGrayPtr, ts, W, H, false);
+      this.framesFed = (this.framesFed || 0) + 1;
+    } else {
+      // Native format is not directly usable as grayscale Y plane.
+      // Surface it clearly so we know what browser is giving us.
+      this.rtInfoEl.textContent = `Unsupported native frame format: ${fmt || 'unknown'}`;
       return;
     }
-
-    // I420 layout:
-    // Y plane size = W * H
-    // U plane size = (W/2) * (H/2)
-    // V plane size = (W/2) * (H/2)
-    const ySize = W * H;
-    const uvSize = ((W >> 1) * (H >> 1));
-    const total = ySize + uvSize + uvSize;
-    const buffer = new Uint8Array(total);
-
-    await frame.copyTo(buffer, { format: 'I420' });
-
-    // Feed only the Y plane to WASM as grayscale
-    this.wasmGrayView.set(buffer.subarray(0, ySize));
-    this.Module.feedFramePtr(this.wasmGrayPtr, ts, W, H, false);
-
+  
     this.drawTrackingOverlay();
     this.updateHud(ts);
   }
-
   drawTrackingOverlay() {
     this.clearOverlay();
 
@@ -365,6 +441,7 @@ export class RealtimeARSession {
     const nowMs = performance.now();
     if (nowMs - this.lastHudMs < 100) return;
     this.lastHudMs = nowMs;
+
     const mapReady = !!this.Module.getMapInitialized?.();
     const metricReady = !!this.Module.getMetricReady?.();
 
@@ -372,15 +449,22 @@ export class RealtimeARSession {
 
     const twc = this.Module.getTwc?.() || [0, 0, 0];
     const ypr = this.Module.getYPR?.() || [0, 0, 0];
+    const numPts = Number(this.Module.getNumKeypoints?.() ?? 0);
 
     this.hudEl.textContent = [
       `Mode       realtime`,
       `t (s)      ${ts.toFixed(3)}`,
+      `Fmt        ${this.lastFrameFormat || 'unknown'}`,
+      `Frames fed ${this.framesFed || 0}`,
+      `IMU evts   ${this.imuEvents || 0}`,
+      `Track      ${Number(this.Module.getTrackState?.() ?? -1)}`,
       `Map ready  ${mapReady ? 'YES' : 'NO'}`,
       `Metric     ${metricReady ? 'YES' : 'NO'}`,
       `Total ms   ${(Number(this.Module.getLastTotalMS?.() ?? 0)).toFixed(2)}`,
       `KLT ms     ${(Number(this.Module.getLastKltMS?.() ?? 0)).toFixed(2)}`,
       `IMU Hz     ${(Number(this.Module.getImuHz?.() ?? 0)).toFixed(1)}`,
+      `IMU meas   ${Number(this.Module.getImuBufSize?.() ?? 0)}`,
+      `Keypoints  ${numPts}`,
       `Pos        ${Number(twc[0]).toFixed(3)} ${Number(twc[1]).toFixed(3)} ${Number(twc[2]).toFixed(3)}`,
       `YPR        ${Number(ypr[0]).toFixed(2)} ${Number(ypr[1]).toFixed(2)} ${Number(ypr[2]).toFixed(2)}`,
       `MPs        ${Number(this.Module.getNumMPs?.() ?? 0)}`,
@@ -389,7 +473,7 @@ export class RealtimeARSession {
 
     this.rtInfoEl.textContent = metricReady
       ? 'Metric scale ready. You can place the balloon.'
-      : 'Move the phone around to initialize scale.';
+      : 'Realtime running. Move device to initialize.';
   }
 
   placeBalloon() {

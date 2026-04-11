@@ -6,6 +6,7 @@
 #include <random>  
 #include <opencv2/features2d.hpp>
 #include <opencv2/calib3d.hpp>
+#include <emscripten/emscripten.h>
 
 static inline cv::Matx33d ortho(const cv::Matx33d& R)
 {
@@ -109,7 +110,7 @@ static void trackFbKLT(const std::vector<cv::Mat>& pyrPrev,
         cv::matchTemplate(pa, pb, nccMat, cv::TM_CCOEFF_NORMED);
         const float ncc = nccMat.at<float>(0,0);
 
-        if (ncc < 0.85f) {
+        if (ncc < 0.65f) {
           alive[ii] = 0; // too different; drop this track
         }
       }
@@ -302,8 +303,23 @@ int System::harvestPnpCorrespondences(float winPx, int maxTake)
   pnp_indices_.reserve(std::min<int>((int)mps_.size(), maxTake));
 
   // Current camera pose (world->camera): Rcw, tcw from Rwc_,twc_
-  cv::Matx33d Rcw = Rwc_.t();
-  cv::Vec3d   tcw = -(Rwc_.t() * twc_);
+  cv::Matx33d Rwc_proj = Rwc_;
+  cv::Vec3d   twc_proj = twc_;
+
+  if (imuPosePriorValid_) {
+    // Only use the IMU prior here.
+    Rwc_proj = Rwc_prior_;
+    twc_proj = twc_prior_;
+  } else {
+    // IMPORTANT:
+    // For harvesting PnP correspondences, project using the current pose only.
+    // Do NOT apply R_delta_prior_ here, otherwise the same visual delta is used
+    // once for harvesting and again for PnP seeding, which destabilizes matching.
+    Rwc_proj = Rwc_;
+    twc_proj = twc_;
+  }
+  cv::Matx33d Rcw = Rwc_proj.t();
+  cv::Vec3d   tcw = -(Rwc_proj.t() * twc_proj);
   const cv::Matx33d Kd = K();
 
   // Build a light grid over current 2D tracks to accelerate nearest search (processing scale).
@@ -387,18 +403,23 @@ int System::harvestPnpCorrespondences(float winPx, int maxTake)
     // }
     if (bestIdx >= 0) {
       // Optional descriptor verification (if the MapPoint has a descriptor)
+      // TEMORARLY REMOVED
+      // bool pass = true;
+      // if (!mps_[mi].desc.empty() && mps_[mi].seen >= 5) {
+      //   // Compute ORB at the candidate 2D point (processing scale)
+      //   std::vector<cv::Point2f> onePt = { ptsCur_[bestIdx] };
+      //   cv::Mat candDesc; 
+      //   computeORBAtPoints(curProc_, onePt, candDesc);
+      //   if (!candDesc.empty()) {
+      //     // Hamming distance gate
+      //     const int dist = cv::norm(candDesc.row(0), mps_[mi].desc, cv::NORM_HAMMING);
+      //     // Typical robust range: 0..256 (ORB 256 bits). Try 50-60 first.
+      //     if (dist > 120) pass = false;
+      //   }
+      // }
       bool pass = true;
-      if (!mps_[mi].desc.empty()) {
-        // Compute ORB at the candidate 2D point (processing scale)
-        std::vector<cv::Point2f> onePt = { ptsCur_[bestIdx] };
-        cv::Mat candDesc; computeORBAtPoints(curProc_, onePt, candDesc);
-        if (!candDesc.empty()) {
-          // Hamming distance gate
-          const int dist = cv::norm(candDesc.row(0), mps_[mi].desc, cv::NORM_HAMMING);
-          // Typical robust range: 0..256 (ORB 256 bits). Try 50-60 first.
-          if (dist > 60) pass = false;
-        }
-      }
+      // TEMP: disable descriptor verification while recovering stable geometry.
+      // Current MP descriptors are not reliable enough and can reject good correspondences.
       if (pass) {
         usedTrack[bestIdx] = 1;
         pnp_indices_.push_back(mi);
@@ -435,7 +456,8 @@ bool System::tryTwoViewInit(const std::vector<cv::Point2f>& prevProcPts,
 
   cv::Mat R, t;
   int ninl = cv::recoverPose(E, p0, p1, R, t, fx_, cv::Point2d(cx_, cy_), mask);
-  if (ninl < 30) return false;
+  emscripten_log(EM_LOG_CONSOLE, "[INIT] recoverPose ninl=%d total=%d", ninl, (int)p0.size());
+  if (ninl < 18) return false;
 
   // Build inlier-aligned pixel arrays + normalized arrays for triangulation
   std::vector<cv::Point2f> p0_inl, p1_inl;
@@ -472,82 +494,140 @@ bool System::tryTwoViewInit(const std::vector<cv::Point2f>& prevProcPts,
   cv::Mat X4;
   cv::triangulatePoints(P0, P1, n0, n1, X4);
 
+  // IMPORTANT:
+  // triangulatePoints often returns CV_32F when points are Point2f.
+  // Convert explicitly so the later X4.at<double>() reads are valid.
+  if (X4.type() != CV_64F) {
+    X4.convertTo(X4, CV_64F);
+  }
+
+  emscripten_log(EM_LOG_CONSOLE, "[INIT] X4 type=%d cols=%d", X4.type(), X4.cols);
   // Compose first two KFs in world=cam0 coords
-  Keyframe KF0; KF0.id = nextKFId_++; KF0.Rwc = cv::Matx33d::eye(); KF0.twc = cv::Vec3d(0,0,0);
-  Keyframe KF1; KF1.id = nextKFId_++; 
-  cv::Matx33d R10; for (int r=0;r<3;++r) for (int c=0;c<3;++c) R10(r,c) = R.at<double>(r,c);
-  cv::Vec3d   t10(t.at<double>(0), t.at<double>(1), t.at<double>(2));
-  KF1.Rwc = R10.t(); KF1.twc = -(R10.t()*t10);
+  Keyframe KF0;
+  KF0.id = nextKFId_++;
+  KF0.Rwc = cv::Matx33d::eye();
+  KF0.twc = cv::Vec3d(0,0,0);
 
-  // Prepare ORB descs for KF1 at *inlier* pixels (processing scale)
-  std::vector<cv::Point2f> inlProc1;
+  Keyframe KF1;
+  KF1.id = nextKFId_++;
+
+  cv::Matx33d R10;
+  for (int r = 0; r < 3; ++r) for (int c = 0; c < 3; ++c) R10(r,c) = R.at<double>(r,c);
+  cv::Vec3d t10(t.at<double>(0), t.at<double>(1), t.at<double>(2));
+
+  KF1.Rwc = R10.t();
+  KF1.twc = -(R10.t() * t10);
+
+  // Store inlier keypoints for both initial keyframes at processing scale
+  std::vector<cv::Point2f> inlProc0, inlProc1;
+  inlProc0.reserve(p0_inl.size());
   inlProc1.reserve(p1_inl.size());
+
   const float s = (float)procScale_;
-  for (const auto& px : p1_inl) {
-    inlProc1.emplace_back(px.x / s, px.y / s);
-  }
-  
+  for (const auto& px : p0_inl) inlProc0.emplace_back(px.x / s, px.y / s);
+  for (const auto& px : p1_inl) inlProc1.emplace_back(px.x / s, px.y / s);
+
+  KF0.kps.clear();
   KF1.kps.clear();
+  KF0.kps.reserve(inlProc0.size());
   KF1.kps.reserve(inlProc1.size());
-  for (const auto& p : inlProc1) {
-    KF1.kps.emplace_back(p, (float)orbPatchSize_);
-  }
-  
-  computeORBAtPoints(curProc_, inlProc1, KF1.desc);
 
-  // Create MapPoints with cheirality + reprojection + baseline angle checks
-  mps_.reserve(mps_.size() + X4.cols);
+  for (const auto& p : inlProc0) KF0.kps.emplace_back(p, (float)orbPatchSize_);
+  for (const auto& p : inlProc1) KF1.kps.emplace_back(p, (float)orbPatchSize_);
+
+  // Compute descriptors for the initial keyframes
+  computeORBAtPoints(prevProc_, inlProc0, KF0.desc);
+  computeORBAtPoints(curProc_,  inlProc1, KF1.desc);
+
+  emscripten_log(EM_LOG_CONSOLE,
+    "[INIT] seeded KF desc: KF0=%d KF1=%d",
+    KF0.desc.empty() ? 0 : KF0.desc.rows,
+    KF1.desc.empty() ? 0 : KF1.desc.rows);
+
+  // Create candidate MapPoints with cheirality + reprojection checks.
+  // IMPORTANT: do NOT commit them to mps_/kfs_ unless init succeeds.
+  std::vector<MapPoint> newMps;
+  newMps.reserve(X4.cols);
+
   int kept = 0;
-  for (int i=0;i<X4.cols;++i) {
-    double X = X4.at<double>(0,i), Y = X4.at<double>(1,i), Z = X4.at<double>(2,i), W = X4.at<double>(3,i);
-    if (W <= 1e-9) continue;
-    cv::Vec3d Xc0 = cv::Vec3d(X/W, Y/W, Z/W);
-    if (Xc0[2] <= 1e-6) continue; // depth>0 in cam0
+  for (int i = 0; i < X4.cols; ++i) {
+    double X = X4.at<double>(0,i);
+    double Y = X4.at<double>(1,i);
+    double Z = X4.at<double>(2,i);
+    double W = X4.at<double>(3,i);
 
-    // depth in cam1: R*Xc0 + t
+    // Homogeneous scale can be positive or negative.
+    // Only reject if it is truly near zero.
+    if (std::abs(W) <= 1e-12) continue;
+
+    cv::Vec3d Xc0(X / W, Y / W, Z / W);
+    if (i < 5) {
+      emscripten_log(EM_LOG_CONSOLE,
+        "[INIT] sample i=%d W=%.6e Xc0z=%.6e",
+        i, W, Xc0[2]);
+    }
+    if (Xc0[2] <= 1e-6) continue; // depth > 0 in cam0
+
+    // depth in cam1: R * Xc0 + t
     cv::Vec3d Xc1 = R10 * Xc0 + t10;
     if (Xc1[2] <= 1e-6) continue;
 
-    // simple reprojection check (< 2.5 px) into both cams (full-res)
-    auto reprojErr = [&](const cv::Vec3d& Xc, const cv::Point2f& px){
-      double u = fx_ * (Xc[0]/Xc[2]) + cx_;
-      double v = fy_ * (Xc[1]/Xc[2]) + cy_;
-      double du = u - px.x, dv = v - px.y;
-      return std::sqrt(du*du + dv*dv);
+    auto reprojErr = [&](const cv::Vec3d& Xc, const cv::Point2f& px) {
+      double u = fx_ * (Xc[0] / Xc[2]) + cx_;
+      double v = fy_ * (Xc[1] / Xc[2]) + cy_;
+      double du = u - px.x;
+      double dv = v - px.y;
+      return std::sqrt(du * du + dv * dv);
     };
-    if (reprojErr(Xc0, p0_inl[i]) > 2.5) continue;
-    if (reprojErr(Xc1, p1_inl[i]) > 2.5) continue;
+
+    if (reprojErr(Xc0, p0_inl[i]) > 4.0) continue;
+    if (reprojErr(Xc1, p1_inl[i]) > 4.0) continue;
+
     MapPoint M;
-    M.Xw = Xc0; // world=cam0
+    M.Xw = Xc0;       // world = cam0
     M.hostKF = KF0.id;
-    if (!KF1.desc.empty() && i < KF1.desc.rows) {
-      M.desc = KF1.desc.row(i).clone();
-    }
-    mps_.push_back(std::move(M));
+
+    newMps.push_back(std::move(M));
     kept++;
   }
 
+  // Success threshold for live/mobile init.
+  // Start with 25. You can tune later.
+  const int minInitPoints = 15;
+  emscripten_log(EM_LOG_CONSOLE, "[INIT] triangulated kept=%d", kept);
+  if (kept < minInitPoints) {
+    return false;
+  }
+
+  // Only commit now that init has succeeded.
   kfs_.push_back(std::move(KF0));
   kfs_.push_back(std::move(KF1));
-  mapInitialized_ = (kept >= 50);
+
+  mps_.reserve(mps_.size() + newMps.size());
+  for (auto& mp : newMps) {
+    mps_.push_back(std::move(mp));
+  }
+
+  mapInitialized_ = true;
   lastKFTs_ = lastTS_;
   lastKFInliers_ = kept;
 
-  // Initialize global pose with KF1 (so trail keeps continuity)
-  if (mapInitialized_) {
-    Rwc_ = kfs_.back().Rwc;
-    twc_ = kfs_.back().twc;
-  }
-  return mapInitialized_;
+  // Initialize global pose with KF1
+  Rwc_ = kfs_.back().Rwc;
+  twc_ = kfs_.back().twc;
+  emscripten_log(EM_LOG_CONSOLE, "[INIT] SUCCESS kfs=%d mps=%d", (int)kfs_.size(), (int)mps_.size());
+  return true;
 }
 
 // PnP on harvested correspondences; refines pose; returns true on success.
 bool System::trackWithPnP()
 {
-  const int N = harvestPnpCorrespondences(/*winPx=*/10.f, /*maxTake=*/800);
+  const int N = harvestPnpCorrespondences(/*winPx=*/80.f, /*maxTake=*/800);
+  emscripten_log(EM_LOG_CONSOLE, "[PnP] harvested N=%d mps=%d tracks=%d",
+    N, (int)mps_.size(), (int)ptsCur_.size());
 
   // If visual correspondences are too weak, immediately hand control to IMU prior
-  if (N < 25) {
+  if (N < 8) {
     vioLastObs_.clear();
     if (imuPosePriorValid_) {
       Rwc_ = Rwc_prior_;
@@ -562,6 +642,7 @@ bool System::trackWithPnP()
       lastKFInliers_ = 0;
       return true;
     }
+    emscripten_log(EM_LOG_CONSOLE, "[PnP] early fail: N<8");
     return false;
   }
 
@@ -588,8 +669,10 @@ bool System::trackWithPnP()
               pnp_points_, pnp_pixels_, Kcv, cv::noArray(),
               rvec, tvec, /*useExtrinsicGuess=*/true,
               200, 2.5, 0.99, inliers, cv::SOLVEPNP_EPNP);
+  emscripten_log(EM_LOG_CONSOLE, "[PnP] ransac ok=%d inliers=%d",
+                ok ? 1 : 0, inliers.empty() ? 0 : inliers.rows);
 
-  if (!ok || inliers.empty() || inliers.rows < 20) {
+  if (!ok || inliers.empty() || inliers.rows < 6) {
     vioLastObs_.clear();
 
     if (imuPosePriorValid_) {
@@ -605,6 +688,7 @@ bool System::trackWithPnP()
       lastKFInliers_ = 0;
       return true;
     }
+    emscripten_log(EM_LOG_CONSOLE, "[PnP] fail after RANSAC");
     return false;
   }
 
@@ -704,13 +788,24 @@ bool System::shouldInsertKF(int pnpInliers, double nowTs) const
   const double tr = dR(0,0) + dR(1,1) + dR(2,2);
   const double angDeg = std::acos(std::clamp((tr - 1.0) * 0.5, -1.0, 1.0)) * 180.0 / M_PI;
 
-  const double minTrans = vioMetricInitDone_ ? 0.20 : 0.05;
+  const double minTrans = vioMetricInitDone_ ? 0.20 : 0.03;
 
-  // Do NOT insert weak-baseline KFs unless tracking is collapsing
+  // Before metric init, be more eager to add KFs
+  if (!vioMetricInitDone_) {
+    // Be conservative before metric init.
+    // Do not insert KFs from weak PnP results.
+    if (pnpInliers < 15) return false;
+    if (trans > 0.20) return true;
+    if (angDeg > 8.0) return true;
+    if (dt > 0.50 && trans > 0.10) return true;
+    return false;
+  }
+
+  // After metric init, go back to stricter policy
   if (trans < minTrans && angDeg < 5.0 && pnpInliers >= 80) return false;
 
   if (pnpInliers < 80) return true;
-  if (trans > (vioMetricInitDone_ ? 0.50 : 0.12)) return true;
+  if (trans > 0.50) return true;
   if (angDeg > 8.0) return true;
   if (dt > 0.75 && trans > minTrans) return true;
 
@@ -718,9 +813,9 @@ bool System::shouldInsertKF(int pnpInliers, double nowTs) const
 }
 
 // Insert KF for current pose and triangulate new points vs last KF
-void System::insertKeyframeAndTriangulate()
+bool System::insertKeyframeAndTriangulate()
 {
-  if (!mapInitialized_) return;
+  if (!mapInitialized_) return false;
 
   if (!kfs_.empty()) {
     const Keyframe& KprevPose = kfs_.back();
@@ -731,7 +826,7 @@ void System::insertKeyframeAndTriangulate()
     const double angDeg = std::acos(std::clamp((tr - 1.0) * 0.5, -1.0, 1.0)) * 180.0 / M_PI;
 
     const double minTrans = vioMetricInitDone_ ? 0.20 : 0.05;
-    if (trans < minTrans && angDeg < 5.0) return;
+    if (trans < minTrans && angDeg < 5.0) return false;
   }
 
   // Build KF from current frame using current KLT points only
@@ -748,76 +843,123 @@ void System::insertKeyframeAndTriangulate()
   
   computeORBAtPoints(curProc_, ptsCur_, KF.desc);
 
-  // Triangulate vs previous KF (simple 2-KF baseline)
-  if (!kfs_.empty()) {
-    const Keyframe& Kprev = kfs_.back();
+  // // Triangulate vs previous KF (simple 2-KF baseline)
+  // if (!kfs_.empty()) {
+  //   const Keyframe& Kprev = kfs_.back();
 
-    // match KFprev.desc ↔ KF.desc (ratio + mutual)
-    cv::BFMatcher bf(cv::NORM_HAMMING, false);
-    std::vector<std::vector<cv::DMatch>> knn01, knn10;
-    bf.knnMatch(Kprev.desc, KF.desc, knn01, 2);
-    bf.knnMatch(KF.desc,   Kprev.desc, knn10, 2);
-    const float ratio=0.75f;
-    std::vector<cv::DMatch> cands;
-    for (auto& ks:knn01) if (ks.size()>=2 && ks[0].distance < ratio*ks[1].distance) cands.push_back(ks[0]);
-    std::vector<char> ok(cands.size(),0);
-    for (size_t i=0;i<cands.size();++i){
-      auto m=cands[i];
-      const auto& rv=knn10[m.trainIdx];
-      if (rv.size()<2) continue;
-      if (rv[0].distance >= ratio*rv[1].distance) continue;
-      if (rv[0].trainIdx == m.queryIdx) ok[i]=1;
-    }
+  //   // If either side has no descriptors/keypoints yet, skip triangulation safely.
+  //   if (Kprev.desc.empty() || KF.desc.empty() || Kprev.kps.empty() || KF.kps.empty()) {
+  //     emscripten_log(EM_LOG_CONSOLE,
+  //       "[KF] skip triangulation: prevDesc=%d curDesc=%d prevKps=%d curKps=%d",
+  //       Kprev.desc.empty() ? 0 : Kprev.desc.rows,
+  //       KF.desc.empty() ? 0 : KF.desc.rows,
+  //       (int)Kprev.kps.size(),
+  //       (int)KF.kps.size());
 
-    // normalized points for triangulation
-    std::vector<cv::Point2f> n0, n1; n0.reserve(ok.size()); n1.reserve(ok.size());
-    for (size_t i=0;i<cands.size();++i) if (ok[i]) {
-      auto a = Kprev.kps[cands[i].queryIdx].pt;
-      auto b = KF.kps   [cands[i].trainIdx].pt;
-      // back to full-res pixels
-      cv::Vec3d x0(a.x*procScale_, a.y*procScale_, 1.0); x0 = Ki()*x0;
-      cv::Vec3d x1(b.x*procScale_, b.y*procScale_, 1.0); x1 = Ki()*x1;
-      n0.emplace_back((float)x0[0], (float)x0[1]);
-      n1.emplace_back((float)x1[0], (float)x1[1]);
-    }
+  //     kfs_.push_back(std::move(KF));
+  //     lastKFTs_ = lastTS_;
+  //     return true;
+  //   }
 
-    if (n0.size() >= 20) {
-      // P0=[Rcw0|tcw0], P1=[Rcw1|tcw1] but triangulation expects cam1 in cam0:
-      cv::Matx33d Rcw0 = Kprev.Rwc.t(), Rcw1 = KF.Rwc.t();
-      cv::Vec3d   tcw0 = -(Kprev.Rwc.t()*Kprev.twc);
-      cv::Vec3d   tcw1 = -(KF.Rwc.t()*KF.twc);
-      cv::Matx34d P0, P1;
-      for (int r=0;r<3;++r) for (int c=0;c<3;++c){ P0(r,c)=Rcw0(r,c); P1(r,c)=Rcw1(r,c); }
-      P0(0,3)=tcw0[0]; P0(1,3)=tcw0[1]; P0(2,3)=tcw0[2];
-      P1(0,3)=tcw1[0]; P1(1,3)=tcw1[1]; P1(2,3)=tcw1[2];
+  //   // match KFprev.desc ↔ KF.desc (ratio + mutual)
+  //   cv::BFMatcher bf(cv::NORM_HAMMING, false);
+  //   std::vector<std::vector<cv::DMatch>> knn01, knn10;
+  //   bf.knnMatch(Kprev.desc, KF.desc, knn01, 2);
+  //   bf.knnMatch(KF.desc,   Kprev.desc, knn10, 2);
+  //   const float ratio=0.75f;
+  //   std::vector<cv::DMatch> cands;
+  //   for (auto& ks:knn01) if (ks.size()>=2 && ks[0].distance < ratio*ks[1].distance) cands.push_back(ks[0]);
+  //   std::vector<char> ok(cands.size(),0);
+  //   for (size_t i=0;i<cands.size();++i){
+  //     auto m=cands[i];
+  //     const auto& rv=knn10[m.trainIdx];
+  //     if (rv.size()<2) continue;
+  //     if (rv[0].distance >= ratio*rv[1].distance) continue;
+  //     if (rv[0].trainIdx == m.queryIdx) ok[i]=1;
+  //   }
 
-      cv::Mat X4; cv::triangulatePoints(P0,P1,n0,n1,X4);
-      const double cosMax = std::cos(3.0 * M_PI/180.0); // viewing angle gate
+  //   // normalized points for triangulation
+  //   std::vector<cv::Point2f> n0, n1; n0.reserve(ok.size()); n1.reserve(ok.size());
+  //   for (size_t i=0;i<cands.size();++i) if (ok[i]) {
+  //     auto a = Kprev.kps[cands[i].queryIdx].pt;
+  //     auto b = KF.kps   [cands[i].trainIdx].pt;
+  //     // back to full-res pixels
+  //     cv::Vec3d x0(a.x*procScale_, a.y*procScale_, 1.0); x0 = Ki()*x0;
+  //     cv::Vec3d x1(b.x*procScale_, b.y*procScale_, 1.0); x1 = Ki()*x1;
+  //     n0.emplace_back((float)x0[0], (float)x0[1]);
+  //     n1.emplace_back((float)x1[0], (float)x1[1]);
+  //   }
 
-      for (int i=0;i<X4.cols;++i){
-        double X=X4.at<double>(0,i), Y=X4.at<double>(1,i), Z=X4.at<double>(2,i), W=X4.at<double>(3,i);
-        if (W<=1e-9) continue;
-        cv::Vec3d Xw(X/W, Y/W, Z/W);
+  //   if (n0.size() >= 20) {
+  //     // P0=[Rcw0|tcw0], P1=[Rcw1|tcw1] but triangulation expects cam1 in cam0:
+  //     cv::Matx33d Rcw0 = Kprev.Rwc.t(), Rcw1 = KF.Rwc.t();
+  //     cv::Vec3d   tcw0 = -(Kprev.Rwc.t()*Kprev.twc);
+  //     cv::Vec3d   tcw1 = -(KF.Rwc.t()*KF.twc);
+  //     cv::Matx34d P0, P1;
+  //     for (int r=0;r<3;++r) for (int c=0;c<3;++c){ P0(r,c)=Rcw0(r,c); P1(r,c)=Rcw1(r,c); }
+  //     P0(0,3)=tcw0[0]; P0(1,3)=tcw0[1]; P0(2,3)=tcw0[2];
+  //     P1(0,3)=tcw1[0]; P1(1,3)=tcw1[1]; P1(2,3)=tcw1[2];
 
-        // Cheirality
-        cv::Vec3d Xc0 = Rcw0*Xw + tcw0;
-        cv::Vec3d Xc1 = Rcw1*Xw + tcw1;
-        if (Xc0[2]<=1e-6 || Xc1[2]<=1e-6) continue;
+  //     cv::Mat X4;
+  //     cv::triangulatePoints(P0, P1, n0, n1, X4);
 
-        // Baseline angle (cosine of angle between rays)
-        cv::Vec3d v0 = Xc0 / cv::norm(Xc0), v1 = Xc1 / cv::norm(Xc1);
-        double cosang = v0.dot(v1);
-        if (cosang > cosMax) continue; // too small angle
+  //     // triangulatePoints often returns CV_32F with Point2f inputs.
+  //     // Convert so at<double>() is valid.
+  //     if (X4.type() != CV_64F) {
+  //       X4.convertTo(X4, CV_64F);
+  //     }
+      
+  //     emscripten_log(EM_LOG_CONSOLE, "[KF] X4 type=%d cols=%d", X4.type(), X4.cols);
 
-        MapPoint M; M.Xw = Xw; M.hostKF = KF.id;
-        if (!KF.desc.empty() && i < KF.desc.rows) M.desc = KF.desc.row(i).clone();
-        mps_.push_back(std::move(M));
-      }
-    }
-  }
+  //     const double cosMax = std::cos(3.0 * M_PI / 180.0); // viewing angle gate
+
+  //     for (int i = 0; i < X4.cols; ++i) {
+  //       double X = X4.at<double>(0,i);
+  //       double Y = X4.at<double>(1,i);
+  //       double Z = X4.at<double>(2,i);
+  //       double W = X4.at<double>(3,i);
+
+  //       if (std::abs(W) <= 1e-12) continue;
+
+  //       cv::Vec3d Xw(X / W, Y / W, Z / W);
+
+  //       if (i < 5) {
+  //         emscripten_log(EM_LOG_CONSOLE,
+  //           "[KF] sample i=%d W=%.6e Xwz=%.6e",
+  //           i, W, Xw[2]);
+  //       }
+
+  //       // Cheirality
+  //       cv::Vec3d Xc0 = Rcw0*Xw + tcw0;
+  //       cv::Vec3d Xc1 = Rcw1*Xw + tcw1;
+  //       if (Xc0[2]<=1e-6 || Xc1[2]<=1e-6) continue;
+
+  //       // Baseline angle (cosine of angle between rays)
+  //       cv::Vec3d v0 = Xc0 / cv::norm(Xc0), v1 = Xc1 / cv::norm(Xc1);
+  //       double cosang = v0.dot(v1);
+  //       if (cosang > cosMax) continue; // too small angle
+
+  //       MapPoint M; M.Xw = Xw; M.hostKF = KF.id;
+  //       if (!KF.desc.empty() && i < KF.desc.rows) M.desc = KF.desc.row(i).clone();
+  //       mps_.push_back(std::move(M));
+  //     }
+  //   }
+  // }
+
+  // kfs_.push_back(std::move(KF));
+  // lastKFTs_ = lastTS_;
+  // return true;
+
+  // TEMP STABILIZATION:
+  // For now, do NOT add new MapPoints here.
+  // The current post-init triangulation is polluting the map and killing PnP.
+  emscripten_log(EM_LOG_CONSOLE,
+    "[KF] inserted KF only: id=%d current_mps=%d",
+    KF.id, (int)mps_.size());
 
   kfs_.push_back(std::move(KF));
   lastKFTs_ = lastTS_;
+  return true;
 }
 
 // Convert processing-scale points -> full-res pixel coordinates
@@ -973,7 +1115,13 @@ void System::integrateVO_E(const std::vector<cv::Point2f>& prevProcPts,
       t10 *= (s_imu / nt);
     }
   } else {
-    t10 *= 1.0;
+    // Fallback: normalize to a physically plausible scale hint
+    // Median pixel disparity / focal length ≈ approximate angular motion
+    const double nt = cv::norm(t10);
+    if (nt > 1e-9) {
+        const double safeScale = (medPx / fx_) * 1.0; // 1m baseline unit, tune
+        t10 *= (safeScale / nt);
+    }
   }
   // Compose world pose. If Twc0 = [Rwc|twc], and cam1 = R10,t10 in cam0 frame:
   // Twc1 = Twc0 * inv(Tc1c0) = Twc0 * [R10^T | -R10^T t10]
@@ -1185,6 +1333,8 @@ void System::init(int width, int height, double fx, double fy, double cx, double
   frameCount_ = 0;
   lastTS_ = 0.0;
   hybFrameIdx_ = 0;
+  lastImuFuseTS_ = 0.0;
+  imuPosePriorValid_ = false;
 }
 
 void System::feedFrame(const uint8_t* img, double ts, int width, int height, bool isRGBA) {
@@ -1520,53 +1670,39 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
       runEvsHGate(p0, p1);
 
       if (!mapInitialized_) {
-        const bool weakVisualMotion = (ehParallaxDeg_ < 0.8) || (ehInliersE_ < 25 && ehInliersH_ < 25);
+        // Be less strict before map init.
+        // If Essential has usable support, prefer it even if Homography also looks good.
+        if (ehInliersE_ >= 18) {
+          integrateVO_E(p0, p1);
 
-        if (weakVisualMotion && imuPosePriorValid_) {
-          // IMU dominates when visual motion is weak
+          if (imuPosePriorValid_) {
+            Rwc_ = ortho(0.75 * Rwc_ + 0.25 * Rwc_prior_);
+            twc_ = 0.75 * twc_ + 0.25 * twc_prior_;
+          }
+        } else if (ehInliersH_ >= 20) {
+          // Rotation-only fallback, but do not let it dominate translation forever.
+          integrateVO_H(p0, p1);
+
+          if (imuPosePriorValid_) {
+            Rwc_ = ortho(0.65 * Rwc_ + 0.35 * Rwc_prior_);
+            twc_ = 0.50 * twc_ + 0.50 * twc_prior_;
+          }
+        } else if (imuPosePriorValid_) {
           Rwc_ = Rwc_prior_;
           twc_ = twc_prior_;
           orthoMat(Rwc_);
+        }
 
-          path_.emplace_back((float)twc_[0], (float)twc_[1], (float)twc_[2]);
-          if (path_.size() > 4096) {
-            path_.erase(path_.begin(), path_.begin() + (path_.size() - 4096));
-          }
-        } else {
-          if (ehModel_ == 1 && ehInliersE_ >= 25) {
-            integrateVO_E(p0, p1);
-
-            // pull the visual estimate slightly toward IMU prior
-            if (imuPosePriorValid_) {
-              Rwc_ = ortho(0.65 * Rwc_ + 0.35 * Rwc_prior_);
-              twc_ = 0.65 * twc_ + 0.35 * twc_prior_;
-            }
-          } else if (ehModel_ == 2 && ehInliersH_ >= 25) {
-            integrateVO_H(p0, p1);
-
-            if (imuPosePriorValid_) {
-              Rwc_ = ortho(0.50 * Rwc_ + 0.50 * Rwc_prior_);
-              twc_ = 0.30 * twc_ + 0.70 * twc_prior_;
-            }
-          } else if (imuPosePriorValid_) {
-            Rwc_ = Rwc_prior_;
-            twc_ = twc_prior_;
-            orthoMat(Rwc_);
-
-            path_.emplace_back((float)twc_[0], (float)twc_[1], (float)twc_[2]);
-            if (path_.size() > 4096) {
-              path_.erase(path_.begin(), path_.begin() + (path_.size() - 4096));
-            }
-          }
+        path_.emplace_back((float)twc_[0], (float)twc_[1], (float)twc_[2]);
+        if (path_.size() > 4096) {
+          path_.erase(path_.begin(), path_.begin() + (path_.size() - 4096));
         }
       }
     }
 
     if (!mapInitialized_ &&
-        ehModel_ == 1 &&
-        ehInliersE_ >= 30 &&
-        ehParallaxDeg_ >= 1.0 &&
-        p0.size() >= 30) {
+        ehInliersE_ >= 18 &&
+        p0.size() >= 25) {
       (void)tryTwoViewInit(p0, p1);
     }
   }
@@ -1600,16 +1736,65 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
     computeORBAtPoints(curProc_, ptsCur_, orbCurDesc_);
   }
 
-  if (mapInitialized_) {
-    const bool pnpOk = trackWithPnP();
-    if (!pnpOk) vioLastObs_.clear();
+  // if (mapInitialized_) {
+  //   const bool pnpOk = trackWithPnP();
 
-    if (shouldInsertKF(lastKFInliers_, lastTS_)) {
-        insertKeyframeAndTriangulate();
-        vioOnKeyframe(ts);  // ← only on actual keyframes
+  //   if (!pnpOk) {
+  //     vioLastObs_.clear();
+  //     lastKFInliers_ = 0;
+  //     emscripten_log(EM_LOG_CONSOLE, "[PnP] FAIL");
+  //   } else {
+  //     emscripten_log(EM_LOG_CONSOLE,
+  //       "[PnP] OK inliers=%d twc=(%.6f %.6f %.6f)",
+  //       lastKFInliers_, twc_[0], twc_[1], twc_[2]);
+  //   }
+
+  //   // IMPORTANT: only allow KF insertion when pose tracking actually succeeded
+  //   if (pnpOk && lastKFInliers_ >= 15 && shouldInsertKF(lastKFInliers_, lastTS_)) {
+  //     const bool inserted = insertKeyframeAndTriangulate();
+  //     if (inserted) {
+  //       vioOnKeyframe(ts);
+  //     }
+  //   }
+  // }
+
+  if (mapInitialized_) {
+    // TEMP KITTI TEST:
+    // Keep updating pose using visual E/H motion even after map init,
+    // but still skip mapped PnP and KF insertion.
+    std::vector<cv::Point2f> p0, p1;
+    p0.reserve(ptsPrev_.size());
+    p1.reserve(ptsCur_.size());
+
+    for (size_t i = 0; i < ptsPrev_.size() && i < alive.size() && i < ptsCur_.size(); ++i) {
+      if (alive[i]) {
+        p0.push_back(ptsPrev_[i]);
+        p1.push_back(ptsCur_[i]);
+      }
+    }
+
+    if (p0.size() >= 8) {
+      runEvsHGate(p0, p1);
+
+      if (ehInliersE_ >= 18) {
+        integrateVO_E(p0, p1);
+        emscripten_log(EM_LOG_CONSOLE,
+          "[VO] E update twc=(%.6f %.6f %.6f)",
+          twc_[0], twc_[1], twc_[2]);
+      } else if (ehInliersH_ >= 20) {
+        integrateVO_H(p0, p1);
+        emscripten_log(EM_LOG_CONSOLE,
+          "[VO] H update twc=(%.6f %.6f %.6f)",
+          twc_[0], twc_[1], twc_[2]);
+      } else {
+        emscripten_log(EM_LOG_CONSOLE,
+          "[VO] no update E=%d H=%d parallax=%.3f",
+          ehInliersE_, ehInliersH_, ehParallaxDeg_);
+      }
+    } else {
+      emscripten_log(EM_LOG_CONSOLE, "[VO] too few alive tracks=%d", (int)p0.size());
     }
   }
-
   // 6) roll to next frame
   // Remove hidden per-frame allocations and reuse old
   if (prevProc_.size() != curProc_.size()) prevProc_.create(curProc_.rows, curProc_.cols, CV_8UC1);
@@ -1643,9 +1828,6 @@ void System::feedImu(double ts,
   double ax, double ay, double az,
   double gx, double gy, double gz)
 {
-  // Keep buffer bounded (avoid unbounded growth)
-  if (imuBuf_.size() > 4000) imuBuf_.erase(imuBuf_.begin(), imuBuf_.begin() + 2000);
-
   // Track IMU rate using a simple 1-second window
   if (imuWindowStartTS_ <= 0.0) imuWindowStartTS_ = ts;
   imuSamplesInWindow_++;
@@ -1660,18 +1842,28 @@ void System::feedImu(double ts,
 
   cv::Vec3d a_imu(ax, ay, az);
   cv::Vec3d w_imu(gx, gy, gz);
-  
+
   // Apply dataset->body axis map
   cv::Vec3d a = R_b_imu_ * a_imu;
   cv::Vec3d w = R_b_imu_ * w_imu;
-  
-  imuBuf_.push_back(ImuSample{ ts, a, w });  
 
+  // Active IMU stream used by pose prior / preintegration
   imuMeas_.push_back(ImuMeas{ ts, a, w });
 
+  // Hard time-based pruning at insertion time.
+  // Keep only a short recent history for realtime.
+  // Before metric init, keep 2.0 s so initializer still has some span.
+  // After metric init,  keep 0.5 s because only local preintegration is needed.
+  const double keepSec = vioMetricInitDone_ ? 0.5 : 2.0;
+  const double cutoff = ts - keepSec;
 
-  // keep bounded
-  if (imuMeas_.size() > 6000) imuMeas_.erase(imuMeas_.begin(), imuMeas_.begin() + 3000);
+  auto it = std::lower_bound(
+      imuMeas_.begin(), imuMeas_.end(), cutoff,
+      [](const ImuMeas& s, double t) { return s.t < t; });
+
+  if (it != imuMeas_.begin()) {
+    imuMeas_.erase(imuMeas_.begin(), it);
+  }
 }
 
 bool System::buildImuPosePrior(double t0, double t1,
@@ -1735,7 +1927,19 @@ bool System::buildImuPosePrior(double t0, double t1,
   cv::Matx33d Rcw1 = Rwc_pred.t();
   *dR_cam = ortho(Rcw1 * Rwc_); // camera relative rotation
   }
+  // // Prune old IMU measurements so preintegrateImu() does not scan the whole session forever.
+  // {
+  //   const double keepBefore = vioMetricInitDone_ ? 0.25 : 1.0;
+  //   const double cutoff = t0 - keepBefore;
 
+  //   auto it = std::lower_bound(
+  //       imuMeas_.begin(), imuMeas_.end(), cutoff,
+  //       [](const ImuMeas& s, double t) { return s.t < t; });
+
+  //   if (it != imuMeas_.begin()) {
+  //     imuMeas_.erase(imuMeas_.begin(), it);
+  //   }
+  // }
   return true;
 }
 
@@ -1809,9 +2013,16 @@ cv::Matx33d System::integrateImuDeltaRotationAccCorr(double t0, double t1, bool*
   // Convert to camera delta: Rc = Rcb * Rb * Rcb^T
   cv::Matx33d dRcc = Rcb_ * dRwb * Rcb_.t();
 
-  // Prune old IMU samples
-  while (!imuBuf_.empty() && imuBuf_.front().ts <= (t1 - 0.05)) {
-    imuBuf_.erase(imuBuf_.begin());
+  // Prune old IMU samples efficiently (avoid erase(begin()) in a loop)
+  {
+    const double cutoff = t1 - 0.05;
+    auto it = std::lower_bound(
+        imuBuf_.begin(), imuBuf_.end(), cutoff,
+        [](const ImuSample& s, double t) { return s.ts < t; });
+
+    if (it != imuBuf_.begin()) {
+      imuBuf_.erase(imuBuf_.begin(), it);
+    }
   }
   imuSamplesUsedThisFrame_ = usedCount;
   return dRcc;
@@ -1827,7 +2038,7 @@ void System::vioOnKeyframe(double ts)
     kf.twc_vo = twc_;   // VO units currently
     vioInit_.push(kf);
 
-    if (vioInit_.ready(/*minSpanSec=*/1.0, /*minKfs=*/6)) {
+    if (vioInit_.ready(/*minSpanSec=*/0.75, /*minKfs=*/3)) {
       VioCalib c;
       c.K = K();
       c.R_ci = Rcb_;

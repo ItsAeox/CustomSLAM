@@ -93,7 +93,7 @@ public:
   int    getImuUsedThisFrame() const { return imuUsedThisFrame_; }
   double getImuHz() const { return imuHz_; }
   int    getImuSamplesUsedThisFrame() const { return imuSamplesUsedThisFrame_; }
-  int    getImuBufSize() const { return (int)imuBuf_.size(); }
+  int    getImuBufSize() const { return (int)imuMeas_.size(); }
   // --- IMU (gyro-only) delta rotation debug (between last frame ts and this frame ts) ---
   std::array<double,3> getImuDeltaYPR() const { return { imuDeltaYPR_[0], imuDeltaYPR_[1], imuDeltaYPR_[2] }; }
   std::array<double,3> getImuDeltaRodrigues() const { return { imuDeltaRod_[0], imuDeltaRod_[1], imuDeltaRod_[2] }; }
@@ -125,15 +125,15 @@ public:
   }
 
 private:
-  int   procScale_      = 1;        // 2 => process at half-res (major speedup)
-  int   kltWin_         = 25;
-  int   kltLevels_      = 4;
-  float kltErrMax_      = 8.f;     // LK per-point error gate
-  float fbMax_          = 1.6f;     // forward-backward gate (pixels)
-  int   cellSize_       = 8;       // grid cell size for seeding (processing scale) ***** Scale DOWN 
-  int   targetKps_      = 1200;      // feature budget at processing scale ***** Scale UP
-  int   descEveryN_     = 4;         // ORB compute cadence (frames); 0 disables
-  int   maxTracks_    =220;  // hard ceiling after tracking+reseeding
+  int   procScale_      = 2;        // half-res for realtime
+  int   kltWin_         = 21;
+  int   kltLevels_      = 3;
+  float kltErrMax_      = 3.f;      // tighter LK gate
+  float fbMax_          = 1.2f;     // tighter forward-backward gate
+  int   cellSize_       = 16;       // larger buckets, more uniform spread
+  int   targetKps_      = 180;      // much lighter realtime budget
+  int   descEveryN_     = 0;        // disable periodic ORB-on-KLT in realtime
+  int   maxTracks_      = 180;      // hard ceiling
   double t_last_total_ms_ = 0.0;
   double t_last_klt_ms_   = 0.0;
   double t_last_seed_ms_  = 0.0;
@@ -289,8 +289,8 @@ private:
 
   // KF insertion + triangulation vs last KF
   bool shouldInsertKF(int pnpInliers, double nowTs) const;
-  void insertKeyframeAndTriangulate();
-
+  bool insertKeyframeAndTriangulate();
+  
   // Helper: compute ORB at arbitrary pixel locations (processing scale)
   void computeORBAtPoints(const cv::Mat& img,
                           const std::vector<cv::Point2f>& pts,
