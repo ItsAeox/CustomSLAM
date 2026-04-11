@@ -354,10 +354,17 @@ els.btnLoad.addEventListener('click', async () => {
 
   let oxts = [];
   if (oxtsFiles.length) {
-    oxts = await Promise.all(oxtsFiles.map(async f => {
-      const line = (await readText(f)).trim().split(/\r?\n/)[0] || '';
-      return parseOxtsLine(line);
-    }));
+    for (const f of oxtsFiles) {
+      try {
+        const txt = await readText(f);
+        const line = txt.trim().split(/\r?\n/)[0] || '';
+        oxts.push(parseOxtsLine(line));
+      } catch (e) {
+        const p = (f.webkitRelativePath || f.name || '[unknown]').replace(/\\/g, '/');
+        console.error('Failed to read OXTS file:', p, e);
+        throw e;
+      }
+    }
   }
 
   // --- Build an IMU stream (time, accel, gyro) ---

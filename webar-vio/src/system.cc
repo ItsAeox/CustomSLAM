@@ -273,15 +273,23 @@ static inline cv::Vec3d yprFromRwcLike(const cv::Matx33d& R) {
 // === Mapping helpers ========================================================
 // Compute ORB descriptors at given processing-scale points (no detection step).
 void System::computeORBAtPoints(const cv::Mat& img,
-                                const std::vector<cv::Point2f>& pts,
-                                cv::Mat& outDesc)
+  const std::vector<cv::Point2f>& pts,
+  cv::Mat& outDesc)
 {
-  orbDescInputPtsThisFrame_ = static_cast<int>(pts.size());
-  std::vector<cv::KeyPoint> kps; kps.reserve(pts.size());
-  for (auto& p : pts) kps.emplace_back(p, (float)orbPatchSize_);
+  orbDescInputPtsThisFrame_ += static_cast<int>(pts.size());
+
+  std::vector<cv::KeyPoint> kps;
+  kps.reserve(pts.size());
+  for (const auto& p : pts) {
+  kps.emplace_back(p, (float)orbPatchSize_);
+  }
+
   outDesc.release();
-  if (orb_) orb_->compute(img, kps, outDesc);
-  orbDescRowsThisFrame_ = outDesc.empty() ? 0 : outDesc.rows;
+  if (orb_) {
+  orb_->compute(img, kps, outDesc);
+  }
+
+  orbDescRowsThisFrame_ += outDesc.empty() ? 0 : outDesc.rows;
 }
 
 // Collect (Xw ↔ pixel) pairs by projection + small window gating.
@@ -452,7 +460,16 @@ bool System::tryTwoViewInit(const std::vector<cv::Point2f>& prevProcPts,
   std::vector<cv::Point2f> inlProc1;
   inlProc1.reserve(p1_inl.size());
   const float s = (float)procScale_;
-  for (const auto& px : p1_inl) inlProc1.emplace_back(px.x / s, px.y / s);
+  for (const auto& px : p1_inl) {
+    inlProc1.emplace_back(px.x / s, px.y / s);
+  }
+  
+  KF1.kps.clear();
+  KF1.kps.reserve(inlProc1.size());
+  for (const auto& p : inlProc1) {
+    KF1.kps.emplace_back(p, (float)orbPatchSize_);
+  }
+  
   computeORBAtPoints(curProc_, inlProc1, KF1.desc);
 
   // Create MapPoints with cheirality + reprojection + baseline angle checks
@@ -605,7 +622,7 @@ bool System::shouldInsertKF(int pnpInliers, double nowTs) const
   if (!mapInitialized_) return false;
   if (kfs_.empty()) return true;
   if (pnpInliers < 100) return true;                    // tracking thinning
-  if ((nowTs - lastKFTs_) > 0.5) return true;          // time-based
+  if ((nowTs - lastKFTs_) > 0.4) return true;          // time-based
   if (pnpInliers < (lastKFInliers_ * 8) / 10) return true; // drop vs last KF
   return false;
 }
@@ -615,13 +632,19 @@ void System::insertKeyframeAndTriangulate()
 {
   if (!mapInitialized_) return;
 
-  // Build KF from current frame; compute dense ORB over full image (cheap at proc scale)
-  Keyframe KF; KF.id = nextKFId_++; KF.Rwc = Rwc_; KF.twc = twc_;
-  // We can reuse orb_ detector (already configured).
-  std::vector<cv::KeyPoint> kps; cv::Mat desc;
-  orb_->detectAndCompute(curProc_, cv::noArray(), kps, desc);
-  orbFullDetectCountThisFrame_++;
-  KF.kps.swap(kps); KF.desc = desc;
+  // Build KF from current frame using current KLT points only
+  Keyframe KF;
+  KF.id = nextKFId_++;
+  KF.Rwc = Rwc_;
+  KF.twc = twc_;
+  
+  KF.kps.clear();
+  KF.kps.reserve(ptsCur_.size());
+  for (const auto& p : ptsCur_) {
+    KF.kps.emplace_back(p, (float)orbPatchSize_);
+  }
+  
+  computeORBAtPoints(curProc_, ptsCur_, KF.desc);
 
   // Triangulate vs previous KF (simple 2-KF baseline)
   if (!kfs_.empty()) {
@@ -1433,11 +1456,16 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
   auto ts1 = std::chrono::high_resolution_clock::now();
   t_last_seed_ms_ = std::chrono::duration<double, std::milli>(ts1 - ts0).count();
 
-  // OPT-> sparse ORB descriptors (for future map assoc); disabled if descEveryN_==0
+  // Sparse ORB descriptors on current KLT points every N frames
   if (descEveryN_ > 0 && orb_ && (++frameCount_ % descEveryN_) == 0) {
-    std::vector<cv::KeyPoint> kps; cv::KeyPoint::convert(ptsCur_, kps);
-    cv::Mat descs; orb_->compute(curProc_, kps, descs);
-    // store or expose descs if/when mapping is added
+    orbCurKps_.clear();
+    orbCurKps_.reserve(ptsCur_.size());
+    for (const auto& p : ptsCur_) {
+      orbCurKps_.emplace_back(p, (float)orbPatchSize_);
+    }
+  
+    orbCurDesc_.release();
+    computeORBAtPoints(curProc_, ptsCur_, orbCurDesc_);
   }
 
   if (mapInitialized_) {

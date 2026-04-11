@@ -6,7 +6,9 @@ import matplotlib.pyplot as plt
 # --------------------------
 # Paths (edit if needed)
 # --------------------------
-DATASET_ROOT = "dataset/2011_09_26_drive_0009_sync"
+
+DATASET_NAME = "2011_10_03_drive_0042_sync"
+DATASET_ROOT = f"dataset/{DATASET_NAME}"
 EST_CSV      = os.path.join(DATASET_ROOT, "kitti_poses.csv")
 PERF_CSV     = os.path.join(DATASET_ROOT, "kitti_performance.csv")
 IMG_TS       = os.path.join(DATASET_ROOT, "image_02", "timestamps.txt")
@@ -17,7 +19,7 @@ CALIB_CAM2CAM = os.path.join(DATASET_ROOT, "calib_cam_to_cam.txt")
 CALIB_VELO2CAM = os.path.join(DATASET_ROOT, "calib_velo_to_cam.txt")
 CALIB_IMU2VELO = os.path.join(DATASET_ROOT, "calib_imu_to_velo.txt")
 
-OUTPUT_DIR =  os.path.join(DATASET_ROOT, "outputs")
+OUTPUT_DIR =  f"dataset/kitti_eval_v2/{DATASET_NAME}"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # --------------------------
@@ -539,6 +541,6 @@ def main():
     print("Trajectory/Error plots: traj_EN.png, up_over_time.png, pos_error_xy.png, pos_error_3d.png")
     if perf is not None:
         print("Performance plots: perf_keypoints.png, perf_map_structure.png, perf_wasm_timing.png, perf_imu_hz.png")
-        
+
 if __name__ == "__main__":
     main()
