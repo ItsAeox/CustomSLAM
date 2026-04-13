@@ -268,6 +268,10 @@ private:
   double lastKFTs_ = 0.0;
   int    lastKFInliers_ = 0;
 
+  // Map-init stabilization
+  double mapInitTs_ = -1.0;
+  int    mapInitFrame_ = -1;
+
   // ====== API ======
   // 2-view init from 2D-2D (processing-scale points)
   bool tryTwoViewInit(const std::vector<cv::Point2f>& prevProcPts,

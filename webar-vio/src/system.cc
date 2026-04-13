@@ -332,7 +332,10 @@ int System::harvestPnpCorrespondences(float winPx, int maxTake)
   int taken = 0;
   std::vector<char> usedTrack(ptsCur_.size(), 0);
 
-  for (int mi = 0; mi < (int)mps_.size(); ++mi) {
+  int checked = 0;
+  const int maxCheck = 800;
+
+  for (int mi = std::max(0, (int)mps_.size() - maxCheck); mi < (int)mps_.size(); ++mi) {
     const auto& M = mps_[mi];
     if (!M.alive) continue;
     
@@ -435,7 +438,7 @@ bool System::tryTwoViewInit(const std::vector<cv::Point2f>& prevProcPts,
 
   cv::Mat R, t;
   int ninl = cv::recoverPose(E, p0, p1, R, t, fx_, cv::Point2d(cx_, cy_), mask);
-  if (ninl < 30) return false;
+  if (ninl < 20) return false;
 
   // Build inlier-aligned pixel arrays + normalized arrays for triangulation
   std::vector<cv::Point2f> p0_inl, p1_inl;
@@ -537,6 +540,8 @@ bool System::tryTwoViewInit(const std::vector<cv::Point2f>& prevProcPts,
   if (mapInitialized_) {
     Rwc_ = kfs_.back().Rwc;
     twc_ = kfs_.back().twc;
+    mapInitTs_ = lastTS_;
+    mapInitFrame_ = frameCount_;
   }
   return mapInitialized_;
 }
@@ -695,6 +700,12 @@ bool System::shouldInsertKF(int pnpInliers, double nowTs) const
   if (!mapInitialized_) return false;
   if (kfs_.empty()) return true;
 
+  // Let the freshly initialized map settle before inserting more KFs
+  if (mapInitTs_ > 0.0) {
+    if ((nowTs - mapInitTs_) < 0.75) return false;
+    if (frameCount_ - mapInitFrame_ < 8) return false;
+  }
+
   const Keyframe& Klast = kfs_.back();
 
   const double dt = nowTs - lastKFTs_;
@@ -704,15 +715,17 @@ bool System::shouldInsertKF(int pnpInliers, double nowTs) const
   const double tr = dR(0,0) + dR(1,1) + dR(2,2);
   const double angDeg = std::acos(std::clamp((tr - 1.0) * 0.5, -1.0, 1.0)) * 180.0 / M_PI;
 
-  const double minTrans = vioMetricInitDone_ ? 0.20 : 0.05;
+  // Lower translation thresholds so forward motion can create KFs
+  const double minTrans = vioMetricInitDone_ ? 0.12 : 0.03;
+  const double strongTrans = vioMetricInitDone_ ? 0.30 : 0.08;
 
-  // Do NOT insert weak-baseline KFs unless tracking is collapsing
-  if (trans < minTrans && angDeg < 5.0 && pnpInliers >= 80) return false;
+  // Avoid over-suppressing straight-road keyframes
+  if (trans < minTrans && angDeg < 2.0 && pnpInliers >= 100) return false;
 
-  if (pnpInliers < 80) return true;
-  if (trans > (vioMetricInitDone_ ? 0.50 : 0.12)) return true;
-  if (angDeg > 8.0) return true;
-  if (dt > 0.75 && trans > minTrans) return true;
+  if (pnpInliers < 60) return true;
+  if (trans > strongTrans) return true;
+  if (angDeg > 6.0) return true;
+  if (dt > 0.50 && trans > minTrans) return true;
 
   return false;
 }
@@ -730,8 +743,8 @@ void System::insertKeyframeAndTriangulate()
     const double tr = dR(0,0) + dR(1,1) + dR(2,2);
     const double angDeg = std::acos(std::clamp((tr - 1.0) * 0.5, -1.0, 1.0)) * 180.0 / M_PI;
 
-    const double minTrans = vioMetricInitDone_ ? 0.20 : 0.05;
-    if (trans < minTrans && angDeg < 5.0) return;
+    const double minTrans = vioMetricInitDone_ ? 0.12 : 0.03;
+    if (trans < minTrans && angDeg < 2.0) return;
   }
 
   // Build KF from current frame using current KLT points only
@@ -792,7 +805,10 @@ void System::insertKeyframeAndTriangulate()
       P1(0,3)=tcw1[0]; P1(1,3)=tcw1[1]; P1(2,3)=tcw1[2];
 
       cv::Mat X4; cv::triangulatePoints(P0,P1,n0,n1,X4);
-      const double cosMax = std::cos(3.0 * M_PI/180.0); // viewing angle gate
+      const double cosMax = std::cos(1.0 * M_PI/180.0); // allow weaker forward-motion baselines
+
+      int addedThisKF = 0;
+      const int maxAddThisKF = (mps_.size() < 200) ? 60 : 120;
 
       for (int i=0;i<X4.cols;++i){
         double X=X4.at<double>(0,i), Y=X4.at<double>(1,i), Z=X4.at<double>(2,i), W=X4.at<double>(3,i);
@@ -812,6 +828,9 @@ void System::insertKeyframeAndTriangulate()
         MapPoint M; M.Xw = Xw; M.hostKF = KF.id;
         if (!KF.desc.empty() && i < KF.desc.rows) M.desc = KF.desc.row(i).clone();
         mps_.push_back(std::move(M));
+
+        addedThisKF++;
+        if (addedThisKF >= maxAddThisKF) break;
       }
     }
   }
@@ -973,7 +992,7 @@ void System::integrateVO_E(const std::vector<cv::Point2f>& prevProcPts,
       t10 *= (s_imu / nt);
     }
   } else {
-    t10 *= 1.0;
+    t10 *= 0.1;
   }
   // Compose world pose. If Twc0 = [Rwc|twc], and cam1 = R10,t10 in cam0 frame:
   // Twc1 = Twc0 * inv(Tc1c0) = Twc0 * [R10^T | -R10^T t10]
@@ -1538,15 +1557,16 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
 
             // pull the visual estimate slightly toward IMU prior
             if (imuPosePriorValid_) {
+              // Before metric init, trust IMU for rotation only.
+              // Keep translation visual-only to avoid IMU-induced scale explosions.
               Rwc_ = ortho(0.65 * Rwc_ + 0.35 * Rwc_prior_);
-              twc_ = 0.65 * twc_ + 0.35 * twc_prior_;
             }
           } else if (ehModel_ == 2 && ehInliersH_ >= 25) {
             integrateVO_H(p0, p1);
 
             if (imuPosePriorValid_) {
+              // Homography branch should not drag translation from IMU before metric init.
               Rwc_ = ortho(0.50 * Rwc_ + 0.50 * Rwc_prior_);
-              twc_ = 0.30 * twc_ + 0.70 * twc_prior_;
             }
           } else if (imuPosePriorValid_) {
             Rwc_ = Rwc_prior_;
@@ -1562,11 +1582,11 @@ void System::feedFrame(const uint8_t* img, double ts, int width, int height, boo
       }
     }
 
-    if (!mapInitialized_ &&
+  if (!mapInitialized_ &&
         ehModel_ == 1 &&
-        ehInliersE_ >= 30 &&
-        ehParallaxDeg_ >= 1.0 &&
-        p0.size() >= 30) {
+        ehInliersE_ >= 20 &&
+        ehParallaxDeg_ >= 0.35 &&
+        p0.size() >= 20) {
       (void)tryTwoViewInit(p0, p1);
     }
   }
@@ -1709,14 +1729,21 @@ bool System::buildImuPosePrior(double t0, double t1,
   const double dt = P.dt;
 
   cv::Matx33d Rwi1 = ortho(Rwi0 * P.dR);
-  cv::Vec3d vwi1, pwi1;
+  cv::Vec3d vwi1 = v0;
+  cv::Vec3d pwi1 = pwi0;
 
-  if (accelIsSpecificForce_) {
-  vwi1 = v0 + g_world_ * dt + Rwi0 * P.dv;
-  pwi1 = pwi0 + v0 * dt + 0.5 * g_world_ * (dt * dt) + Rwi0 * P.dp;
-  } else {
-  vwi1 = v0 + Rwi0 * P.dv;
-  pwi1 = pwi0 + v0 * dt + Rwi0 * P.dp;
+  // IMPORTANT:
+  // Before metric VIO initialization is complete, use IMU as a ROTATION prior only.
+  // Do not let raw accel/preintegration drive translation yet, because scale/gravity/biases
+  // are not trustworthy and this badly corrupts long straight motion.
+  if (vioMetricInitDone_) {
+    if (accelIsSpecificForce_) {
+      vwi1 = v0 + g_world_ * dt + Rwi0 * P.dv;
+      pwi1 = pwi0 + v0 * dt + 0.5 * g_world_ * (dt * dt) + Rwi0 * P.dp;
+    } else {
+      vwi1 = v0 + Rwi0 * P.dv;
+      pwi1 = pwi0 + v0 * dt + Rwi0 * P.dp;
+    }
   }
 
   // Back to camera pose
@@ -1866,7 +1893,15 @@ void System::vioOnKeyframe(double ts)
         // IMU world-from-IMU approx from current camera pose
         // R_wi ≈ R_wc * R_ci
         s0.R_wi = ortho(Rwc_ * Rcb_);
-        s0.p_wi = twc_;                // close enough for first seed
+
+        // Convert camera position to IMU position using camera-from-IMU extrinsic.
+        // p_wc = p_wi - R_wi * (R_ic * t_ci)
+        // => p_wi = p_wc + R_wi * (R_ic * t_ci)
+        {
+          const cv::Matx33d R_ic = Rcb_.t();  // imu-from-camera
+          s0.p_wi = twc_ + s0.R_wi * (R_ic * t_ci_);
+        }
+
         s0.v_wi = R.v_w.empty() ? cv::Vec3d(0,0,0) : R.v_w.back();
         s0.b_g  = R.b_g;
         s0.b_a  = R.b_a;
