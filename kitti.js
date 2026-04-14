@@ -1,4 +1,4 @@
-import { initRenderer, drawFrame, drawPoints, updateHUDText, drawPathXZ } from './renderer.js';
+import { initRenderer, drawFrame, drawPoints, updateHUDText, drawPathXZ, setPathViewConfig, setPointColor } from './renderer.js';
 import { loadTumviSequence } from './tumvi.js';
 
 // ===== utilities ============================================================
@@ -79,16 +79,42 @@ function parseTimestamps(text) {
 
 
 function parseOxtsLine(line) {
-  // KITTI raw oxts/data line is 30 values.
-  // We take ax ay az and wx wy wz (both in body frame) from indices:
-  // ax ay az: 11,12,13
-  // wx wy wz: 17,18,19
-  // (Using the standard KITTI raw OXTS spec.)
+  // KITTI raw OXTS/data format:
+  //  0 lat  1 lon  2 alt
+  //  3 roll 4 pitch 5 yaw
+  //  6 vn   7 ve   8 vf   9 vl  10 vu
+  // 11 ax  12 ay  13 az
+  // 14 af  15 al  16 au
+  // 17 wx  18 wy  19 wz
+  // 20 wf  21 wl  22 wu
+  //
+  // For this debug VIO path, use VEHICLE-ALIGNED channels:
+  //   accel = af, al, au
+  //   gyro  = wf, wl, wu
+  // These are much safer than raw ax/ay/az, wx/wy/wz for your current pipeline.
   const v = line.trim().split(/\s+/).map(Number);
-  if (v.length < 20 || v.some(x => !Number.isFinite(x))) return null;
+  if (v.length < 23 || v.some(x => !Number.isFinite(x))) return null;
+
   return {
-    ax: v[11], ay: v[12], az: v[13],
-    wx: v[17], wy: v[18], wz: v[19],
+    // vehicle-frame velocity (optional, useful later)
+    vf: v[8],
+    vl: v[9],
+    vu: v[10],
+
+    // vehicle-frame acceleration
+    ax: v[14],
+    ay: v[15],
+    az: v[16],
+
+    // vehicle-frame angular rates
+    wx: v[20],
+    wy: v[21],
+    wz: v[22],
+
+    // keep orientation too for debugging if needed later
+    roll: v[3],
+    pitch: v[4],
+    yaw: v[5],
   };
 }
 
@@ -298,6 +324,8 @@ els.btnLoad.addEventListener('click', async () => {
     }
 
     Module.setAccelIsSpecificForce?.(true);   // TUM-VI IMU behaves like normal VIO specific force
+    setPathViewConfig(5, 5, '5m x 5m');
+    setPointColor('#4da6ff'); // soft blue for grayscale scenes
     Module.initSystem(canvas.width, canvas.height, fx, fy, cx, cy);
     els.seqInfo.textContent = `Loaded TUM-VI: ${seq.N} frames (${canvas.width}x${canvas.height}).`;
     els.btnRun.disabled = false;
@@ -376,7 +404,12 @@ els.btnLoad.addEventListener('click', async () => {
       const s = oxts[k];
       if (!s) continue;
       const t = (oxtsTS.length ? oxtsTS[k] : (k * 0.01));
-      imuStream.push({ t, ax: s.ax, ay: s.ay, az: s.az, wx: s.wx, wy: s.wy, wz: s.wz });
+      imuStream.push({
+        t,
+        ax: s.ax, ay: s.ay, az: s.az,
+        wx: s.wx, wy: s.wy, wz: s.wz,
+        vf: s.vf, vl: s.vl, vu: s.vu,
+      });
     }
   }
 
@@ -418,6 +451,8 @@ els.btnLoad.addEventListener('click', async () => {
   const cy = canvas.height * 0.5;
   try { Module.setUseFisheye?.(false); } catch {}
   Module.setAccelIsSpecificForce?.(true);    // KITTI OXTS works better with standard VIO specific-force handling
+  setPathViewConfig(500, 500, '500m x 500m');
+  setPointColor('#ff0000ff');
   Module.initSystem(canvas.width, canvas.height, fx, fy, cx, cy);
 
   els.seqInfo.textContent = `Loaded: ${N} frames (${canvas.width}x${canvas.height}).`;
@@ -599,27 +634,27 @@ els.btnRun.addEventListener('click', async () => {
 
       const wasmTotal = Number(Module.getLastTotalMS?.() ?? 0);
       const wasmKLT = Number(Module.getLastKltMS?.() ?? 0);
-      const imuUsed = Number(Module.getImuUsedThisFrame?.() ?? 0);
+      // const imuUsed = Number(Module.getImuUsedThisFrame?.() ?? 0);
       const imuHz = Number(Module.getImuHz?.() ?? 0);
       const mps = Number(Module.getNumMPs?.() ?? 0);
       const kps = Number(Module.getNumKFs?.() ?? 0);
-      const orbDescIn = Number(Module.getOrbDescInputPtsThisFrame?.() ?? 0);
-      const orbDescOut = Number(Module.getOrbDescRowsThisFrame?.() ?? 0);
-      const orbFullDetect = Number(Module.getOrbFullDetectCountThisFrame?.() ?? 0);
+      // const orbDescIn = Number(Module.getOrbDescInputPtsThisFrame?.() ?? 0);
+      // const orbDescOut = Number(Module.getOrbDescRowsThisFrame?.() ?? 0);
+      // const orbFullDetect = Number(Module.getOrbFullDetectCountThisFrame?.() ?? 0);
       updateHUDText([
         `Frame      ${i}/${limit-1}`,
         `t (s)      ${tNow.toFixed(3)}`,
         `WASM total ${wasmTotal.toFixed(2)} ms`,
-        `WASM KLT   ${wasmKLT.toFixed(2)} ms`,
-        `IMU used   ${imuUsed ? 'YES' : 'NO'}`,
+        // `WASM KLT   ${wasmKLT.toFixed(2)} ms`,
+        // `IMU used   YES`,
         `IMU Hz     ${imuHz ? imuHz.toFixed(1) : 'NA'}`,
-        `Pos        ${Number(twc[0]).toFixed(3)} ${Number(twc[1]).toFixed(3)} ${Number(twc[2]).toFixed(3)}`,
+        // `Pos        ${Number(twc[0]).toFixed(3)} ${Number(twc[1]).toFixed(3)} ${Number(twc[2]).toFixed(3)}`,
         'MPs        ' + mps,
         'KFs        ' + kps,
-        `IMU Δang   ${(Number(Module.getImuDeltaAngleDeg?.() ?? 0)).toFixed(1)} deg`, 
-        `ORB desc in ${orbDescIn}`,
-        `ORB desc out ${orbDescOut}`,
-        `ORB full det ${orbFullDetect}`,
+        // `IMU Δang   ${(Number(Module.getImuDeltaAngleDeg?.() ?? 0)).toFixed(1)} deg`, 
+        // `ORB desc in ${orbDescIn}`,
+        // `ORB desc out ${orbDescOut}`,
+        // `ORB full det ${orbFullDetect}`,
       ].join('\n'));
       lastUI = now;
     }

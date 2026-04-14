@@ -24,8 +24,11 @@ import numpy as np
 # -----------------------------------------------------------------------------
 # Paths
 # -----------------------------------------------------------------------------
-DATASET_ROOT = Path("dataset/office-maze")
+DATASET_NAME = "skate-easy"
+DATASET_ROOT = Path(f"dataset/{DATASET_NAME}")
+
 EST_CSV = DATASET_ROOT / "tumvi_poses.csv"
+PERF_CSV = DATASET_ROOT / "tumvi_performance.csv"
 MOCAP_TXT = DATASET_ROOT / "mocap_data.txt"
 CAM_CALIB_JSON = DATASET_ROOT / "camera-calibration.json"
 MOCAP_IMU_CALIB_JSON = DATASET_ROOT / "mocap-imu-calibration.json"
@@ -33,9 +36,9 @@ LEFT_IMAGES_DIR = DATASET_ROOT / "left_images"
 IMAGE_TIMESTAMPS_LEFT = LEFT_IMAGES_DIR / "image_timestamps_left.txt"
 IMAGE_EXPOSURES_LEFT = LEFT_IMAGES_DIR / "image_exposures_left.txt"
 
-OUTPUT_DIR = DATASET_ROOT / "outputs_rpe"
+OUTPUT_ROOT = Path("dataset/tumvi_eval_v1")
+OUTPUT_DIR = OUTPUT_ROOT / DATASET_NAME
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
 
 # -----------------------------------------------------------------------------
 # Assumptions / knobs
@@ -246,6 +249,34 @@ def load_est_csv(path):
     t = t - t[0]
     return frame, t, p, R, has_rpy
 
+def load_perf_csv(path):
+    with open(path, "r", newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+
+    if not rows:
+        raise ValueError(f"No rows found in performance CSV: {path}")
+
+    req = [
+        "frame", "t",
+        "num_kfs", "num_mps", "num_keypoints",
+        "wasm_klt_ms", "wasm_total_ms", "wasm_imu_ms", "wasm_seed_ms",
+        "imu_hz"
+    ]
+    for k in req:
+        if k not in rows[0]:
+            raise ValueError(f"Performance CSV missing column '{k}'")
+
+    N = len(rows)
+    out = {k: np.zeros(N, dtype=np.float64) for k in req}
+    out["frame"] = np.zeros(N, dtype=np.int64)
+
+    for i, row in enumerate(rows):
+        out["frame"][i] = int(float(row["frame"]))
+        for k in req[1:]:
+            out[k][i] = float(row[k])
+
+    return out
 
 def load_mocap_data(path):
     raw_t = []
@@ -492,12 +523,30 @@ def write_pairs_csv(path, rows):
 
 def write_summary_txt(path, dataset_root, cam_t_source, t_query_source, segments, summaries):
     with open(path, "w") as f:
-        f.write("=== TUM-VI RPE-focused evaluation ===\n")
+        f.write("=== TUM-VI RPE-focused evaluation ===\n\n")
+
+        f.write("What this evaluation means:\n")
+        f.write("  This evaluator uses mocap only where valid mocap coverage exists.\n")
+        f.write("  It does not compute a single global ATE for the full sequence, because TUM-VI mocap may contain\n")
+        f.write("  discontinuities or only partial coverage. Instead, it evaluates relative pose consistency (RPE).\n\n")
+
+        f.write("Why RPE is used here:\n")
+        f.write("  Relative Pose Error (RPE) measures how well the estimator reproduces the motion between two frames,\n")
+        f.write("  rather than how well the full trajectory matches a single global world frame.\n")
+        f.write("  This makes it more appropriate than global ATE for partially covered or discontinuous mocap streams.\n\n")
+
+        f.write("How to read the reported values:\n")
+        f.write("  delta=k means the motion from frame i to frame i+k is compared against ground truth.\n")
+        f.write("  trans_rmse is the root mean square translation error in meters.\n")
+        f.write("  rot_rmse is the root mean square rotation error in degrees.\n")
+        f.write("  Lower values are better.\n\n")
+
         f.write(f"DATASET_ROOT: {dataset_root}\n")
         f.write(f"Camera timestamp source: {cam_t_source}\n")
         f.write(f"Chosen query time source: {t_query_source}\n")
         f.write(f"Mocap continuity threshold [s]: {MOCAP_GAP_THRESHOLD_S}\n")
         f.write(f"Mocap segment count: {len(segments)}\n")
+
         f.write("\nSegments:\n")
         for sid, (a, b) in enumerate(segments):
             f.write(f"  segment {sid}: idx [{a}, {b}], samples={b-a+1}\n")
@@ -508,13 +557,23 @@ def write_summary_txt(path, dataset_root, cam_t_source, t_query_source, segments
             if s is None:
                 f.write(f"  delta={delta}: no valid pairs\n")
                 continue
+
             f.write(
-                f"  delta={delta}: count={s['count']}, "
-                f"trans_rmse={s['trans_rmse_m']:.6f} m, "
+                f"  delta={delta}: "
+                f"count={s['count']}, "
                 f"trans_mean={s['trans_mean_m']:.6f} m, "
-                f"rot_rmse={s['rot_rmse_deg']:.6f} deg, "
-                f"rot_mean={s['rot_mean_deg']:.6f} deg\n"
+                f"trans_median={s['trans_median_m']:.6f} m, "
+                f"trans_rmse={s['trans_rmse_m']:.6f} m, "
+                f"rot_mean={s['rot_mean_deg']:.6f} deg, "
+                f"rot_median={s['rot_median_deg']:.6f} deg, "
+                f"rot_rmse={s['rot_rmse_deg']:.6f} deg\n"
             )
+
+        f.write("\nInterpretation notes:\n")
+        f.write("  A low delta, such as delta=1, measures very local frame-to-frame motion consistency.\n")
+        f.write("  Larger deltas, such as delta=10, 20, or 50, measure consistency over longer motion windows.\n")
+        f.write("  If errors increase strongly with delta, that usually indicates drift accumulation, scale inconsistency,\n")
+        f.write("  or weak pose integration over longer intervals.\n")
 
 
 def plot_rpe_series(rows, delta):
@@ -606,6 +665,118 @@ def plot_estimate_reference(T_est):
     plt.savefig(OUTPUT_DIR / "est_ref_z_over_frame.png", dpi=160)
     plt.close()
 
+def plot_performance(perf):
+    if perf is None:
+        return
+
+    Np = min(
+        len(perf["frame"]),
+        len(perf["num_kfs"]),
+        len(perf["num_mps"]),
+        len(perf["num_keypoints"]),
+        len(perf["wasm_klt_ms"]),
+        len(perf["wasm_total_ms"]),
+        len(perf["wasm_imu_ms"]),
+        len(perf["wasm_seed_ms"]),
+        len(perf["imu_hz"]),
+    )
+
+    pf = perf["frame"][:Np]
+
+    plt.figure()
+    plt.plot(pf, perf["num_keypoints"][:Np])
+    plt.grid(True)
+    plt.title("Tracked keypoints over frames")
+    plt.xlabel("frame")
+    plt.ylabel("count")
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / "perf_keypoints.png", dpi=160)
+    plt.close()
+
+    plt.figure()
+    plt.plot(pf, perf["num_kfs"][:Np], label="KFs")
+    plt.plot(pf, perf["num_mps"][:Np], label="MPs")
+    plt.grid(True)
+    plt.legend()
+    plt.title("Keyframes and map points over frames")
+    plt.xlabel("frame")
+    plt.ylabel("count")
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / "perf_map_structure.png", dpi=160)
+    plt.close()
+
+    plt.figure()
+    plt.plot(pf, perf["wasm_total_ms"][:Np], label="Total")
+    plt.plot(pf, perf["wasm_klt_ms"][:Np], label="KLT")
+    plt.plot(pf, perf["wasm_imu_ms"][:Np], label="IMU")
+    plt.plot(pf, perf["wasm_seed_ms"][:Np], label="Seed")
+    plt.grid(True)
+    plt.legend()
+    plt.title("WASM timing over frames")
+    plt.xlabel("frame")
+    plt.ylabel("ms")
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / "perf_wasm_timing.png", dpi=160)
+    plt.close()
+
+    plt.figure()
+    plt.plot(pf, perf["imu_hz"][:Np])
+    plt.grid(True)
+    plt.title("IMU rate over frames")
+    plt.xlabel("frame")
+    plt.ylabel("Hz")
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / "perf_imu_hz.png", dpi=160)
+    plt.close()
+
+
+def write_performance_summary(path, perf):
+    if perf is None:
+        return
+
+    def stats(a):
+        a = np.asarray(a, dtype=np.float64)
+        return {
+            "min": float(np.min(a)),
+            "max": float(np.max(a)),
+            "mean": float(np.mean(a)),
+            "median": float(np.median(a)),
+        }
+
+    keypoints_s = stats(perf["num_keypoints"])
+    kfs_s = stats(perf["num_kfs"])
+    mps_s = stats(perf["num_mps"])
+    total_s = stats(perf["wasm_total_ms"])
+    klt_s = stats(perf["wasm_klt_ms"])
+    imu_s = stats(perf["wasm_imu_ms"])
+    seed_s = stats(perf["wasm_seed_ms"])
+    imuhz_s = stats(perf["imu_hz"])
+
+    with open(path, "w") as f:
+        f.write("=== TUM-VI performance summary ===\n\n")
+
+        f.write("This file summarizes the front-end/runtime behaviour recorded in tumvi_performance.csv.\n")
+        f.write("The values are useful for discussing tracking density, map growth, per-frame computation cost,\n")
+        f.write("and the effective IMU sample rate observed by the pipeline.\n\n")
+
+        f.write("Metric meanings:\n")
+        f.write("  num_keypoints : number of tracked/detected image features used by the pipeline.\n")
+        f.write("  num_kfs       : number of keyframes currently created.\n")
+        f.write("  num_mps       : number of map points currently maintained.\n")
+        f.write("  wasm_total_ms : total per-frame WebAssembly processing time.\n")
+        f.write("  wasm_klt_ms   : per-frame KLT tracking time.\n")
+        f.write("  wasm_imu_ms   : per-frame IMU-related computation time.\n")
+        f.write("  wasm_seed_ms  : per-frame seeding / feature initialization time.\n")
+        f.write("  imu_hz        : effective IMU rate observed by the pipeline.\n\n")
+
+        f.write(f"Tracked keypoints      : min={keypoints_s['min']:.3f}, max={keypoints_s['max']:.3f}, mean={keypoints_s['mean']:.3f}, median={keypoints_s['median']:.3f}\n")
+        f.write(f"Keyframes              : min={kfs_s['min']:.3f}, max={kfs_s['max']:.3f}, mean={kfs_s['mean']:.3f}, median={kfs_s['median']:.3f}\n")
+        f.write(f"Map points             : min={mps_s['min']:.3f}, max={mps_s['max']:.3f}, mean={mps_s['mean']:.3f}, median={mps_s['median']:.3f}\n")
+        f.write(f"WASM total time [ms]   : min={total_s['min']:.3f}, max={total_s['max']:.3f}, mean={total_s['mean']:.3f}, median={total_s['median']:.3f}\n")
+        f.write(f"WASM KLT time [ms]     : min={klt_s['min']:.3f}, max={klt_s['max']:.3f}, mean={klt_s['mean']:.3f}, median={klt_s['median']:.3f}\n")
+        f.write(f"WASM IMU time [ms]     : min={imu_s['min']:.3f}, max={imu_s['max']:.3f}, mean={imu_s['mean']:.3f}, median={imu_s['median']:.3f}\n")
+        f.write(f"WASM seed time [ms]    : min={seed_s['min']:.3f}, max={seed_s['max']:.3f}, mean={seed_s['mean']:.3f}, median={seed_s['median']:.3f}\n")
+        f.write(f"IMU rate [Hz]          : min={imuhz_s['min']:.3f}, max={imuhz_s['max']:.3f}, mean={imuhz_s['mean']:.3f}, median={imuhz_s['median']:.3f}\n")
 
 # -----------------------------------------------------------------------------
 # Main
@@ -617,6 +788,9 @@ def main():
 
     frame, est_t, p_est, R_est, has_rpy = load_est_csv(EST_CSV)
     mocap_t_rel, T_mocap_marker = load_mocap_data(MOCAP_TXT)
+    perf = None
+    if PERF_CSV.exists():
+        perf = load_perf_csv(PERF_CSV)
     dt = np.diff(mocap_t_rel)
     print("Mocap dt min/max [s]:", dt.min(), dt.max())
     print("Mocap negative dt count:", np.sum(dt < 0))
@@ -686,6 +860,8 @@ def main():
         segments,
         summaries,
     )
+    plot_performance(perf)
+    write_performance_summary(OUTPUT_DIR / "performance_summary.txt", perf)
 
     print("=== TUM-VI RPE-focused evaluation ===")
     print(f"DATASET_ROOT:                 {DATASET_ROOT}")
@@ -718,7 +894,11 @@ def main():
         )
 
     print(f"Wrote outputs to:             {OUTPUT_DIR}")
-
+    print("RPE plots:                    rpe_trans_delta_*.png, rpe_rot_delta_*.png, rel_motion_delta_*.png")
+    if perf is not None:
+        print("Performance plots:            perf_keypoints.png, perf_map_structure.png, perf_wasm_timing.png, perf_imu_hz.png")
+        print("Performance summary:          performance_summary.txt")
+    print("Evaluation summary:           summary.txt")
 
 if __name__ == "__main__":
     main()

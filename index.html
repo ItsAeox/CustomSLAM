@@ -32,7 +32,23 @@
       overflow:auto; background:#000a; color:#0f0; font:12px monospace;
       padding:6px; white-space:pre-wrap; z-index:60;
     }
-    #hud{ position:fixed; right:8px; top:8px; z-index:55; }
+    #hud{
+      position:fixed;
+      right:8px;
+      top:8px;
+      z-index:55;
+      color:#0f0;
+      font:12px monospace;
+      width:340px;
+      box-sizing:border-box;
+      white-space:pre;
+      overflow:hidden;
+      text-align:left;
+      padding:8px 10px;
+      background:rgba(0,0,0,.55);
+      border:1px solid rgba(0,255,0,.25);
+      border-radius:10px;
+    }
     html, body { margin:0; width:100%; height:100%; background:#000; overflow:hidden; }
     #view{
       position:fixed;
@@ -52,11 +68,9 @@
     <div class="row">
       <label>Dataset</label>
       <select id="dataset" style="padding:6px 10px;border-radius:10px;border:1px solid rgba(0,255,0,.25);background:rgba(0,0,0,.75);color:#d8ffd8;">
-        <option value="kitti" selected>KITTI (raw)</option>
-        <option value="tumvi">TUM-VI (your loop-floor0)</option>
+        <option value="kitti" selected>KITTI</option>
+        <option value="tumvi">TUM-VI</option>
       </select>
-    
-      <span class="hint">Pick one root folder. Paths below are relative to that root.</span>
     </div>
     
     <div class="row" id="tumviRow" style="display:none">
@@ -65,7 +79,6 @@
       <label>Right dir</label>
       <input id="rightDir" type="text" value="right_images" />
       <label class="pill">KB4</label>
-      <span class="hint">We will start pinhole-only (distortion ignored) until we add rectification in C++.</span>
     </div>    
 
     <div class="row">

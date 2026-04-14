@@ -16,6 +16,22 @@ html,body { margin:0; height:100%; background:#000; }
 }
 
 
-#hud { position:fixed; right:8px; top:8px; z-index:20; color:#0f0; font:12px monospace; }
+#hud{
+  position:fixed;
+  right:8px;
+  top:8px;
+  z-index:55;
+  color:#0f0;
+  font:12px monospace;
+  width:340px;
+  box-sizing:border-box;
+  white-space:pre;
+  overflow:hidden;
+  text-align:left;
+  padding:8px 10px;
+  background:rgba(0,0,0,.55);
+  border:1px solid rgba(0,255,0,.25);
+  border-radius:10px;
+}
 #log { position:fixed; left:8px; bottom:8px; z-index:30; color:#0f0; font:12px monospace; }
 #placeBtn { position:fixed; right:8px; bottom:8px; z-index:20; }

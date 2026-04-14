@@ -1,5 +1,14 @@
 let canvas, ctx2d, hudEl;
 
+let pointColor = '#ffe658ff'; // default (your current yellow)
+
+// Configurable bird's-eye metric window
+let pathViewConfig = {
+  viewW: 500,
+  viewH: 500,
+  label: '500m x 500m',
+};
+
 function fitCanvasCSSToViewport(imgW, imgH) {
   const vw = window.innerWidth  || imgW;
   const vh = window.innerHeight || imgH;
@@ -57,6 +66,12 @@ export function drawFrame(bmp, W, H) {
   ctx2d.drawImage(bmp, 0, 0, W, H);
 }
 
+export function setPointColor(c) {
+  if (typeof c === 'string' && c.length > 0) {
+    pointColor = c;
+  }
+}
+
 /**
  * pts: JS array [x0,y0, x1,y1, ...] in pixel coords (origin at top-left)
  */
@@ -64,14 +79,23 @@ export function drawPoints(pts, W, H) {
   if (!ctx2d) return;
 
   // Draw points as tiny white squares (faster than arcs; crisp even when scaled)
-  ctx2d.fillStyle = '#ffe658ff';
   const n = (pts.length / 2) | 0;
-  const s = 3; // point size in pixels
+
+  // Sizes
+  const inner = 3;   // colored center
+  const outer = 5;   // black outline
+  
   for (let i = 0; i < n; ++i) {
     const x = pts[2*i], y = pts[2*i + 1];
-    // Clamp to bounds just in case
     if (x >= 0 && y >= 0 && x < W && y < H) {
-      ctx2d.fillRect(x - (s>>1), y - (s>>1), s, s);
+  
+      // 1. Draw black outline
+      ctx2d.fillStyle = '#000000';
+      ctx2d.fillRect(x - (outer>>1), y - (outer>>1), outer, outer);
+  
+      // 2. Draw colored center
+      ctx2d.fillStyle = pointColor;
+      ctx2d.fillRect(x - (inner>>1), y - (inner>>1), inner, inner);
     }
   }
 }
@@ -210,6 +234,11 @@ export function updateHUDText(t) {
 //   ctx2d.restore();
 // }
 
+export function setPathViewConfig(viewW, viewH, label = '') {
+  pathViewConfig.viewW = Number.isFinite(viewW) ? viewW : 500;
+  pathViewConfig.viewH = Number.isFinite(viewH) ? viewH : 500;
+  pathViewConfig.label = label || `${pathViewConfig.viewW}m x ${pathViewConfig.viewH}m`;
+}
 
 export function drawPathXZ(flatXZ, W, H) {
   if (!flatXZ || !flatXZ.length) return;
@@ -220,10 +249,9 @@ export function drawPathXZ(flatXZ, W, H) {
   const x0 = margin;
   const y0 = H - boxH - margin;
   
-  // Fixed metric viewport centered on current position (shows true scale)
-  // If your units are meters, this is meters. If not, it's still a fixed unit window.
-  const VIEW_W = 500; // width in "units"
-  const VIEW_H = 500; // height in "units"
+  // Dataset-configurable metric viewport centered on current position
+  const VIEW_W = pathViewConfig.viewW;
+  const VIEW_H = pathViewConfig.viewH;
 
   // Center the view around the latest point (current camera)
   const lastX = flatXZ[flatXZ.length - 2];
@@ -245,9 +273,11 @@ export function drawPathXZ(flatXZ, W, H) {
   ctx2d.fillStyle = '#000';
   ctx2d.fillRect(x0, y0, boxW, boxH);
   ctx2d.globalAlpha = 1.0;
-  ctx2d.strokeStyle = '#0f0';
-  ctx2d.lineWidth = 1;
-  ctx2d.strokeRect(x0+0.5, y0+0.5, boxW-1, boxH-1);
+
+  // Clip all path drawing to the inside of the bird's-eye box
+  ctx2d.beginPath();
+  ctx2d.rect(x0 + 1, y0 + 1, boxW - 2, boxH - 2);
+  ctx2d.clip();
 
   // Draw path
   ctx2d.beginPath();
@@ -272,5 +302,18 @@ export function drawPathXZ(flatXZ, W, H) {
     ctx2d.fillStyle = '#ffffff';
     ctx2d.fill();
   }
+  // Scale label
+  ctx2d.fillStyle = '#b8ffb8';
+  ctx2d.font = '11px monospace';
+  ctx2d.textAlign = 'left';
+  ctx2d.textBaseline = 'top';
+  ctx2d.fillText(pathViewConfig.label, x0 + 8, y0 + 8);
+  ctx2d.restore();
+
+  // Draw border on top so it stays sharp
+  ctx2d.save();
+  ctx2d.strokeStyle = '#0f0';
+  ctx2d.lineWidth = 1;
+  ctx2d.strokeRect(x0+0.5, y0+0.5, boxW-1, boxH-1);
   ctx2d.restore();
 }
