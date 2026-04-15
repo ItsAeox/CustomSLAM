@@ -992,7 +992,7 @@ void System::integrateVO_E(const std::vector<cv::Point2f>& prevProcPts,
       t10 *= (s_imu / nt);
     }
   } else {
-    t10 *= 2.0;
+    t10 *= 0.02;
   }
   // Compose world pose. If Twc0 = [Rwc|twc], and cam1 = R10,t10 in cam0 frame:
   // Twc1 = Twc0 * inv(Tc1c0) = Twc0 * [R10^T | -R10^T t10]
