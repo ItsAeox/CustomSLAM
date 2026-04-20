@@ -119,10 +119,25 @@ function parseOxtsLine(line) {
 }
 
 // ===== WASM setup ===========================================================
-async function loadWasm() {
+async function loadWasm(dataset) {
   const ts = Date.now();
-  const { default: createModule } = await import(`./vio_wasm.js?v=${ts}`);
-  const Module = await createModule({ locateFile: (p)=> p.endsWith('.wasm') ? `./vio_wasm.wasm?v=${ts}` : p });
+
+  const isKitti = dataset === 'kitti';
+
+  const jsPath = isKitti
+    ? './vio_wasm_k.js'
+    : './vio_wasm.js';
+
+  const wasmPath = isKitti
+    ? './vio_wasm_k.wasm'
+    : './vio_wasm.wasm';
+
+  const { default: createModule } = await import(`${jsPath}?v=${ts}`);
+
+  const Module = await createModule({
+    locateFile: (p) => p.endsWith('.wasm') ? `${wasmPath}?v=${ts}` : p
+  });
+
   return Module;
 }
 
@@ -164,18 +179,7 @@ let recordedPerf = []; // performance CSV
 // ===== boot renderer and wasm ==============================================
 const canvas = document.getElementById('view');
 await initRenderer(canvas);
-Module = await loadWasm();
-window.Module = Module;
-logMsg('WASM ready:', {
-  feedFramePtr: !!Module.feedFramePtr,
-  feedFrameJS: !!Module.feedFrameJS,
-  feedImuSample: !!Module.feedImuSample,
-  getTwc: !!Module.getTwc,
-  getYPR: !!Module.getYPR,
-});
-
-// Default: you said you want KLT only going forward
-try { Module.setTrackerType?.(0); } catch {}
+window.Module = null;
 
 // ===== interactions =========================================================
 els.dirPick.addEventListener('change', () => {
@@ -241,6 +245,19 @@ els.btnLoad.addEventListener('click', async () => {
   if (!fileList.length) return;
 
   const ds = els.dataset?.value || 'kitti';
+
+  Module = await loadWasm(ds);
+  window.Module = Module;
+  logMsg('WASM ready:', ds, {
+    feedFramePtr: !!Module.feedFramePtr,
+    feedFrameJS: !!Module.feedFrameJS,
+    feedImuSample: !!Module.feedImuSample,
+    getTwc: !!Module.getTwc,
+    getYPR: !!Module.getYPR,
+  });
+
+  try { Module.setTrackerType?.(0); } catch {}
+
   if (ds === 'tumvi') {
     const leftDir  = (els.leftDir?.value || 'left_images').trim();
     const rightDir = (els.rightDir?.value || 'right_images').trim();
