@@ -25,6 +25,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("sweep", type=Path)
     ap.add_argument("--bad-rot", type=float, default=5.0)
+    ap.add_argument("--bad-ate-mm", type=float, default=0.0,
+                    help="also count runs with Sim(3) ATE above this as bad (0 = off). Use on EuRoC, whose GT "
+                         "orientation has per-sequence offsets of a few degrees (claude/ISSUES.md G8)")
     a = ap.parse_args()
     print(f"{'sequence':22s} {'build':7s} {'runs':>4s} {'fail':>4s} {'bad':>4s} | {'coverage':>18s} | "
           f"{'Sim3 ATE mm':>20s} | {'rot ATE deg':>18s} | {'track ms med/p95':>16s}")
@@ -38,7 +41,10 @@ def main():
             cov = np.array([m["coverage"] for m in ms])
             ate = np.array([m["ate_sim3"]["rmse"] * 1000 for m in ms])
             rot = np.array([m["ate_se3_rot_deg"]["rmse"] for m in ms])
-            bad = int((rot > a.bad_rot).sum()) + fail
+            badm = rot > a.bad_rot
+            if a.bad_ate_mm > 0:
+                badm = badm | (ate > a.bad_ate_mm)
+            bad = int(badm.sum()) + fail
             fmt = lambda x, p=2: f"{np.median(x):.{p}f} [{x.min():.{p}f},{x.max():.{p}f}]" if len(x) else "-"
             tt = track_times(runs)
             tts = f"{np.median(tt):.1f} / {np.percentile(tt, 95):.1f}" if len(tt) else "-"

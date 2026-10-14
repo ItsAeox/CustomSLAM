@@ -38,6 +38,7 @@ def main():
     ap.add_argument("--a", default="native")
     ap.add_argument("--b", default="wasm")
     ap.add_argument("--bad-rot", type=float, default=5.0)
+    ap.add_argument("--bad-ate-mm", type=float, default=0.0, help="also bad if Sim(3) ATE above this (0 = off)")
     ap.add_argument("--across", action="store_true", help="compare build --a between two sweep dirs (A vs B)")
     a = ap.parse_args()
     if a.across:
@@ -58,7 +59,7 @@ def main():
             continue
         cells = []
         for fl, X in ((a.a, A), (a.b, B)):
-            bad = int((X[:, 0] > a.bad_rot).sum())
+            bad = int(((X[:, 0] > a.bad_rot) | ((X[:, 1] > a.bad_ate_mm) if a.bad_ate_mm > 0 else False)).sum())
             tot[fl][0] += bad
             tot[fl][1] += len(X)
             cells.append(f"{len(X):2d} {bad:2d}  {np.median(X[:, 0]):7.2f}  {np.median(X[:, 1]):10.1f}")
@@ -86,7 +87,7 @@ def across(a):
             continue
         cells = []
         for key, X in (("A", XA), ("B", XB)):
-            bad = int((X[:, 0] > a.bad_rot).sum())
+            bad = int(((X[:, 0] > a.bad_rot) | ((X[:, 1] > a.bad_ate_mm) if a.bad_ate_mm > 0 else False)).sum())
             tot[key][0] += bad
             tot[key][1] += len(X)
             cells.append(f"{len(X):2d} {bad:2d}  {np.median(X[:, 0]):7.2f}  {np.median(X[:, 1]):10.1f}")
