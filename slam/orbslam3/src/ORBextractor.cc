@@ -53,7 +53,9 @@
 
 
 #include <opencv2/core/core.hpp>
+#ifndef ORBSLAM3_WEB  // highgui (GUI module) is not built for the web; nothing from it is used here
 #include <opencv2/highgui/highgui.hpp>
+#endif
 #include <opencv2/features2d/features2d.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 #include <vector>

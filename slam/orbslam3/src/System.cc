@@ -23,6 +23,7 @@
 #include <thread>
 #include <pangolin/pangolin.h>
 #include <iomanip>
+#ifndef ORBSLAM3_WEB  // web build: no OpenSSL / compiled Boost.Serialization (Atlas save/load disabled)
 #include <openssl/md5.h>
 #include <boost/serialization/base_object.hpp>
 #include <boost/serialization/string.hpp>
@@ -32,6 +33,7 @@
 #include <boost/archive/binary_oarchive.hpp>
 #include <boost/archive/xml_iarchive.hpp>
 #include <boost/archive/xml_oarchive.hpp>
+#endif
 
 namespace ORB_SLAM3
 {
@@ -1400,6 +1402,7 @@ void System::InsertTrackTime(double& time)
 }
 #endif
 
+#ifndef ORBSLAM3_WEB
 void System::SaveAtlas(int type){
     if(!mStrSaveAtlasToFile.empty())
     {
@@ -1544,6 +1547,23 @@ string System::CalculateCheckSum(string filename, int type)
 
     return checksum;
 }
+#else  // ORBSLAM3_WEB: Atlas save/load needs Boost.Serialization archives and OpenSSL, not available in the web build
+void System::SaveAtlas(int type)
+{
+    cerr << "System::SaveAtlas is not supported in the web build" << endl;
+}
+
+bool System::LoadAtlas(int type)
+{
+    cerr << "System::LoadAtlas is not supported in the web build" << endl;
+    return false;
+}
+
+string System::CalculateCheckSum(string filename, int type)
+{
+    return string();
+}
+#endif // ORBSLAM3_WEB
 
 } //namespace ORB_SLAM
 

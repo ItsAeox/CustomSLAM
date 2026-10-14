@@ -13,7 +13,7 @@
 #include <vector>
 #include <string>
 #include <sstream>
-#include <stdint-gcc.h>
+#include <cstdint>  // web port: was <stdint-gcc.h> (GCC-only header)
 
 #include "FORB.h"
 

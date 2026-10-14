@@ -25,7 +25,7 @@
 
 #include "Thirdparty/DBoW2/DBoW2/FeatureVector.h"
 
-#include<stdint-gcc.h>
+#include <cstdint>  // web port: was <stdint-gcc.h> (GCC-only header)
 
 using namespace std;
 

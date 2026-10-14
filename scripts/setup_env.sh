@@ -146,7 +146,37 @@ step_opencv_wasm() {
   cmake --install "$BUILD_ROOT/opencv-wasm"
 }
 
-ALL_STEPS=(apt pangolin orbslam3 python emsdk opencv_native opencv_wasm)
+# Threaded variant for the ORB-SLAM3 web port: every object linked into a -pthread module must itself be built with
+# -pthread (atomics/bulk-memory). No -fwasm-exceptions: with emsdk 3.1.64 it crashes clang on libjpeg's setjmp code
+# (grfmt_jpeg.cpp); C++ exceptions therefore abort in the web build. imgcodecs (+jpeg/png)
+# is included for the Node dataset harness; the browser app passes raw pixels and doesn't link it.
+OPENCV_WASM_MT_PREFIX="$OPT_ROOT/opencv-$OPENCV_TAG-wasm-mt"
+step_opencv_wasm_mt() {
+  log "OpenCV $OPENCV_TAG wasm (static, SIMD128, pthreads) -> $OPENCV_WASM_MT_PREFIX"
+  clone_pinned https://github.com/opencv/opencv.git "$TP/opencv" "$OPENCV_TAG"
+  # shellcheck disable=SC1091
+  source "$EMSDK_DIR/emsdk_env.sh" >/dev/null
+  local FLAGS="-msimd128 -pthread"
+  emcmake cmake -S "$TP/opencv" -B "$BUILD_ROOT/opencv-wasm-mt" -G Ninja "${OPENCV_COMMON_FLAGS[@]}" \
+        -DBUILD_LIST=core,imgproc,video,features2d,calib3d,flann,imgcodecs \
+        -DWITH_JPEG=ON -DBUILD_JPEG=ON -DWITH_PNG=ON -DBUILD_PNG=ON \
+        -DBUILD_opencv_highgui=OFF -DBUILD_opencv_videoio=OFF \
+        -DCPU_BASELINE='' -DCPU_DISPATCH='' -DCV_ENABLE_INTRINSICS=ON -DWITH_PTHREADS_PF=OFF -DENABLE_PIC=FALSE \
+        -DCMAKE_C_FLAGS="$FLAGS" -DCMAKE_CXX_FLAGS="$FLAGS" \
+        -DCMAKE_INSTALL_PREFIX="$OPENCV_WASM_MT_PREFIX"
+  cmake --build "$BUILD_ROOT/opencv-wasm-mt" -j "$JOBS"
+  cmake --install "$BUILD_ROOT/opencv-wasm-mt"
+}
+
+# Boost is only needed header-only by the ORB-SLAM3 web port (serialization templates are declared, never instantiated).
+# Expose the system Boost headers in their own directory so the emscripten build doesn't see host /usr/include.
+step_boost_headers() {
+  log "Boost headers -> $OPT_ROOT/boost-headers"
+  $SUDO mkdir -p "$OPT_ROOT/boost-headers"
+  $SUDO ln -sfn /usr/include/boost "$OPT_ROOT/boost-headers/boost"
+}
+
+ALL_STEPS=(apt pangolin orbslam3 python emsdk opencv_native opencv_wasm opencv_wasm_mt boost_headers)
 STEPS=("$@"); [ ${#STEPS[@]} -eq 0 ] && STEPS=("${ALL_STEPS[@]}")
 mkdir -p "$BUILD_ROOT"
 for s in "${STEPS[@]}"; do "step_$s"; done
