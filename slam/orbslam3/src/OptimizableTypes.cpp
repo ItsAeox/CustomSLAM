@@ -147,7 +147,11 @@ namespace ORB_SLAM3 {
         double y = xyz_trans[1];
         double z = xyz_trans[2];
 
-        auto projectJac = -pCamera->projectJac(xyz_trans);
+        // ORBSLAM3_WEB bug fix: upstream had `auto projectJac = -pCamera->projectJac(xyz_trans);`. With Eigen, `auto`
+        // keeps the lazy negation expression, which references the temporary 2x3 matrix returned by projectJac(); that
+        // temporary dies at the end of the statement, so both Jacobians below read freed stack memory (undefined
+        // behaviour). GCC builds happened to read the old values; clang/WebAssembly did not and BA steps diverged.
+        const Eigen::Matrix<double,2,3> projectJac = -pCamera->projectJac(xyz_trans);
 
         _jacobianOplusXi =  projectJac * T.rotation().toRotationMatrix();
 

@@ -129,3 +129,10 @@ if (BUILD_WASM)
     -sSTACK_SIZE=4MB -sDEFAULT_PTHREAD_STACK_SIZE=4MB -sFORCE_FILESYSTEM=1
     "-sEXPORTED_RUNTIME_METHODS=['FS','HEAPU8']")
 endif()
+
+add_executable(numerics_check ${PORT}/tests/numerics_check.cc)
+target_link_libraries(numerics_check PRIVATE orbslam3_web)
+if (BUILD_WASM)
+  target_link_options(numerics_check PRIVATE -sENVIRONMENT=node,worker -sNODERAWFS=1 -sPROXY_TO_PTHREAD=1
+    -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=8MB -sEXIT_RUNTIME=1)
+endif()
