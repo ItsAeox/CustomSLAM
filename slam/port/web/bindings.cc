@@ -48,6 +48,12 @@ class WebSlam {
     auto t0 = std::chrono::steady_clock::now();
     cv::Mat im = frame_;
     if (clahe_) { claheOp_->apply(frame_, work_); im = work_; }
+    // As ORB-SLAM3's examples: resize when the settings request it (Camera.newWidth/newHeight, e.g. EuRoC 600x350)
+    const float scale = sys_->GetImageScale();
+    if (scale != 1.f) {
+      cv::resize(im, scaled_, cv::Size((int)(im.cols * scale), (int)(im.rows * scale)));
+      im = scaled_;
+    }
     Sophus::SE3f Tcw = sys_->TrackMonocular(im, timestamp);
     lastMs_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     const int state = sys_->GetTrackingState();
@@ -87,7 +93,7 @@ class WebSlam {
 
  private:
   std::unique_ptr<ORB_SLAM3::System> sys_;
-  cv::Mat frame_, work_;
+  cv::Mat frame_, work_, scaled_;
   bool clahe_ = false;
   cv::Ptr<cv::CLAHE> claheOp_;
   float twc_[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};

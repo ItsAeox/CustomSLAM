@@ -7,7 +7,8 @@
     /datasets/...  dataset sequences (read-only)
     /vocab/...     ORBvoc.bin
     /settings/...  generated ORB-SLAM3 settings files
-- GET  /api/sequence?dataset=tumvie&name=<seq>  -> JSON manifest (image URLs + timestamps, as vio_run/orbslam3_run use)
+- GET  /api/sequence?dataset=tumvie|euroc|tumvi&name=<seq>  -> JSON manifest (image URLs + timestamps, as orbslam3_run)
+- /orbsettings/... ORB-SLAM3's official settings (baselines/orbslam3/settings)
 - POST /api/result?name=<file>                 -> saves the body to <results>/browser/<file>
 - Optional HTTPS (for phones on the LAN): --cert cert.pem --key key.pem --host 0.0.0.0
 
@@ -43,6 +44,22 @@ def tumvie_manifest(seq: Path) -> dict:
             "missing": len(ts) - len(frames)}
 
 
+def asl_manifest(seq: Path, dataset: str, url_prefix: str) -> dict:
+    """EuRoC / TUM-VI EuRoC-format export: frames from mav0/cam0/data.csv, t = (ns - ns0) * 1e-9 (same as orbslam3_run).
+    CLAHE for TUM-VI only, as ORB-SLAM3's mono_tum_vi / mono_euroc examples."""
+    rows = []
+    for l in (seq / "mav0" / "cam0" / "data.csv").read_text().splitlines():
+        if not l.strip() or l.startswith("#"):
+            continue
+        ns, name = l.split(",", 1)
+        rows.append((int(ns), name.strip()))
+    ns0 = rows[0][0]
+    frames = [{"idx": i, "t": (ns - ns0) * 1e-9, "url": f"{url_prefix}/{seq.name}/mav0/cam0/data/{name}"}
+              for i, (ns, name) in enumerate(rows) if (seq / "mav0" / "cam0" / "data" / name).exists()]
+    return {"dataset": dataset, "name": seq.name, "tBase": ns0 * 1e-9, "clahe": dataset == "tumvi",
+            "frames": frames, "missing": len(rows) - len(frames)}
+
+
 class Handler(SimpleHTTPRequestHandler):
     root: Path = Path(".")
     results: Path = Path(".")
@@ -57,7 +74,8 @@ class Handler(SimpleHTTPRequestHandler):
     def translate_path(self, path):
         p = unquote(urlparse(path).path)
         mounts = {"/web/": WEB_DIR, "/datasets/": self.root / "datasets", "/vocab/": self.root / "vocab",
-                  "/settings/": self.root / "results" / "scratch" / "settings"}
+                  "/settings/": self.root / "results" / "scratch" / "settings",
+                  "/orbsettings/": WEB_DIR.parent / "baselines" / "orbslam3" / "settings"}
         for prefix, base in mounts.items():
             if p.startswith(prefix):
                 target = (base / p[len(prefix):]).resolve()
@@ -75,10 +93,14 @@ class Handler(SimpleHTTPRequestHandler):
         if u.path == "/api/sequence":
             q = parse_qs(u.query)
             name = q.get("name", [""])[0]
-            seq = (self.root / "datasets" / name).resolve()
-            if not name or (self.root / "datasets").resolve() not in seq.parents or not seq.is_dir():
+            dataset = q.get("dataset", ["tumvie"])[0]
+            sub = {"euroc": "euroc", "tumvi": "tumvi"}.get(dataset, "")
+            base = (self.root / "datasets" / sub).resolve()
+            seq = (base / name).resolve()
+            if not name or base not in seq.parents or not seq.is_dir():
                 return self.send_error(404, "unknown sequence")
-            body = json.dumps(tumvie_manifest(seq)).encode()
+            manifest = (asl_manifest(seq, dataset, f"/datasets/{sub}") if sub else tumvie_manifest(seq))
+            body = json.dumps(manifest).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))

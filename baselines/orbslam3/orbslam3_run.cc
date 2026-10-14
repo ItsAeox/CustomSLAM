@@ -5,7 +5,7 @@
 // from the build-compatibility patches in scripts/setup_env.sh.
 //
 // Usage:
-//   orbslam3_run --dataset kitti|tumvie --mode mono|mono_inertial --seq <dir>
+//   orbslam3_run --dataset kitti|tumvie|euroc|tumvi --mode mono|mono_inertial --seq <dir>
 //                --vocab ORBvoc.txt --settings <yaml> --out <dir> [--clahe]
 //
 // Outputs (in --out):
@@ -125,6 +125,42 @@ static Data loadTumvie(const fs::path& seq) {
   return d;
 }
 
+// EuRoC / TUM-VI "EuRoC format" (ASL layout): <seq>/mav0/cam0/data.csv "#timestamp [ns],filename",
+// images in mav0/cam0/data/, IMU in mav0/imu0/data.csv "#timestamp [ns],w_x,w_y,w_z,a_x,a_y,a_z".
+// Same frame list as ORB-SLAM3's mono_euroc / mono_tum_vi examples (their timestamp lists = every cam0 frame).
+static Data loadAsl(const fs::path& seq) {
+  Data d;
+  const fs::path cam = seq / "mav0" / "cam0";
+  vector<std::pair<long long, string>> rows;
+  for (auto& l : lines(cam / "data.csv")) {
+    auto c = l.find(',');
+    if (c == string::npos) continue;
+    string name = l.substr(c + 1);
+    while (!name.empty() && (name.back() == '\r' || name.back() == ' ')) name.pop_back();
+    rows.emplace_back(std::stoll(l.substr(0, c)), name);
+  }
+  if (rows.empty()) throw std::runtime_error("no frames in " + (cam / "data.csv").string());
+  const long long ns0 = rows.front().first;  // rebase in integer ns: exact
+  d.tBase = (double)ns0 * 1e-9;
+  for (auto& [ns, name] : rows) {
+    const fs::path p = cam / "data" / name;
+    if (!fs::exists(p)) continue;
+    d.images.push_back(p);
+    d.t.push_back((double)(ns - ns0) * 1e-9);
+  }
+  if (d.images.size() < rows.size())
+    std::cerr << "WARNING: " << rows.size() - d.images.size() << " frames have no image file; skipped\n";
+  for (auto& l : lines(seq / "mav0" / "imu0" / "data.csv")) {
+    std::stringstream ss(l);
+    string tok; vector<string> v;
+    while (std::getline(ss, tok, ',')) v.push_back(tok);
+    if (v.size() < 7) continue;
+    const double t = (double)(std::stoll(v[0]) - ns0) * 1e-9;
+    d.imu.push_back({t, std::stod(v[4]), std::stod(v[5]), std::stod(v[6]), std::stod(v[1]), std::stod(v[2]), std::stod(v[3])});
+  }
+  return d;
+}
+
 // ORB-SLAM3 writes EuRoC-style files with timestamp in ns (of the rebased time); convert to TUM seconds (absolute).
 static void euRoCToTum(const fs::path& in, const fs::path& out, double tBase) {
   std::ifstream f(in);
@@ -166,7 +202,7 @@ int main(int argc, char** argv) {
     else { std::cerr << "unknown arg " << a << "\n"; return 2; }
   }
   if (dataset.empty() || mode.empty() || seq.empty() || vocab.empty() || settings.empty() || out.empty()) {
-    std::cerr << "usage: orbslam3_run --dataset kitti|tumvie --mode mono|mono_inertial --seq DIR --vocab V --settings S --out DIR [--clahe]\n";
+    std::cerr << "usage: orbslam3_run --dataset kitti|tumvie|euroc|tumvi --mode mono|mono_inertial --seq DIR --vocab V --settings S --out DIR [--clahe]\n";
     return 2;
   }
   const bool inertial = (mode == "mono_inertial");
@@ -176,10 +212,13 @@ int main(int argc, char** argv) {
   // SeedRandOnce(0) a no-op, so different seeds give independent runs (monocular init is seed-sensitive).
   if (seed >= 0) DUtils::Random::SeedRandOnce(seed);
 
-  Data d = (dataset == "kitti") ? loadKitti(seq) : loadTumvie(seq);
+  Data d = (dataset == "kitti") ? loadKitti(seq)
+         : (dataset == "tumvie") ? loadTumvie(seq)
+         : loadAsl(seq);  // "euroc", "tumvi" (EuRoC-format export), "asl"
   int N = (int)std::min(d.images.size(), d.t.size());
   if (maxFrames > 0) N = std::min(N, maxFrames);
   fs::create_directories(out);
+  out = fs::absolute(out).string();  // the working directory changes before Shutdown (see below)
 
   ORB_SLAM3::System SLAM(vocab, settings,
                          inertial ? ORB_SLAM3::System::IMU_MONOCULAR : ORB_SLAM3::System::MONOCULAR,
@@ -236,6 +275,7 @@ int main(int argc, char** argv) {
     if (i % 200 == 0) std::cerr << "frame " << i << "/" << N - 1 << " state=" << SLAM.GetTrackingState() << "\n";
   }
 
+  fs::current_path(out);  // REGISTER_TIMES builds write their *TimeStats.txt files to the working directory
   SLAM.Shutdown();
   const fs::path rawF = fs::path(out) / "f_euroc_ns.txt", rawKF = fs::path(out) / "kf_euroc_ns.txt";
   SLAM.SaveTrajectoryEuRoC(rawF.string());

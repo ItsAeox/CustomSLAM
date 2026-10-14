@@ -8,7 +8,10 @@
 
 const params = new URLSearchParams(location.search);
 const seqName = params.get('seq') || 'mocap-desk2';
+const dataset = params.get('dataset') || 'tumvie';  // tumvie | euroc | tumvi
 const settingsFile = params.get('settings') || `tumvie_${seqName}.yaml`;
+// settings: a file name under /settings/ (generated TUM-VIE settings) or an absolute URL, e.g. /orbsettings/EuRoC_mono.yaml
+const settingsUrl = settingsFile.startsWith('/') ? settingsFile : `/settings/${settingsFile}`;
 const tag = params.get('tag') || 'run1';
 const maxFrames = Number(params.get('max') || 0);
 const seed = params.has('seed') ? Number(params.get('seed')) : -1;  // -1: ORB-SLAM3 default
@@ -55,7 +58,7 @@ async function main() {
     setStatus('Not cross-origin isolated: SharedArrayBuffer (WASM threads) unavailable. Use web/serve.py.');
     return;
   }
-  const manifest = await (await fetch(`/api/sequence?dataset=tumvie&name=${encodeURIComponent(seqName)}`)).json();
+  const manifest = await (await fetch(`/api/sequence?dataset=${dataset}&name=${encodeURIComponent(seqName)}`)).json();
   const frames = maxFrames > 0 ? manifest.frames.slice(0, maxFrames) : manifest.frames;
   log(`${seqName}: ${frames.length} frames (${manifest.missing} missing), settings ${settingsFile}, threads: ${navigator.hardwareConcurrency}`);
 
@@ -70,7 +73,7 @@ async function main() {
   const request = (msg) => new Promise((resolve) => { pending = resolve; worker.postMessage(msg); });
 
   setStatus('loading WASM + vocabulary...');
-  const ready = await request({ type: 'init', vocabUrl: '/vocab/ORBvoc.bin', settingsUrl: `/settings/${settingsFile}`,
+  const ready = await request({ type: 'init', vocabUrl: '/vocab/ORBvoc.bin', settingsUrl,
                                 clahe: manifest.clahe, seed });
   log(`init: ${ready.ms.toFixed(0)} ms (vocabulary ${(ready.vocabBytes / 1e6).toFixed(1)} MB), ` +
       `wasm heap ${(ready.heap / 1048576).toFixed(0)} MiB, seed ${seed}, realtime ${realtime}`);
@@ -102,6 +105,7 @@ async function main() {
   await upload(`${base}_live.txt`, live.join('\n') + '\n');
   await upload(`${base}_final.txt`, euRocToTum(fin.frames, manifest.tBase));
   await upload(`${base}_timing.csv`, timing.join('\n') + '\n');
+  for (const [name, text] of Object.entries(fin.stats || {})) await upload(`${base}_${name}`, text);  // REGISTER_TIMES builds
   const ms = timing.slice(1).map((l) => Number(l.split(',')[3])).sort((a, b) => a - b);
   const med = ms[Math.floor(ms.length / 2)];
   // Two different speeds: TrackMonocular time inside the worker, and end-to-end throughput of this page

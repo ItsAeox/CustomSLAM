@@ -62,8 +62,12 @@ self.onmessage = async (e) => {
                     trackMs: slam.lastTrackMs(), decodeMs, heap: M.HEAPU8.length });
     } else if (msg.type === 'finish') {
       slam.finishAndSave('/f.txt', '/kf.txt');
+      const stats = {};
+      for (const f of ['TrackingTimeStats.txt', 'LocalMapTimeStats.txt', 'LBA_Stats.txt', 'ExecMean.txt']) {
+        try { stats[f] = M.FS.readFile('/' + f, { encoding: 'utf8' }); } catch { /* not a profiling build */ }
+      }
       postMessage({ type: 'finished', frames: M.FS.readFile('/f.txt', { encoding: 'utf8' }),
-                    keyframes: M.FS.readFile('/kf.txt', { encoding: 'utf8' }) });
+                    keyframes: M.FS.readFile('/kf.txt', { encoding: 'utf8' }), stats });
     }
   } catch (err) {
     postMessage({ type: 'error', text: String(err && err.stack || err) });

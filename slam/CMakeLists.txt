@@ -47,6 +47,13 @@ find_package(OpenCV REQUIRED COMPONENTS core imgproc features2d calib3d imgcodec
 message(STATUS "OpenCV ${OpenCV_VERSION} from ${OpenCV_DIR}")
 find_package(Threads REQUIRED)
 
+# Profiling build: ORB-SLAM3's own per-stage timers (REGISTER_TIMES). At Shutdown it writes TrackingTimeStats.txt,
+# LocalMapTimeStats.txt, LBA_Stats.txt and ExecMean.txt to the working directory. Keep accuracy runs un-instrumented.
+option(WEB_PROFILE "Build with ORB-SLAM3 REGISTER_TIMES per-stage timers" OFF)
+if (WEB_PROFILE)
+  add_compile_definitions(REGISTER_TIMES)
+endif()
+
 add_compile_definitions(COMPILEDWITHC11 ORBSLAM3_WEB
   # Boost 1.74 derives hash_base from std::unary_function, removed in C++17 (libc++); Boost's own switch avoids it.
   BOOST_NO_CXX98_FUNCTION_BASE)
