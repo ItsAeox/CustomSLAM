@@ -179,6 +179,10 @@ public:
     // web port: block until local mapping has processed all queued keyframes (synchronous-mapping mode for
     // deterministic, thread-timing-independent evaluation). Returns false on timeout.
     bool WaitForMappingIdle(double timeoutSec = 5.0);
+    // web port: read-only access for the browser viewer (what MapDrawer/FrameDrawer draw upstream). Only read
+    // from the thread that calls Track*, between frames.
+    Tracking* WebTracker() { return mpTracker; }
+    Atlas* WebAtlas() { return mpAtlas; }
 #endif
     std::vector<MapPoint*> GetTrackedMapPoints();
     std::vector<cv::KeyPoint> GetTrackedKeyPointsUn();

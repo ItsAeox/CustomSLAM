@@ -191,7 +191,7 @@ namespace ORB_SLAM3 {
         float gyroWalk_, accWalk_;
         float imuFrequency_;
         Sophus::SE3f Tbc_;
-        bool insertKFsWhenLost_;
+        bool insertKFsWhenLost_ = true;  // ORBSLAM3_WEB: was uninitialised without IMU (UB when Tracking copies it)
 
         /*
          * RGBD stuff

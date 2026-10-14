@@ -136,7 +136,7 @@ void Sim3Solver::SetRansacParameters(double probability, int minInliers, int max
     // Set RANSAC iterations according to probability, epsilon, and max iterations
     int nIterations;
 
-    if(mRansacMinInliers==N)
+    if(mRansacMinInliers>=N)  // ORBSLAM3_WEB: was ==N; N < minInliers gave log(<0) = NaN -> int (UB). Result unchanged (clamped to 1)
         nIterations=1;
     else
         nIterations = ceil(log(1-mRansacProb)/log(1-pow(epsilon,3)));

@@ -8,17 +8,21 @@
     /vocab/...     ORBvoc.bin
     /settings/...  generated ORB-SLAM3 settings files
 - GET  /api/sequence?dataset=tumvie|euroc|tumvi&name=<seq>  -> JSON manifest (image URLs + timestamps, as orbslam3_run)
+- GET  /api/sequences                          -> all runnable sequences with settings + GT URLs (viewer)
 - /orbsettings/... ORB-SLAM3's official settings (baselines/orbslam3/settings)
+- /gt/...          ground truth, TUM format, camera frame (<root>/results/gt/<dataset>_<name>.txt)
 - POST /api/result?name=<file>                 -> saves the body to <results>/browser/<file>
 - Optional HTTPS (for phones on the LAN): --cert cert.pem --key key.pem --host 0.0.0.0
 
-Usage: python serve.py [--root H:/Research] [--port 8000] [--host 127.0.0.1] [--cert C --key K]
+Usage: python serve.py [--root H:/Research] [--port 8000] [--host localhost] [--cert C --key K]
 """
 import argparse
 import json
 import re
+import socket
 import ssl
 import sys
+import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -60,6 +64,30 @@ def asl_manifest(seq: Path, dataset: str, url_prefix: str) -> dict:
             "frames": frames, "missing": len(rows) - len(frames)}
 
 
+def list_sequences(root: Path) -> list:
+    """All sequences the player/viewer can run, with their ORB-SLAM3 settings and ground truth (if available).
+    GT files: <root>/results/gt/<dataset>_<name>.txt (TUM format, camera frame; see eval/gt_*.py)."""
+    out = []
+    ds_root = root / "datasets"
+    gt_dir = root / "results" / "gt"
+
+    def add(dataset, name, settings, clahe):
+        gt = gt_dir / f"{dataset}_{name}.txt"
+        out.append({"dataset": dataset, "name": name, "settings": settings, "clahe": clahe,
+                    "gt": f"/gt/{gt.name}" if gt.exists() else None})
+
+    for sub, settings in (("euroc", "/orbsettings/EuRoC_mono.yaml"), ("tumvi", "/orbsettings/TUM-VI_mono.yaml")):
+        for seq in sorted((ds_root / sub).glob("*")):
+            if (seq / "mav0" / "cam0" / "data.csv").exists():
+                add(sub, seq.name, settings, sub == "tumvi")
+    for seq in sorted(ds_root.glob("*")):
+        if (seq / "camera-calibration.json").exists() and (seq / "left_images").is_dir():
+            s = root / "results" / "scratch" / "settings" / f"tumvie_{seq.name}.yaml"
+            if s.exists():
+                add("tumvie", seq.name, f"/settings/{s.name}", True)
+    return out
+
+
 class Handler(SimpleHTTPRequestHandler):
     root: Path = Path(".")
     results: Path = Path(".")
@@ -75,7 +103,8 @@ class Handler(SimpleHTTPRequestHandler):
         p = unquote(urlparse(path).path)
         mounts = {"/web/": WEB_DIR, "/datasets/": self.root / "datasets", "/vocab/": self.root / "vocab",
                   "/settings/": self.root / "results" / "scratch" / "settings",
-                  "/orbsettings/": WEB_DIR.parent / "baselines" / "orbslam3" / "settings"}
+                  "/orbsettings/": WEB_DIR.parent / "baselines" / "orbslam3" / "settings",
+                  "/gt/": self.root / "results" / "gt"}
         for prefix, base in mounts.items():
             if p.startswith(prefix):
                 target = (base / p[len(prefix):]).resolve()
@@ -88,8 +117,11 @@ class Handler(SimpleHTTPRequestHandler):
         if u.path == "/":
             self.send_response(302)
             self.send_header("Location", "/web/index.html")
+            self.send_header("Content-Length", "0")
             self.end_headers()
             return
+        if u.path == "/api/sequences":
+            return self.send_json(list_sequences(self.root))
         if u.path == "/api/sequence":
             q = parse_qs(u.query)
             name = q.get("name", [""])[0]
@@ -100,14 +132,16 @@ class Handler(SimpleHTTPRequestHandler):
             if not name or base not in seq.parents or not seq.is_dir():
                 return self.send_error(404, "unknown sequence")
             manifest = (asl_manifest(seq, dataset, f"/datasets/{sub}") if sub else tumvie_manifest(seq))
-            body = json.dumps(manifest).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
+            return self.send_json(manifest)
         return super().do_GET()
+
+    def send_json(self, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_POST(self):
         u = urlparse(self.path)
@@ -121,30 +155,50 @@ class Handler(SimpleHTTPRequestHandler):
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(self.rfile.read(n))
         self.send_response(204)
+        self.send_header("Content-Length", "0")
         self.end_headers()
         print(f"saved {out}", file=sys.stderr)
+
+
+class V6Server(ThreadingHTTPServer):
+    address_family = socket.AF_INET6
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=str(WEB_DIR.parents[1]), help="research root (contains datasets/, vocab/, results/)")
     ap.add_argument("--port", type=int, default=8000)
-    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--host", default="localhost",
+                    help="'localhost' (default) listens on both 127.0.0.1 and ::1; anything else is bound as given")
     ap.add_argument("--cert")
     ap.add_argument("--key")
     a = ap.parse_args()
     Handler.root = Path(a.root)
     Handler.results = Path(a.root) / "results"
     Handler.extensions_map.update({".wasm": "application/wasm", ".js": "text/javascript", ".mjs": "text/javascript"})
-    httpd = ThreadingHTTPServer((a.host, a.port), Handler)
+    # Browsers resolve "localhost" to ::1 first. With an IPv4-only server, Windows takes 0.1-0.3 s to refuse every
+    # new IPv6 connection before falling back to IPv4, which capped the dataset player at ~5 fps. Hence both loopbacks,
+    # plus HTTP/1.1 keep-alive so connections are reused.
+    Handler.protocol_version = "HTTP/1.1"
+    if a.host == "localhost":
+        servers = [ThreadingHTTPServer(("127.0.0.1", a.port), Handler)]
+        try:
+            servers.append(V6Server(("::1", a.port), Handler))
+        except OSError as e:
+            print(f"IPv6 loopback not available ({e}); IPv4 only", file=sys.stderr)
+    else:
+        servers = [(V6Server if ":" in a.host else ThreadingHTTPServer)((a.host, a.port), Handler)]
     scheme = "http"
     if a.cert and a.key:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(a.cert, a.key)
-        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+        for httpd in servers:
+            httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
         scheme = "https"
     print(f"serving {scheme}://{a.host}:{a.port}/  (root {a.root})", file=sys.stderr)
-    httpd.serve_forever()
+    for httpd in servers[1:]:
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    servers[0].serve_forever()
 
 
 if __name__ == "__main__":
