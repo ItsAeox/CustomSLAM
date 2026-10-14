@@ -168,6 +168,26 @@ step_opencv_wasm_mt() {
   cmake --install "$BUILD_ROOT/opencv-wasm-mt"
 }
 
+# Diagnostic variant: threaded OpenCV-wasm WITHOUT OpenCV's SIMD intrinsics / optimised kernels
+# (CV_ENABLE_INTRINSICS=OFF, CV_DISABLE_OPTIMIZATION=ON), to bisect native-vs-wasm differences.
+OPENCV_WASM_MT_SCALAR_PREFIX="$OPT_ROOT/opencv-$OPENCV_TAG-wasm-mt-scalar"
+step_opencv_wasm_mt_scalar() {
+  log "OpenCV $OPENCV_TAG wasm (static, pthreads, NO intrinsics) -> $OPENCV_WASM_MT_SCALAR_PREFIX"
+  clone_pinned https://github.com/opencv/opencv.git "$TP/opencv" "$OPENCV_TAG"
+  # shellcheck disable=SC1091
+  source "$EMSDK_DIR/emsdk_env.sh" >/dev/null
+  emcmake cmake -S "$TP/opencv" -B "$BUILD_ROOT/opencv-wasm-mt-scalar" -G Ninja "${OPENCV_COMMON_FLAGS[@]}" \
+        -DBUILD_LIST=core,imgproc,video,features2d,calib3d,flann,imgcodecs \
+        -DWITH_JPEG=ON -DBUILD_JPEG=ON -DWITH_PNG=ON -DBUILD_PNG=ON \
+        -DBUILD_opencv_highgui=OFF -DBUILD_opencv_videoio=OFF \
+        -DCPU_BASELINE='' -DCPU_DISPATCH='' -DCV_ENABLE_INTRINSICS=OFF -DCV_DISABLE_OPTIMIZATION=ON \
+        -DWITH_PTHREADS_PF=OFF -DENABLE_PIC=FALSE \
+        -DCMAKE_C_FLAGS="-pthread" -DCMAKE_CXX_FLAGS="-pthread" \
+        -DCMAKE_INSTALL_PREFIX="$OPENCV_WASM_MT_SCALAR_PREFIX"
+  cmake --build "$BUILD_ROOT/opencv-wasm-mt-scalar" -j "$JOBS"
+  cmake --install "$BUILD_ROOT/opencv-wasm-mt-scalar"
+}
+
 # Boost is only needed header-only by the ORB-SLAM3 web port (serialization templates are declared, never instantiated).
 # Expose the system Boost headers in their own directory so the emscripten build doesn't see host /usr/include.
 step_boost_headers() {
