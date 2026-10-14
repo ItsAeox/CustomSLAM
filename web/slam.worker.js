@@ -108,6 +108,9 @@ self.onmessage = async (e) => {
         if (out.viz.mps) transfer.push(out.viz.mps.buffer, out.viz.kfs.buffer, out.viz.edges.buffer);
       }
       postMessage(out, transfer);
+    } else if (msg.type === 'reset') {  // ORB-SLAM3 ResetActiveMap (applied on the next frame)
+      slam.reset();
+      postMessage({ type: 'reset' });
     } else if (msg.type === 'finish') {
       slam.finishAndSave('/f.txt', '/kf.txt');
       const stats = {};
