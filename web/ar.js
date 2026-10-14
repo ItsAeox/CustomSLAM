@@ -2,7 +2,7 @@
 // the local map points (constrained to gravity from DeviceMotion when available); tapping places a cactus on it.
 // The background shows the frame the pose was computed for, so the overlay is in sync with the image (no lag).
 //
-// URL parameters: fov=<horizontal FOV in degrees> (default 65), res=640x480, features=1000,
+// URL parameters: fov=<horizontal FOV in degrees> (default 69: Pixel 9 main camera, ~25 mm equivalent at 4:3), res=640x480, features=1000,
 //                 seq=<dataset>/<name> (test mode: plays a dataset sequence in real time instead of the camera)
 
 import * as THREE from 'three';
