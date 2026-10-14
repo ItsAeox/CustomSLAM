@@ -138,7 +138,8 @@ struct CountingSolver : Solver {
 
 // solver: "eigen" (LinearSolverEigen, as ORB-SLAM3's LocalBundleAdjustment), "eigen-block" (with block AMD ordering),
 // "dense" (LinearSolverDense)
-static void testBA(GeometricCamera* cam, const std::string& solver) {
+static void testBA(GeometricCamera* cam, const std::string& solver, const char* camName = "pinhole") {
+  const std::string label = solver + "," + camName;
   rng.seed(200);
   const int nKF = 6, nPts = 250;
   std::vector<g2o::SE3Quat> Tcw(nKF);
@@ -190,17 +191,17 @@ static void testBA(GeometricCamera* cam, const std::string& solver) {
   }
   opt.initializeOptimization();
   opt.computeActiveErrors();
-  std::printf("T3[%s] initial chi2=%.12f edges=%zu\n", solver.c_str(), opt.activeRobustChi2(), opt.edges().size());
+  std::printf("T3[%s] initial chi2=%.12f edges=%zu\n", label.c_str(), opt.activeRobustChi2(), opt.edges().size());
   opt.setVerbose(gVerbose);
   opt.optimize(10);
   for (int k = 2; k < nKF; ++k) {
-    char tag[64]; std::snprintf(tag, sizeof tag, "T3[%s] BA KF%d", solver.c_str(), k);
+    char tag[64]; std::snprintf(tag, sizeof tag, "T3[%s] BA KF%d", label.c_str(), k);
     printSE3(tag, static_cast<g2o::VertexSE3Expmap*>(opt.vertex(k))->estimate());
   }
   double s = 0;
   for (int i = 0; i < nPts; ++i) s += static_cast<g2o::VertexSBAPointXYZ*>(opt.vertex(nKF + i))->estimate().sum();
   const int calls = lsE ? lsE->calls : lsD->calls, fails = lsE ? lsE->fails : lsD->fails;
-  std::printf("T3[%s] BA pointsum=%.12f chi2=%.12f linear solves=%d failed=%d\n", solver.c_str(), s,
+  std::printf("T3[%s] BA pointsum=%.12f chi2=%.12f linear solves=%d failed=%d\n", label.c_str(), s,
               opt.activeRobustChi2(), calls, fails);
 }
 
@@ -209,7 +210,8 @@ static void testCameras(GeometricCamera* pin, GeometricCamera* kb) {
   double sp = 0, su = 0, sj = 0, kp = 0, ku = 0, kj = 0;
   for (int y = -10; y <= 10; ++y)
     for (int x = -10; x <= 10; ++x) {
-      Eigen::Vector3d X(x * 0.07, y * 0.05, 1.0 + 0.01 * (x + y + 20));
+      // half-step offset: KB8 projectJac is NaN exactly on the optical axis (x = y = 0), which would hide differences
+      Eigen::Vector3d X((x + 0.5) * 0.07, (y + 0.5) * 0.05, 1.0 + 0.01 * (x + y + 20));
       Eigen::Vector2d a = pin->project(X), b = kb->project(X);
       sp += a.sum(); kp += b.sum();
       sj += pin->projectJac(X).sum(); kj += kb->projectJac(X).sum();
@@ -231,6 +233,53 @@ static void testCameras(GeometricCamera* pin, GeometricCamera* kb) {
 }
 
 // ---------------------------------------------------------------- T6: Sophus
+// ---------------------------------------------------------------- T7: KB8 fisheye path (TUM-VI)
+// cv::fisheye::undistortPoints as in KannalaBrandt8::ReconstructWithTwoViews, the KB8 unprojection, and the full
+// monocular two-view initialisation (TwoViewReconstruction with fisheye-undistorted keypoints).
+static void testFisheye(KannalaBrandt8* kb) {
+  rng.seed(300);
+  std::vector<cv::Point2f> in, out;
+  for (int y = 8; y < 512; y += 31) for (int x = 8; x < 512; x += 29) in.emplace_back((float)x + 0.25f, (float)y + 0.75f);
+  cv::Mat D = (cv::Mat_<float>(4, 1) << 0.003482389402f, 0.000715034845f, -0.002053236141f, 0.000202936736f);
+  cv::Mat K = kb->toK();
+  cv::fisheye::undistortPoints(in, out, K, D, cv::Mat::eye(3, 3, CV_32F), K);
+  double s = 0; for (auto& p : out) s += p.x * 1.0 + p.y * 3.0;
+  double su = 0; for (auto& p : in) su += kb->unprojectEig(p).cast<double>().dot(Eigen::Vector3d(1.0, 3.0, 5.0));
+  std::printf("T7 fisheye::undistortPoints sum=%.10f first=(%.8f,%.8f) | KB8 unproject sum=%.10f\n", s, out[0].x,
+              out[0].y, su);
+
+  // two views of a random scene, ~0.3 m baseline, projected with KB8, 0.5 px noise
+  const g2o::SE3Quat T21 = g2o::SE3Quat::exp((Eigen::Matrix<double, 6, 1>() << 0.03, -0.08, 0.02, -0.30, 0.02, 0.05).finished());
+  std::vector<cv::KeyPoint> k1, k2;
+  std::vector<int> matches;
+  for (int i = 0; i < 400; ++i) {
+    const Eigen::Vector3d X = uni3(5, 5, 1.5, 4);
+    const Eigen::Vector3d X2 = T21.map(X);
+    if (X2[2] < 0.3) continue;
+    const Eigen::Vector2d u1 = kb->project(X) + gauss2() * 0.5, u2 = kb->project(X2) + gauss2() * 0.5;
+    if (u1[0] < 0 || u1[1] < 0 || u1[0] > 511 || u1[1] > 511 || u2[0] < 0 || u2[1] < 0 || u2[0] > 511 || u2[1] > 511) continue;
+    matches.push_back((int)k2.size());
+    k1.emplace_back((float)u1[0], (float)u1[1], 7.f, -1.f, 0.f, 0);
+    k2.emplace_back((float)u2[0], (float)u2[1], 7.f, -1.f, 0.f, 0);
+  }
+  for (int i = 0; i < 40; ++i) {  // 10% outlier matches
+    const double a = uni() * 511, b = uni() * 511, c = uni() * 511, d = uni() * 511;
+    matches.push_back((int)k2.size());
+    k1.emplace_back((float)a, (float)b, 7.f, -1.f, 0.f, 0);
+    k2.emplace_back((float)c, (float)d, 7.f, -1.f, 0.f, 0);
+  }
+  Sophus::SE3f T;
+  std::vector<cv::Point3f> P;
+  std::vector<bool> tri;
+  const bool ok = kb->ReconstructWithTwoViews(k1, k2, matches, T, P, tri);
+  int ntri = 0; double ps = 0;
+  for (size_t i = 0; i < tri.size(); ++i) if (tri[i]) { ++ntri; ps += P[i].x + 2.0 * P[i].y + 3.0 * P[i].z; }
+  const Eigen::Quaternionf q = T.unit_quaternion();
+  const Eigen::Vector3f t = T.translation();
+  std::printf("T7 TwoView[kb8] ok=%d matches=%zu triangulated=%d psum=%.6f q=[%.9f %.9f %.9f %.9f] t=[%.9f %.9f %.9f]\n",
+              (int)ok, matches.size(), ntri, ps, q.x(), q.y(), q.z(), q.w(), t.x(), t.y(), t.z());
+}
+
 static void testSophus() {
   Sophus::SE3f T = Sophus::SE3f::exp((Sophus::SE3f::Tangent() << 0.3f, -0.2f, 0.1f, 0.4f, 0.5f, -0.6f).finished());
   Sophus::SE3f U = T * T.inverse() * T;
@@ -247,7 +296,9 @@ int main(int argc, char** argv) {
   testPoseOptimization(&pin, "pinhole", 752, 480);
   testPoseOptimization(&kb, "kb8", 512, 512);
   for (const char* solver : {"eigen", "eigen-block", "dense"}) testBA(&pin, solver);
+  testBA(&kb, "eigen", "kb8");  // EdgeSE3ProjectXYZ with KB8::projectJac (TUM-VI path)
   testCameras(&pin, &kb);
+  testFisheye(&kb);
   testSophus();
   return 0;
 }
