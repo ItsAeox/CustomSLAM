@@ -11,14 +11,26 @@
 #include "Random.h"
 #include "Timestamp.h"
 #include <cstdlib>
+#include <mutex>
+#include <random>
 using namespace std;
+
+// web port: rand()/srand() replaced by std::mt19937, whose output sequence is fixed by the C++ standard.
+// rand() differs between C libraries (glibc vs. musl/emscripten), which made the native and WebAssembly
+// builds draw different RANSAC samples from the same seed. The mutex keeps it thread-safe like rand().
+namespace {
+std::mt19937& engine() { static std::mt19937 e(1u); return e; }  // srand() default seed is 1
+std::mutex& engineMutex() { static std::mutex m; return m; }
+uint32_t next32() { std::lock_guard<std::mutex> lock(engineMutex()); return engine()(); }
+void reseed(unsigned s) { std::lock_guard<std::mutex> lock(engineMutex()); engine().seed(s); }
+}
 
 bool DUtils::Random::m_already_seeded = false;
 
 void DUtils::Random::SeedRand(){
 	Timestamp time;
 	time.setToCurrentTime();
-	srand((unsigned)time.getFloatTime()); 
+	reseed((unsigned)time.getFloatTime());  // web port: was srand(...)
 }
 
 void DUtils::Random::SeedRandOnce()
@@ -32,7 +44,7 @@ void DUtils::Random::SeedRandOnce()
 
 void DUtils::Random::SeedRand(int seed)
 {
-	srand(seed); 
+	reseed((unsigned)seed);  // web port: was srand(seed)
 }
 
 void DUtils::Random::SeedRandOnce(int seed)
@@ -46,7 +58,11 @@ void DUtils::Random::SeedRandOnce(int seed)
 
 int DUtils::Random::RandomInt(int min, int max){
 	int d = max - min + 1;
-	return int(((double)rand()/((double)RAND_MAX + 1.0)) * d) + min;
+	return int(((double)next32() / 4294967296.0) * d) + min;  // web port: was rand()/(RAND_MAX+1.0)
+}
+
+double DUtils::Random::RandomUnit(){
+	return (double)next32() / 4294967295.0;  // [0..1], like rand()/RAND_MAX
 }
 
 // ---------------------------------------------------------------------------

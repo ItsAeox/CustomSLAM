@@ -10,3 +10,4 @@ build_opencv_wasm/
 *.pem
 __pycache__/
 *.pyc
+web/build/

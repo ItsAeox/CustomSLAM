@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SLAM Dataset Player</title>
+  <style>
+    :root { --bg: #0f1115; --fg: #e6e6e6; --muted: #9aa0a6; --accent: #5bd18b; }
+    body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, sans-serif; }
+    h1 { font-size: 18px; margin: 0 0 8px; }
+    #status { color: var(--accent); margin-bottom: 8px; }
+    #log { white-space: pre-wrap; font: 12px ui-monospace, monospace; color: var(--muted);
+           height: 70vh; overflow: auto; border: 1px solid #2a2f3a; padding: 8px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <h1>ORB-SLAM3 (WebAssembly) — dataset player</h1>
+  <div id="status">starting…</div>
+  <div id="log"></div>
+  <script type="module" src="./player.js"></script>
+</body>
+</html>

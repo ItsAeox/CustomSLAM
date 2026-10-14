@@ -18,6 +18,9 @@
 #define __D_T_TEMPLATED_VOCABULARY__
 
 #include <cassert>
+#include <cstring>  // web port: memcpy
+#include <cstdint>  // web port
+#include <iostream>  // web port
 
 #include <vector>
 #include <numeric>
@@ -239,6 +242,14 @@ public:
    * @param filename
    */
   bool loadFromTextFile(const std::string &filename);
+
+  /**
+   * web port: compact binary vocabulary (exact round-trip of the in-memory tree), ~3x smaller and
+   * much faster to load than the text format. Format: "DBOW2BIN" | int32 version=1 | int32 k, L, scoring,
+   * weighting | uint32 nNodes (incl. root) | nNodes-1 x { int32 parent, uint8 isLeaf, uint8 desc[32], float64 weight }.
+   */
+  bool loadFromBinaryFile(const std::string &filename);
+  bool saveToBinaryFile(const std::string &filename) const;
 
   /**
    * Saves the vocabulary into a text file
@@ -1334,6 +1345,93 @@ int TemplatedVocabulary<TDescriptor,F>::stopWords(double minWeight)
 
 // --------------------------------------------------------------------------
 
+// web port: binary vocabulary I/O (see declaration). Node and word ids are reconstructed exactly as in
+// loadFromTextFile: nodes in file order, words numbered in order of appearance.
+template<class TDescriptor, class F>
+bool TemplatedVocabulary<TDescriptor,F>::saveToBinaryFile(const std::string &filename) const
+{
+    std::ofstream f(filename.c_str(), std::ios::binary);
+    if(!f) return false;
+    const char magic[8] = {'D','B','O','W','2','B','I','N'};
+    const int32_t hdr[5] = {1, (int32_t)m_k, (int32_t)m_L, (int32_t)m_scoring, (int32_t)m_weighting};
+    const uint32_t n = (uint32_t)m_nodes.size();
+    f.write(magic, 8);
+    f.write(reinterpret_cast<const char*>(hdr), sizeof(hdr));
+    f.write(reinterpret_cast<const char*>(&n), sizeof(n));
+    for(size_t i = 1; i < m_nodes.size(); ++i)
+    {
+        const Node &nd = m_nodes[i];
+        const int32_t parent = (int32_t)nd.parent;
+        const uint8_t isLeaf = (m_words.size() > nd.word_id && m_words[nd.word_id] == &nd) ? 1 : 0;
+        if(nd.descriptor.rows != 1 || nd.descriptor.cols != F::L || nd.descriptor.type() != CV_8U) return false;
+        f.write(reinterpret_cast<const char*>(&parent), sizeof(parent));
+        f.write(reinterpret_cast<const char*>(&isLeaf), 1);
+        f.write(reinterpret_cast<const char*>(nd.descriptor.ptr()), F::L);
+        const double w = nd.weight;
+        f.write(reinterpret_cast<const char*>(&w), sizeof(w));
+    }
+    return (bool)f;
+}
+
+template<class TDescriptor, class F>
+bool TemplatedVocabulary<TDescriptor,F>::loadFromBinaryFile(const std::string &filename)
+{
+    std::ifstream f(filename.c_str(), std::ios::binary);
+    if(!f) return false;
+    char magic[8];
+    int32_t hdr[5];
+    uint32_t n = 0;
+    f.read(magic, 8);
+    f.read(reinterpret_cast<char*>(hdr), sizeof(hdr));
+    f.read(reinterpret_cast<char*>(&n), sizeof(n));
+    if(!f || std::string(magic, 8) != "DBOW2BIN" || hdr[0] != 1)
+    {
+        std::cerr << "Vocabulary loading failure: not a DBOW2BIN v1 file" << endl;
+        return false;
+    }
+    m_k = hdr[1]; m_L = hdr[2];
+    m_scoring = (ScoringType)hdr[3]; m_weighting = (WeightingType)hdr[4];
+    createScoringObject();
+
+    m_words.clear();
+    m_nodes.clear();
+    m_nodes.resize(n);
+    m_nodes[0].id = 0;
+    size_t nWords = 0;
+    std::vector<char> rec(4 + 1 + F::L + 8);
+    std::vector<uint8_t> leaf(n, 0);
+    for(uint32_t nid = 1; nid < n; ++nid)
+    {
+        f.read(rec.data(), rec.size());
+        if(!f) return false;
+        int32_t parent; double w;
+        memcpy(&parent, rec.data(), 4);
+        memcpy(&w, rec.data() + 5 + F::L, 8);
+        Node &nd = m_nodes[nid];
+        nd.id = nid;
+        nd.parent = parent;
+        m_nodes[parent].children.push_back(nid);
+        nd.descriptor.create(1, F::L, CV_8U);
+        memcpy(nd.descriptor.ptr(), rec.data() + 5, F::L);
+        nd.weight = w;
+        leaf[nid] = (uint8_t)rec[4];
+        if(leaf[nid]) nWords++;
+    }
+    m_words.resize(nWords);
+    size_t wid = 0;
+    for(uint32_t nid = 1; nid < n; ++nid)
+    {
+        if(leaf[nid])
+        {
+            m_nodes[nid].word_id = wid;
+            m_words[wid++] = &m_nodes[nid];
+        }
+    }
+    return true;
+}
+
+// --------------------------------------------------------------------------
+
 template<class TDescriptor, class F>
 bool TemplatedVocabulary<TDescriptor,F>::loadFromTextFile(const std::string &filename)
 {
@@ -1379,6 +1477,10 @@ bool TemplatedVocabulary<TDescriptor,F>::loadFromTextFile(const std::string &fil
     {
         string snode;
         getline(f,snode);
+        // web port (bug fix): the trailing newline of ORBvoc.txt produced one extra root child whose
+        // descriptor was uninitialised memory (FORB::fromString leaves bytes unset on parse failure),
+        // making BoW lookups platform-dependent. Skip empty lines.
+        if(snode.empty()) continue;
         stringstream ssnode;
         ssnode << snode;
 

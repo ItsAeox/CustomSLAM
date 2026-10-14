@@ -86,3 +86,29 @@ if (BUILD_WASM)
     -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4GB -sINITIAL_MEMORY=512MB
     -sSTACK_SIZE=8MB -sDEFAULT_PTHREAD_STACK_SIZE=8MB -sEXIT_RUNTIME=1)
 endif()
+
+# ---- diagnostics ----
+add_executable(orb_dump ${PORT}/tests/orb_dump.cc)
+target_link_libraries(orb_dump PRIVATE orbslam3_web)
+if (BUILD_WASM)
+  target_link_options(orb_dump PRIVATE -sENVIRONMENT=node,worker -sNODERAWFS=1 -sPROXY_TO_PTHREAD=1
+    -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=8MB -sEXIT_RUNTIME=1)
+endif()
+
+# ---- tools (native only) ----
+if (NOT BUILD_WASM)
+  add_executable(vocab_convert ${PORT}/tools/vocab_convert.cc)
+  target_link_libraries(vocab_convert PRIVATE orbslam3_web)
+endif()
+
+# ---- browser module (WebAssembly only): Embind API, loaded inside a Web Worker ----
+if (BUILD_WASM)
+  add_executable(orbslam3_web_js ${PORT}/web/bindings.cc)
+  target_link_libraries(orbslam3_web_js PRIVATE orbslam3_web)
+  set_target_properties(orbslam3_web_js PROPERTIES OUTPUT_NAME "orbslam3")
+  target_link_options(orbslam3_web_js PRIVATE
+    --bind -sENVIRONMENT=web,worker -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createOrbSlam3
+    -sPTHREAD_POOL_SIZE=6 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=256MB -sMAXIMUM_MEMORY=2GB
+    -sSTACK_SIZE=4MB -sDEFAULT_PTHREAD_STACK_SIZE=4MB -sFORCE_FILESYSTEM=1
+    "-sEXPORTED_RUNTIME_METHODS=['FS','HEAPU8']")
+endif()

@@ -54,7 +54,8 @@ public:
 	 */
 	template <class T>
 	static T RandomValue(){
-		return (T)rand()/(T)RAND_MAX;
+		// web port: was (T)rand()/(T)RAND_MAX; platform-independent generator (see Random.cpp)
+		return (T)RandomUnit();
 	}
 
 	/**
@@ -75,6 +76,11 @@ public:
 	 * @return random int in [min..max]
 	 */
 	static int RandomInt(int min, int max);
+
+	/**
+	 * Returns a random double in [0..1] (web port: platform-independent replacement for rand()/RAND_MAX)
+	 */
+	static double RandomUnit();
 	
 	/** 
 	 * Returns a random number from a gaussian distribution

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Web SLAM</title>
+  <style>
+    :root { --bg: #0f1115; --fg: #e6e6e6; --muted: #9aa0a6; --accent: #5bd18b; }
+    body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+    a { color: var(--accent); }
+    code { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <h1>Markerless SLAM in the browser</h1>
+  <p>ORB-SLAM3 (monocular) compiled to WebAssembly with threads.</p>
+  <ul>
+    <li><a href="player.html?seq=mocap-desk2">Dataset player</a> — runs a dataset sequence and uploads trajectories for evaluation
+      <br><code>player.html?seq=&lt;sequence&gt;&amp;settings=&lt;file.yaml&gt;&amp;tag=&lt;run&gt;</code></li>
+    <li>AR demo (camera, plane, cactus) — coming next</li>
+  </ul>
+  <p id="iso"></p>
+  <script>
+    document.getElementById('iso').textContent = crossOriginIsolated
+      ? `Cross-origin isolated: yes (threads available, ${navigator.hardwareConcurrency} cores)`
+      : 'Cross-origin isolated: NO — serve with web/serve.py';
+  </script>
+</body>
+</html>
