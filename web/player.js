@@ -11,6 +11,9 @@ const seqName = params.get('seq') || 'mocap-desk2';
 const settingsFile = params.get('settings') || `tumvie_${seqName}.yaml`;
 const tag = params.get('tag') || 'run1';
 const maxFrames = Number(params.get('max') || 0);
+const seed = params.has('seed') ? Number(params.get('seed')) : -1;  // -1: ORB-SLAM3 default
+// realtime=1: pace frames at the dataset rate like ORB-SLAM3's examples (sleep for the rest of each frame period).
+const realtime = params.get('realtime') === '1';
 const statusEl = document.getElementById('status');
 const logEl = document.getElementById('log');
 
@@ -68,16 +71,24 @@ async function main() {
 
   setStatus('loading WASM + vocabulary...');
   const ready = await request({ type: 'init', vocabUrl: '/vocab/ORBvoc.bin', settingsUrl: `/settings/${settingsFile}`,
-                                clahe: manifest.clahe });
-  log(`init: ${ready.ms.toFixed(0)} ms (vocabulary ${(ready.vocabBytes / 1e6).toFixed(1)} MB)`);
+                                clahe: manifest.clahe, seed });
+  log(`init: ${ready.ms.toFixed(0)} ms (vocabulary ${(ready.vocabBytes / 1e6).toFixed(1)} MB), ` +
+      `wasm heap ${(ready.heap / 1048576).toFixed(0)} MiB, seed ${seed}, realtime ${realtime}`);
+  let peakHeap = ready.heap;
 
   const live = ['# t tx ty tz qx qy qz qw  (live TrackMonocular poses, Twc)'];
   const timing = ['idx,t,state,track_ms,decode_ms'];
   const t0 = performance.now();
   for (let i = 0; i < frames.length; i++) {
     const f = frames[i];
+    const tf = performance.now();
     const r = await request({ type: 'frame', idx: f.idx, t: f.t, url: f.url });
+    if (realtime && i + 1 < frames.length) {
+      const remain = (frames[i + 1].t - f.t) * 1000 - (performance.now() - tf);
+      if (remain > 0) await new Promise((res) => setTimeout(res, remain));
+    }
     timing.push(`${f.idx},${f.t.toFixed(6)},${r.state},${r.trackMs.toFixed(3)},${r.decodeMs.toFixed(3)}`);
+    peakHeap = Math.max(peakHeap, r.heap);
     if (r.state === 2 || r.state === 5) live.push(tumLine(f.t + manifest.tBase, r.twc));
     if (i % 20 === 0 || i === frames.length - 1) {
       setStatus(`frame ${i + 1}/${frames.length}  state: ${STATE[r.state]}  track ${r.trackMs.toFixed(1)} ms`);
@@ -93,8 +104,11 @@ async function main() {
   await upload(`${base}_timing.csv`, timing.join('\n') + '\n');
   const ms = timing.slice(1).map((l) => Number(l.split(',')[3])).sort((a, b) => a - b);
   const med = ms[Math.floor(ms.length / 2)];
-  const msg = `done: ${frames.length} frames in ${wallS.toFixed(1)} s, median track ${med.toFixed(1)} ms ` +
-              `(${(1000 / med).toFixed(1)} fps), uploaded ${base}_{live,final,timing}`;
+  // Two different speeds: TrackMonocular time inside the worker, and end-to-end throughput of this page
+  // (fetch + decode + messaging + tracking, frames processed sequentially without dropping).
+  const msg = `done: ${frames.length} frames in ${wallS.toFixed(1)} s | end-to-end ${(frames.length / wallS).toFixed(1)} fps | ` +
+              `median TrackMonocular ${med.toFixed(1)} ms (${(1000 / med).toFixed(1)} fps) | ` +
+              `peak wasm heap ${(peakHeap / 1048576).toFixed(0)} MiB | uploaded ${base}_{live,final,timing}`;
   log(msg);
   setStatus(msg);
   document.title = 'DONE ' + seqName;

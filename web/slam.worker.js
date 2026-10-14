@@ -1,7 +1,7 @@
 // Web Worker hosting the ORB-SLAM3 WebAssembly module (web/build/orbslam3.js).
 // ORB-SLAM3's own threads (local mapping, loop closing) become nested workers via emscripten pthreads.
 //
-// Messages in:   {type:'init', vocabUrl, settingsUrl, clahe}
+// Messages in:   {type:'init', vocabUrl, settingsUrl, clahe, seed}
 //                {type:'frame', idx, t, url}            (worker fetches + decodes the image)
 //                {type:'finish'}
 // Messages out:  {type:'log', text} {type:'ready', ms} {type:'pose', idx, t, state, twc, trackMs, decodeMs}
@@ -47,8 +47,9 @@ self.onmessage = async (e) => {
       M.FS.writeFile('/ORBvoc.bin', new Uint8Array(voc));
       M.FS.writeFile('/settings.yaml', settings);
       slam = new M.WebSlam();
-      slam.init('/ORBvoc.bin', '/settings.yaml', !!msg.clahe);
-      postMessage({ type: 'ready', ms: performance.now() - t0, vocabBytes: voc.byteLength });
+      slam.init('/ORBvoc.bin', '/settings.yaml', !!msg.clahe, msg.seed ?? -1);
+      M.FS.unlink('/ORBvoc.bin');  // the vocabulary is in the tree now; free the 48 MB file copy
+      postMessage({ type: 'ready', ms: performance.now() - t0, vocabBytes: voc.byteLength, heap: M.HEAPU8.length });
     } else if (msg.type === 'frame') {
       const td = performance.now();
       const img = await decode(msg.url);
@@ -58,7 +59,7 @@ self.onmessage = async (e) => {
       const decodeMs = performance.now() - td;
       const state = slam.track(msg.t);
       postMessage({ type: 'pose', idx: msg.idx, t: msg.t, state, twc: Array.from(slam.poseTwc()),
-                    trackMs: slam.lastTrackMs(), decodeMs });
+                    trackMs: slam.lastTrackMs(), decodeMs, heap: M.HEAPU8.length });
     } else if (msg.type === 'finish') {
       slam.finishAndSave('/f.txt', '/kf.txt');
       postMessage({ type: 'finished', frames: M.FS.readFile('/f.txt', { encoding: 'utf8' }),

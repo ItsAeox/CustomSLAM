@@ -174,6 +174,12 @@ public:
     // Information from most recent processed frame
     // You can call this right after TrackMonocular (or stereo or RGBD)
     int GetTrackingState();
+
+#ifdef ORBSLAM3_WEB
+    // web port: block until local mapping has processed all queued keyframes (synchronous-mapping mode for
+    // deterministic, thread-timing-independent evaluation). Returns false on timeout.
+    bool WaitForMappingIdle(double timeoutSec = 5.0);
+#endif
     std::vector<MapPoint*> GetTrackedMapPoints();
     std::vector<cv::KeyPoint> GetTrackedKeyPointsUn();
 

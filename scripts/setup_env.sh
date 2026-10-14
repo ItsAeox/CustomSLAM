@@ -176,6 +176,23 @@ step_boost_headers() {
   $SUDO ln -sfn /usr/include/boost "$OPT_ROOT/boost-headers/boost"
 }
 
+# Diagnostic variant: native OpenCV built with clang + libc++ (the C++ standard library used by emscripten),
+# to separate "libc++ vs libstdc++ behaviour" from "WebAssembly-specific" differences.
+OPENCV_NATIVE_LIBCXX_PREFIX="$OPT_ROOT/opencv-$OPENCV_TAG-native-libcxx"
+step_opencv_native_libcxx() {
+  log "OpenCV $OPENCV_TAG native, clang-14 + libc++ (static) -> $OPENCV_NATIVE_LIBCXX_PREFIX"
+  $SUDO apt-get install -y -qq clang-14 libc++-14-dev libc++abi-14-dev
+  clone_pinned https://github.com/opencv/opencv.git "$TP/opencv" "$OPENCV_TAG"
+  cmake -S "$TP/opencv" -B "$BUILD_ROOT/opencv-native-libcxx" -G Ninja "${OPENCV_COMMON_FLAGS[@]}" \
+        -DCMAKE_C_COMPILER=clang-14 -DCMAKE_CXX_COMPILER=clang++-14 \
+        -DCMAKE_CXX_FLAGS="-stdlib=libc++" -DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++ -lc++abi" \
+        -DBUILD_LIST=core,imgproc,video,features2d,calib3d,flann,imgcodecs \
+        -DWITH_JPEG=ON -DBUILD_JPEG=ON -DWITH_PNG=ON -DBUILD_PNG=ON \
+        -DCMAKE_INSTALL_PREFIX="$OPENCV_NATIVE_LIBCXX_PREFIX"
+  cmake --build "$BUILD_ROOT/opencv-native-libcxx" -j "$JOBS"
+  cmake --install "$BUILD_ROOT/opencv-native-libcxx"
+}
+
 ALL_STEPS=(apt pangolin orbslam3 python emsdk opencv_native opencv_wasm opencv_wasm_mt boost_headers)
 STEPS=("$@"); [ ${#STEPS[@]} -eq 0 ] && STEPS=("${ALL_STEPS[@]}")
 mkdir -p "$BUILD_ROOT"

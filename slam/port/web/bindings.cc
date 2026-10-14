@@ -2,7 +2,7 @@
 // ORB-SLAM3's LocalMapping / LoopClosing threads become further workers via emscripten pthreads.
 //
 //   const slam = new Module.WebSlam();
-//   slam.init('/vocab/ORBvoc.bin', '/settings.yaml', false);   // files in the emscripten FS (MEMFS)
+//   slam.init('/vocab/ORBvoc.bin', '/settings.yaml', false, -1); // files in the emscripten FS (MEMFS); clahe; seed
 //   const ptr = slam.frameBuffer(w, h);                          // gray8 buffer inside the wasm heap
 //   HEAPU8.set(gray, ptr); const state = slam.track(t);          // t in seconds
 //   slam.poseTwc()   -> Float32Array(16), column-major camera-to-world
@@ -19,12 +19,15 @@
 
 #include "MapPoint.h"
 #include "System.h"
+#include "Thirdparty/DBoW2/DUtils/Random.h"
 
 using namespace emscripten;
 
 class WebSlam {
  public:
-  bool init(const std::string& vocabFile, const std::string& settingsFile, bool clahe) {
+  // seed < 0 keeps ORB-SLAM3's default (TwoViewReconstruction seeds with 0); otherwise the RANSAC seed.
+  bool init(const std::string& vocabFile, const std::string& settingsFile, bool clahe, int seed) {
+    if (seed >= 0) DUtils::Random::SeedRandOnce(seed);
     clahe_ = clahe;
     if (clahe_) claheOp_ = cv::createCLAHE(3.0, cv::Size(8, 8));  // as in ORB-SLAM3's TUM-VI examples
     sys_ = std::make_unique<ORB_SLAM3::System>(vocabFile, settingsFile, ORB_SLAM3::System::MONOCULAR,

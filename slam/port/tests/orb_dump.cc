@@ -59,5 +59,15 @@ int main(int argc, char** argv) {
   for (int i = 0; i < 5 && i < (int)kps.size(); ++i)
     std::printf("  kp[%d] x=%.3f y=%.3f oct=%d angle=%.4f resp=%.6f\n", i, kps[i].pt.x, kps[i].pt.y, kps[i].octave,
                 kps[i].angle, kps[i].response);
+  // optional full dump: one line per keypoint "x y octave angle desc_hex"
+  if (argc >= 5) {
+    FILE* f = std::fopen(argv[4], "w");
+    for (size_t i = 0; i < kps.size(); ++i) {
+      std::fprintf(f, "%.4f %.4f %d %.6f ", kps[i].pt.x, kps[i].pt.y, kps[i].octave, kps[i].angle);
+      for (int j = 0; j < desc.cols; ++j) std::fprintf(f, "%02x", desc.at<uint8_t>((int)i, j));
+      std::fprintf(f, "\n");
+    }
+    std::fclose(f);
+  }
   return 0;
 }

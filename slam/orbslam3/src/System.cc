@@ -518,6 +518,10 @@ void System::ResetActiveMap()
 
 void System::Shutdown()
 {
+#ifdef ORBSLAM3_WEB
+    cout << "LM-STATS keyframes=" << mpLocalMapper->mnDiagKFs << " lba_done=" << mpLocalMapper->mnDiagLBADone
+         << " lba_aborted=" << mpLocalMapper->mnDiagLBAAborted << " lba_skipped_newkf=" << mpLocalMapper->mnDiagLBASkipped << endl;
+#endif
     {
         unique_lock<mutex> lock(mMutexReset);
         mbShutDown = true;
@@ -1321,6 +1325,19 @@ void System::SaveDebugData(const int &initIdx)
     f.close();
 }
 
+
+#ifdef ORBSLAM3_WEB
+bool System::WaitForMappingIdle(double timeoutSec)
+{
+    const auto t0 = std::chrono::steady_clock::now();
+    while(mpLocalMapper->KeyframesInQueue() > 0 || !mpLocalMapper->AcceptKeyFrames())
+    {
+        if(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() > timeoutSec) return false;
+        usleep(500);
+    }
+    return true;
+}
+#endif
 
 int System::GetTrackingState()
 {

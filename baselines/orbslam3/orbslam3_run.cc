@@ -17,6 +17,7 @@
 
 #include <System.h>
 #include <ImuTypes.h>
+#include "Thirdparty/DBoW2/DUtils/Random.h"
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -24,6 +25,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <thread>
 #include <cmath>
 #include <ctime>
 #include <filesystem>
@@ -139,6 +141,12 @@ static void euRoCToTum(const fs::path& in, const fs::path& out, double tBase) {
 int main(int argc, char** argv) {
   string dataset, mode, seq, vocab, settings, out;
   bool clahe = false;
+  bool realtime = false;  // pace frames at the dataset rate, as ORB-SLAM3's own examples do
+  double rateScale = 1.0; // with --realtime: frame period multiplier (2 = play at half speed)
+  int maxFrames = 0;      // 0 = all frames
+  bool syncMapping = false; // web port diagnostic: wait for local mapping to go idle after every frame
+  bool trace = false;       // diagnostic: per-frame trace (state, tracked points, live Twc) -> trace.txt
+  int seed = -1;  // -1: ORB-SLAM3 default (TwoViewReconstruction seeds with 0)
   for (int i = 1; i < argc; ++i) {
     string a = argv[i];
     auto next = [&]() { if (i + 1 >= argc) { std::cerr << "missing value for " << a << "\n"; std::exit(2); } return string(argv[++i]); };
@@ -149,6 +157,12 @@ int main(int argc, char** argv) {
     else if (a == "--settings") settings = next();
     else if (a == "--out") out = next();
     else if (a == "--clahe") clahe = true;
+    else if (a == "--seed") seed = std::stoi(next());
+    else if (a == "--realtime") realtime = true;
+    else if (a == "--rate-scale") rateScale = std::stod(next());
+    else if (a == "--max-frames") maxFrames = std::stoi(next());
+    else if (a == "--sync-mapping") syncMapping = true;
+    else if (a == "--trace") trace = true;
     else { std::cerr << "unknown arg " << a << "\n"; return 2; }
   }
   if (dataset.empty() || mode.empty() || seq.empty() || vocab.empty() || settings.empty() || out.empty()) {
@@ -158,8 +172,13 @@ int main(int argc, char** argv) {
   const bool inertial = (mode == "mono_inertial");
   if (inertial && dataset == "kitti") { std::cerr << "KITTI sync OXTS (~10 Hz) is not usable for mono-inertial\n"; return 2; }
 
+  // RANSAC seed for ORB-SLAM3's random sampling. Seeding once here makes TwoViewReconstruction's own
+  // SeedRandOnce(0) a no-op, so different seeds give independent runs (monocular init is seed-sensitive).
+  if (seed >= 0) DUtils::Random::SeedRandOnce(seed);
+
   Data d = (dataset == "kitti") ? loadKitti(seq) : loadTumvie(seq);
-  const int N = (int)std::min(d.images.size(), d.t.size());
+  int N = (int)std::min(d.images.size(), d.t.size());
+  if (maxFrames > 0) N = std::min(N, maxFrames);
   fs::create_directories(out);
 
   ORB_SLAM3::System SLAM(vocab, settings,
@@ -176,6 +195,8 @@ int main(int argc, char** argv) {
   }
 
   std::ofstream times(fs::path(out) / "track_times.txt");
+  std::ofstream tr;
+  if (trace) { tr.open(fs::path(out) / "trace.txt"); tr << std::setprecision(9); }
   vector<ORB_SLAM3::IMU::Point> meas;
   for (int i = 0; i < N; ++i) {
     cv::Mat im = cv::imread(d.images[i].string(), cv::IMREAD_GRAYSCALE);
@@ -191,10 +212,27 @@ int main(int argc, char** argv) {
       }
     }
     auto t0 = std::chrono::steady_clock::now();
-    SLAM.TrackMonocular(im, d.t[i], meas);
+    const Sophus::SE3f Tcw = SLAM.TrackMonocular(im, d.t[i], meas);
     auto t1 = std::chrono::steady_clock::now();
-    times << i << " " << std::chrono::duration<double, std::milli>(t1 - t0).count()
-          << " " << SLAM.GetTrackingState() << "\n";
+    const double ttrack = std::chrono::duration<double>(t1 - t0).count();
+#ifdef ORBSLAM3_WEB
+    if (syncMapping) SLAM.WaitForMappingIdle();
+#endif
+    if (trace) {
+      int nTracked = 0;
+      for (auto* mp : SLAM.GetTrackedMapPoints()) if (mp) ++nTracked;
+      const Sophus::SE3f Twc = Tcw.inverse();
+      const Eigen::Quaternionf q = Twc.unit_quaternion();
+      tr << i << " " << SLAM.GetTrackingState() << " " << nTracked << " " << Twc.translation().transpose() << " "
+         << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << "\n";
+    }
+    times << i << " " << ttrack * 1000.0 << " " << SLAM.GetTrackingState() << "\n";
+    // Real-time protocol of ORB-SLAM3's examples: wait for the rest of the frame period, which leaves time for
+    // the local-mapping / loop-closing threads. Without it, results depend on the relative thread speeds.
+    if (realtime) {
+      const double T = rateScale * ((i + 1 < N) ? d.t[i + 1] - d.t[i] : (i > 0 ? d.t[i] - d.t[i - 1] : 0.0));
+      if (ttrack < T) std::this_thread::sleep_for(std::chrono::duration<double>(T - ttrack));
+    }
     if (i % 200 == 0) std::cerr << "frame " << i << "/" << N - 1 << " state=" << SLAM.GetTrackingState() << "\n";
   }
 
@@ -207,6 +245,9 @@ int main(int argc, char** argv) {
 
   std::ofstream info(fs::path(out) / "run_info.txt");
   info << std::setprecision(17) << "dataset " << dataset << "\nmode " << mode << "\nseq " << seq
-       << "\nsettings " << settings << "\nclahe " << clahe << "\nframes " << N << "\nt_base " << d.tBase << "\n";
+       << "\nsettings " << settings << "\nclahe " << clahe << "\nseed " << seed << "\nrealtime " << realtime
+       << "\nrate_scale " << rateScale << "\nsync_mapping " << syncMapping
+       << "\nframes " << N
+       << "\nt_base " << d.tBase << "\n";
   return 0;
 }

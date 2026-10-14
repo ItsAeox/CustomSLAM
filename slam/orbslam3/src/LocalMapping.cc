@@ -99,6 +99,10 @@ void LocalMapping::Run()
 
             // Triangulate new MapPoints
             CreateNewMapPoints();
+#ifdef ORBSLAM3_WEB
+            mnDiagKFs++;  // web port diagnostics
+            if(CheckNewKeyFrames()) mnDiagLBASkipped++;  // a new KF is already waiting: LBA will be skipped
+#endif
 
             mbAbortBA = false;
 
@@ -156,6 +160,9 @@ void LocalMapping::Run()
                     }
 
                 }
+#ifdef ORBSLAM3_WEB
+                if(b_doneLBA) { mnDiagLBADone++; if(mbAbortBA) mnDiagLBAAborted++; }  // web port diagnostics
+#endif
 #ifdef REGISTER_TIMES
                 std::chrono::steady_clock::time_point time_EndLBA = std::chrono::steady_clock::now();
 

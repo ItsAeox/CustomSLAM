@@ -63,6 +63,11 @@ public:
     bool isStopped();
     bool stopRequested();
     bool AcceptKeyFrames();
+
+#ifdef ORBSLAM3_WEB
+    // web port diagnostics: local-mapping activity counters (read at shutdown)
+    int mnDiagKFs = 0, mnDiagLBADone = 0, mnDiagLBAAborted = 0, mnDiagLBASkipped = 0;
+#endif
     void SetAcceptKeyFrames(bool flag);
     bool SetNotStop(bool flag);
 

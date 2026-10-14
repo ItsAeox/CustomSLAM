@@ -24,8 +24,13 @@ set(PORT ${CMAKE_CURRENT_SOURCE_DIR}/port)
 
 if (BUILD_WASM)
   # Same flags as the OpenCV build: SIMD128, threads (shared memory). C++ exceptions abort (emscripten default);
-  # ORB-SLAM3 only throws on fatal configuration errors.
-  set(WEB_FLAGS -msimd128 -pthread)
+  # ORB-SLAM3 only throws on fatal configuration errors. WEB_SIMD=OFF builds our code (ORB-SLAM3, g2o, DBoW2)
+  # without -msimd128 auto-vectorisation (diagnostic); the prebuilt OpenCV keeps its SIMD.
+  option(WEB_SIMD "Compile the port with -msimd128" ON)
+  set(WEB_FLAGS -pthread)
+  if (WEB_SIMD)
+    list(APPEND WEB_FLAGS -msimd128)
+  endif()
   add_compile_options(${WEB_FLAGS})
   add_link_options(${WEB_FLAGS})
   if (OpenCV_DIR)
