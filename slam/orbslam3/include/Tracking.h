@@ -142,6 +142,8 @@ public:
     bool mbWebKLTFrame = false;        // the current frame was tracked by optical flow (no ORB extraction)
     long mnWebKLTFrames = 0, mnWebORBFrames = 0, mnWebKLTFallbacks = 0;
     double mdWebKLTms = 0;             // total time spent in accepted KLT frames (ms)
+    double mdWebKLTPyrMs = 0;          // LK pyramid of every image while KLT is enabled (ms, all frames)
+    double mdWebKLTFlowMs = 0, mdWebKLTCopyMs = 0, mdWebKLTPoseMs = 0;  // accepted KLT frames: LK, frame build, pose
 #endif
 
     cv::Mat mImGray;

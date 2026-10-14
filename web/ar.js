@@ -194,6 +194,7 @@ async function start() {
       const man = await (await fetch(`/api/sequence?dataset=${dataset}&name=${encodeURIComponent(name)}`)).json();
       settingsUrl = info.settings; clahe = info.clahe;
       const yaml = await (await fetch(settingsUrl)).text();
+      settingsText = yaml;
       F = Number((/Camera1\.fx:\s*([\d.eE+-]+)/.exec(yaml) || [])[1] || 0);
       let i = 0;
       const t0 = performance.now();
@@ -239,7 +240,7 @@ async function start() {
 
     const slam = createSlamWorker((s) => console.log(s));
     const ready = await slam.request({ type: 'init', vocabUrl: '/vocab/ORBvoc.bin', clahe, seed: 1,
-                                       settingsText: settingsText ?? undefined, settingsUrl });
+                                       settingsText: withTracker(settingsText) });
     if (ready.type === 'error') throw new Error(ready.text);
     $('btnReset').onclick = () => { slam.request({ type: 'reset' }); resetAnchors('Map reset. Move the phone slowly sideways.'); };
     $('btnPoints').onclick = () => { showPoints = !showPoints; };
@@ -286,6 +287,12 @@ async function start() {
     $('start').hidden = false; $('go').disabled = false;
     $('err').textContent = String(e.message || e);
   }
+}
+
+// tracker=klt: ORB-SLAM3 with KLT tracking frames between ORB frames (Web.KLT.*, include/WebConfig.h)
+function withTracker(yaml) {
+  if ((params.get('tracker') || 'klt') !== 'klt') return yaml;  // default: hybrid (tracker=stock for ORB on every frame)
+  return yaml.replace(/\s*$/, '\n') + '\n# web port: KLT tracking frames\nWeb.KLT.Enable: 1\nWeb.KLT.MaxConsecutive: 2\n';
 }
 
 $('go').onclick = start;

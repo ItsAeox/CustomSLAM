@@ -2758,6 +2758,8 @@ bool Tracking::TrackKLT(const cv::Mat& im, double timestamp)
     const auto t0 = std::chrono::steady_clock::now();
     // pyramid of this image; kept for the next frame by GrabImageMonocular whatever happens below
     cv::buildOpticalFlowPyramid(im, mvWebCurPyr, win, cfg.kltLevels);
+    const auto tPyr = std::chrono::steady_clock::now();
+    mdWebKLTPyrMs += std::chrono::duration<double, std::milli>(tPyr - t0).count();  // every frame
 
     if(mState != OK || mbOnlyTracking || mbWebForceORB || mnWebConsecutiveKLT >= cfg.kltMaxConsecutive ||
        mvWebPrevPyr.empty() || !mLastFrame.isSet() || !mbVelocity || !mpReferenceKF ||
@@ -2792,7 +2794,7 @@ bool Tracking::TrackKLT(const cv::Mat& im, double timestamp)
         return false;
     }
 
-    const cv::TermCriteria crit(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 30, 0.01);
+    const cv::TermCriteria crit(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, cfg.kltIterations, 0.01);
     vector<uchar> vStatus;
     vector<float> vErr;
     cv::calcOpticalFlowPyrLK(mvWebPrevPyr, mvWebCurPyr, vPrev, vCur, vStatus, vErr, win, cfg.kltLevels, crit,
@@ -2815,10 +2817,12 @@ bool Tracking::TrackKLT(const cv::Mat& im, double timestamp)
         mnWebKLTFallbacks++;
         return false;
     }
-    vector<uchar> vStatusB;
+    vector<uchar> vStatusB(vCurF.size(), 1);
     vector<float> vErrB;
-    cv::calcOpticalFlowPyrLK(mvWebCurPyr, mvWebPrevPyr, vCurF, vBack, vStatusB, vErrB, win, cfg.kltLevels, crit,
-                             cv::OPTFLOW_USE_INITIAL_FLOW);
+    const bool bFB = cfg.kltFBThreshold > 0;  // forward-backward check (doubles the LK cost)
+    if(bFB)
+        cv::calcOpticalFlowPyrLK(mvWebCurPyr, mvWebPrevPyr, vCurF, vBack, vStatusB, vErrB, win, cfg.kltLevels, crit,
+                                 cv::OPTFLOW_USE_INITIAL_FLOW);
     vector<cv::KeyPoint> vKeys;
     vector<MapPoint*> vMPs;
     const float fb2 = (float)(cfg.kltFBThreshold * cfg.kltFBThreshold);
@@ -2826,7 +2830,7 @@ bool Tracking::TrackKLT(const cv::Mat& im, double timestamp)
     {
         const int j = vFwd[k];
         const float dx = vBack[k].x - vPrev[j].x, dy = vBack[k].y - vPrev[j].y;
-        if(!vStatusB[k] || dx * dx + dy * dy > fb2)
+        if(bFB && (!vStatusB[k] || dx * dx + dy * dy > fb2))
             continue;
         cv::KeyPoint kp = mLastFrame.mvKeys[vIdx[j]];  // keeps octave/size/angle of the original ORB detection
         kp.pt = vCurF[k];
@@ -2839,11 +2843,14 @@ bool Tracking::TrackKLT(const cv::Mat& im, double timestamp)
         return false;
     }
 
+    const auto tFlow = std::chrono::steady_clock::now();
     Frame F(mLastFrame);
     F.WebSetTrackedFeatures(vKeys, vMPs, timestamp);
     F.mpReferenceKF = mpReferenceKF;
     F.SetPose(Tcw);
+    const auto tCopy = std::chrono::steady_clock::now();
     Optimizer::PoseOptimization(&F);
+    const auto tPose = std::chrono::steady_clock::now();
 
     // discard outliers (as TrackWithMotionModel) and count inliers that belong to the map
     int nInliers = 0;
@@ -2875,6 +2882,9 @@ bool Tracking::TrackKLT(const cv::Mat& im, double timestamp)
     mnWebConsecutiveKLT++;
     mnWebKLTFrames++;
     mdWebKLTms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    mdWebKLTFlowMs += std::chrono::duration<double, std::milli>(tFlow - tPyr).count();
+    mdWebKLTCopyMs += std::chrono::duration<double, std::milli>(tCopy - tFlow).count();
+    mdWebKLTPoseMs += std::chrono::duration<double, std::milli>(tPose - tCopy).count();
     return true;
 }
 #endif

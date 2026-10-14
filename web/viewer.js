@@ -206,6 +206,7 @@ async function loadSequences() {
   sel.onchange();
   if (params.get('seed')) $('seed').value = params.get('seed');
   if (params.get('pacing')) $('pacing').value = params.get('pacing');
+  if (params.get('tracker')) $('tracker').value = params.get('tracker');
 }
 
 function setStatus(s) { $('status').textContent = s; }
@@ -262,6 +263,12 @@ Viewer.ViewpointF: 500.0
 `;
 }
 
+// Tracker choice: the hybrid appends the Web.KLT keys (include/WebConfig.h) to the ORB-SLAM3 settings
+function withTracker(yaml) {
+  if ($('tracker').value !== 'klt') return yaml;
+  return yaml.replace(/\s*$/, '\n') + '\n# web port: KLT tracking frames\nWeb.KLT.Enable: 1\nWeb.KLT.MaxConsecutive: 2\n';
+}
+
 // Live camera: process the newest frame whenever the tracker is free (frames arriving meanwhile are dropped).
 async function startCamera() {
   const [w, h] = $('camRes').value.split('x').map(Number);
@@ -274,7 +281,7 @@ async function startCamera() {
   const video = Object.assign(document.createElement('video'), { srcObject: stream, muted: true, playsInline: true });
   await video.play();
   const vw = video.videoWidth, vh = video.videoHeight;
-  const settingsText = cameraSettings(vw, vh, Number($('fov').value), s.frameRate || 30);
+  const settingsText = withTracker(cameraSettings(vw, vh, Number($('fov').value), s.frameRate || 30));
   $('run').disabled = true; $('pause').disabled = true; $('stop').disabled = false;
   logEl.textContent = '';
   $('gtName').textContent = 'live camera (no ground truth)';
@@ -368,7 +375,9 @@ async function start() {
   const request = (msg) => new Promise((res) => { pending = res; worker.postMessage(msg); });
 
   setStatus('loading WASM + vocabulary…');
-  const ready = await request({ type: 'init', vocabUrl: '/vocab/ORBvoc.bin', settingsUrl: info.settings, clahe: info.clahe, seed });
+  const settingsText = withTracker(await (await fetch(info.settings)).text());
+  log(`tracker: ${$('tracker').value === 'klt' ? 'hybrid ORB + KLT' : 'ORB-SLAM3 stock'}`);
+  const ready = await request({ type: 'init', vocabUrl: '/vocab/ORBvoc.bin', settingsText, clahe: info.clahe, seed });
   if (ready.type === 'error') return finishUi();
   log(`init ${ready.ms.toFixed(0)} ms, ${navigator.hardwareConcurrency} hardware threads`);
 

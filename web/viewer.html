@@ -83,6 +83,8 @@
     hFOV° <input id="fov" type="number" value="65" min="30" max="120"></label>
   <label id="resLabel" hidden>Resolution
     <select id="camRes"><option value="640x480">640×480</option><option value="960x720">960×720</option><option value="1280x720">1280×720</option></select></label>
+  <label title="Hybrid: ORB-SLAM3 with KLT tracking frames between ORB frames (Web.KLT.*); stock: ORB on every frame">Tracker
+    <select id="tracker"><option value="klt">Hybrid ORB + KLT</option><option value="stock">ORB-SLAM3 (stock)</option></select></label>
   <label>Seed <input id="seed" type="number" value="1" min="0"></label>
   <label>Pacing
     <select id="pacing">

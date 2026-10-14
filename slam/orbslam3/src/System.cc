@@ -528,7 +528,11 @@ void System::Shutdown()
     if(webConfig().kltEnable)
         cout << "KLT-STATS klt_frames=" << mpTracker->mnWebKLTFrames << " orb_frames=" << mpTracker->mnWebORBFrames
              << " klt_fallbacks=" << mpTracker->mnWebKLTFallbacks << " klt_ms_mean="
-             << (mpTracker->mnWebKLTFrames ? mpTracker->mdWebKLTms / mpTracker->mnWebKLTFrames : 0.0) << endl;
+             << (mpTracker->mnWebKLTFrames ? mpTracker->mdWebKLTms / mpTracker->mnWebKLTFrames : 0.0)
+             << " pyramid_ms_per_frame=" << mpTracker->mdWebKLTPyrMs / std::max(1L, mpTracker->mnWebKLTFrames + mpTracker->mnWebORBFrames)
+             << " flow_ms=" << (mpTracker->mnWebKLTFrames ? mpTracker->mdWebKLTFlowMs / mpTracker->mnWebKLTFrames : 0.0)
+             << " frame_ms=" << (mpTracker->mnWebKLTFrames ? mpTracker->mdWebKLTCopyMs / mpTracker->mnWebKLTFrames : 0.0)
+             << " pose_ms=" << (mpTracker->mnWebKLTFrames ? mpTracker->mdWebKLTPoseMs / mpTracker->mnWebKLTFrames : 0.0) << endl;
 #endif
     {
         unique_lock<mutex> lock(mMutexReset);

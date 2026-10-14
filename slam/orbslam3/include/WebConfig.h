@@ -24,9 +24,10 @@ struct WebConfig
     int kltMaxConsecutive = 2; // Web.KLT.MaxConsecutive: at most this many KLT frames between two ORB frames
     int kltMinTracked = 60;    // Web.KLT.MinTracked: map-point tracks that must survive LK + forward-backward check
     int kltMinInliers = 40;    // Web.KLT.MinInliers: pose-optimisation inliers to accept the KLT pose
-    int kltWinSize = 21;       // Web.KLT.WinSize: LK window (pixels)
-    int kltLevels = 3;         // Web.KLT.Levels: LK pyramid levels above full resolution
-    double kltFBThreshold = 1.0;  // Web.KLT.FBThreshold: max forward-backward error (pixels)
+    int kltWinSize = 15;       // Web.KLT.WinSize: LK window (pixels). 15 vs 21: LK 2.2x cheaper in WASM, same ATE (MH01)
+    int kltLevels = 2;         // Web.KLT.Levels: LK pyramid levels above full resolution (flow is predicted, so 2 suffice)
+    double kltFBThreshold = 1.0;  // Web.KLT.FBThreshold: max forward-backward error (pixels); <= 0: no backward pass
+    int kltIterations = 30;    // Web.KLT.Iterations: max LK iterations per pyramid level
 };
 
 inline WebConfig& webConfig()
@@ -55,6 +56,7 @@ inline void loadWebConfig(const std::string& settingsFile)
     readInt("Web.KLT.MinInliers", c.kltMinInliers);
     readInt("Web.KLT.WinSize", c.kltWinSize);
     readInt("Web.KLT.Levels", c.kltLevels);
+    readInt("Web.KLT.Iterations", c.kltIterations);
     cv::FileNode fb = fs["Web.KLT.FBThreshold"];
     if (!fb.empty() && (fb.isInt() || fb.isReal())) c.kltFBThreshold = fb.real();
     std::cout << "Web config: LBA.MaxOptKFs " << c.lbaMaxOptKFs << ", LBA.MaxFixedKFs " << c.lbaMaxFixedKFs
@@ -63,7 +65,7 @@ inline void loadWebConfig(const std::string& settingsFile)
     if (c.kltEnable)
         std::cout << " (max consecutive " << c.kltMaxConsecutive << ", min tracked " << c.kltMinTracked
                   << ", min inliers " << c.kltMinInliers << ", win " << c.kltWinSize << ", levels " << c.kltLevels
-                  << ", FB " << c.kltFBThreshold << " px)";
+                  << ", FB " << c.kltFBThreshold << " px, iterations " << c.kltIterations << ")";
     std::cout << std::endl;
 }
 
