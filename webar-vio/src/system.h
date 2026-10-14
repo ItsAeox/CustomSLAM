@@ -71,6 +71,12 @@ public:
   std::array<double,3> getTwc() const {
     return { twc_[0], twc_[1], twc_[2] };
   }
+  // World-from-camera rotation, row-major (for exporting full poses without Euler conversions)
+  std::array<double,9> getRwc() const {
+    return { Rwc_(0,0), Rwc_(0,1), Rwc_(0,2),
+             Rwc_(1,0), Rwc_(1,1), Rwc_(1,2),
+             Rwc_(2,0), Rwc_(2,1), Rwc_(2,2) };
+  }
   // Heading (yaw on XZ), pitch, roll in radians (right-handed, OpenCV: x right, y down, z forward)
   // yaw: angle of forward (Rwc_.col(2)) projected on XZ
   // pitch: elevation of forward

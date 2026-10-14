@@ -162,5 +162,6 @@ export async function loadTumviSequence(fileList, opts) {
     mocap,
     calib,
     N,
+    tBase: t0, // absolute time (s, incl. cam_time_offset) of rebased t=0
   };
 }

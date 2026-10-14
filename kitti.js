@@ -14,6 +14,40 @@ function logMsg(...args) {
   // _logEl.scrollTop = _logEl.scrollHeight;
 }
 
+// Row-major 3x3 rotation -> quaternion [x, y, z, w]
+function rotToQuatXYZW(R) {
+  const [m00, m01, m02, m10, m11, m12, m20, m21, m22] = R;
+  const tr = m00 + m11 + m22;
+  let x, y, z, w;
+  if (tr > 0) {
+    const S = Math.sqrt(tr + 1.0) * 2;
+    w = 0.25 * S; x = (m21 - m12) / S; y = (m02 - m20) / S; z = (m10 - m01) / S;
+  } else if (m00 > m11 && m00 > m22) {
+    const S = Math.sqrt(1.0 + m00 - m11 - m22) * 2;
+    w = (m21 - m12) / S; x = 0.25 * S; y = (m01 + m10) / S; z = (m02 + m20) / S;
+  } else if (m11 > m22) {
+    const S = Math.sqrt(1.0 + m11 - m00 - m22) * 2;
+    w = (m02 - m20) / S; x = (m01 + m10) / S; y = 0.25 * S; z = (m12 + m21) / S;
+  } else {
+    const S = Math.sqrt(1.0 + m22 - m00 - m11) * 2;
+    w = (m10 - m01) / S; x = (m02 + m20) / S; y = (m12 + m21) / S; z = 0.25 * S;
+  }
+  const n = Math.hypot(x, y, z, w);
+  return [x / n, y / n, z / n, w / n];
+}
+
+function downloadText(text, filename, type) {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function byName(a, b) {
   return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
 }
@@ -119,18 +153,11 @@ function parseOxtsLine(line) {
 }
 
 // ===== WASM setup ===========================================================
-async function loadWasm(dataset) {
+// One binary for every dataset (previously KITTI loaded a separate vio_wasm_k build).
+async function loadWasm() {
   const ts = Date.now();
-
-  const isKitti = dataset === 'kitti';
-
-  const jsPath = isKitti
-    ? './vio_wasm_k.js'
-    : './vio_wasm.js';
-
-  const wasmPath = isKitti
-    ? './vio_wasm_k.wasm'
-    : './vio_wasm.wasm';
+  const jsPath = './vio_wasm.js';
+  const wasmPath = './vio_wasm.wasm';
 
   const { default: createModule } = await import(`${jsPath}?v=${ts}`);
 
@@ -246,7 +273,7 @@ els.btnLoad.addEventListener('click', async () => {
 
   const ds = els.dataset?.value || 'kitti';
 
-  Module = await loadWasm(ds);
+  Module = await loadWasm();
   window.Module = Module;
   logMsg('WASM ready:', ds, {
     feedFramePtr: !!Module.feedFramePtr,
@@ -382,11 +409,12 @@ els.btnLoad.addEventListener('click', async () => {
   }
 
   let oxtsTS = [];
+  let tBase = 0;
   if (tsOxtsFile) {
     oxtsTS = parseTimestamps(await readText(tsOxtsFile));
     // IMPORTANT: rebase BOTH streams to the SAME t0
     // (image timestamps and oxts timestamps can start at slightly different absolute times)
-    const tBase = Math.min(imageTS[0], oxtsTS[0]);
+    tBase = Math.min(imageTS[0], oxtsTS[0]);
     imageTS = imageTS.map(t => t - tBase);
     oxtsTS  = oxtsTS.map(t => t - tBase);
   } else {
@@ -433,7 +461,7 @@ els.btnLoad.addEventListener('click', async () => {
   // --- Clip to common length for images ---
   const N = Math.min(images.length, imageTS.length || images.length);
 
-  seq = { images, imageTS, oxts, oxtsTS, imuStream, N };
+  seq = { images, imageTS, oxts, oxtsTS, imuStream, N, tBase };
 
   // Init canvas to first frame size
   const bmp = await createImageBitmap(images[0]);
@@ -597,18 +625,25 @@ els.btnRun.addEventListener('click', async () => {
     // Record pose
     let twc = [0,0,0];
     let ypr = [0,0,0];
+    let rwc = [1,0,0, 0,1,0, 0,0,1];
     try { twc = Module.getTwc?.() || twc; } catch {}
     try { ypr = Module.getYPR?.() || ypr; } catch {}
+    try { rwc = Module.getRwc?.() || rwc; } catch {}
 
+    // Legacy export (kept only to reproduce the original evaluation): hand-picked axis remap.
     const x = Number(twc[1]);
     const y = -Number(twc[2]);
     const z = Number(twc[0]);
-    
+
     recorded.push({
       frame: i,
       t: tNow,
+      tAbs: tNow + (seq.tBase ?? 0),
       x, y, z,
       yaw: Number(ypr[0]), pitch: Number(ypr[1]), roll: Number(ypr[2]),
+      // Raw camera pose Twc (OpenCV camera axes), no remapping
+      twc: [Number(twc[0]), Number(twc[1]), Number(twc[2])],
+      q: rotToQuatXYZW(Array.from(rwc, Number)),
     });
 
     recordedPerf.push({
@@ -717,20 +752,19 @@ els.btnExport.addEventListener('click', () => {
     ].join(','));
   }
 
-  // Download main CSV
-  {
-    const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    const ds = els.dataset?.value || 'kitti';
-    a.download = (ds === 'tumvi') ? 'tumvi_poses.csv' : 'kitti_poses.csv';
-        document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const ds = els.dataset?.value || 'kitti';
+  const prefix = (ds === 'tumvi') ? 'tumvi' : 'kitti';
+
+  // (A) Legacy CSV (axis-remapped; only for reproducing the original evaluation)
+  downloadText(lines.join('\n'), `${prefix}_poses.csv`, 'text/csv');
+
+  // (B) TUM trajectory: "t tx ty tz qx qy qz qw", raw Twc, absolute dataset time — use this for evaluation
+  const tum = ['# t tx ty tz qx qy qz qw  (Twc: camera-to-world, camera frame = OpenCV x-right y-down z-forward)'];
+  for (const r of recorded) {
+    tum.push([r.tAbs.toFixed(9), ...r.twc.map(v => v.toPrecision(17)), ...r.q.map(v => v.toPrecision(17))].join(' '));
   }
-  logMsg('Exported kitti_poses.csv');
+  downloadText(tum.join('\n') + '\n', `${prefix}_traj_tum.txt`, 'text/plain');
+  logMsg(`Exported ${prefix}_poses.csv and ${prefix}_traj_tum.txt`);
 });
 
 els.btnExportPerf.addEventListener('click', () => {

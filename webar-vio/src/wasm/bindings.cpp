@@ -41,6 +41,12 @@ static emscripten::val GetTwc() {
   a.set(0, t[0]); a.set(1, t[1]); a.set(2, t[2]);
   return a;
 }
+static emscripten::val GetRwc() {
+  auto R = gSys.getRwc();
+  emscripten::val a = emscripten::val::array();
+  for (int i = 0; i < 9; ++i) a.set(i, R[i]);
+  return a;
+}
 static emscripten::val GetYPR() {
   auto r = gSys.getYPR();
   emscripten::val a = emscripten::val::array();
@@ -169,6 +175,7 @@ EMSCRIPTEN_BINDINGS(vio_bindings_pointtrack) {
   function("getNumKFs", &GetNumKFs);
   function("getNumMPs", &GetNumMPs);  
   function("getTwc", &GetTwc);
+  function("getRwc", &GetRwc);
   function("getYPR", &GetYPR);
   function("feedImuSample", &feedImuSample);
   function("getLastImuMS", &GetLastImuMS);
