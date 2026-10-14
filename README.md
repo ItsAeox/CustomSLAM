@@ -61,7 +61,10 @@ Contributions are welcome! Please open issues or submit pull requests for bug fi
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the **GNU General Public License v3.0** (GPL-3.0). See [LICENSE](LICENSE).
+
+It includes ORB-SLAM3 (GPL-3.0, University of Zaragoza) in `slam/orbslam3/`, with its bundled DBoW2, g2o and Sophus
+under their own licences (see `slam/orbslam3/VENDORED.md` and the licence files in `slam/orbslam3/Thirdparty/`).
 
 ## Acknowledgements
 
