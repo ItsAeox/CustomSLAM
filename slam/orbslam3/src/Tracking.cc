@@ -28,6 +28,9 @@
 #include "KannalaBrandt8.h"
 #include "MLPnPsolver.h"
 #include "GeometricTools.h"
+#include "WebConfig.h"
+
+#include <opencv2/video/tracking.hpp>
 
 #include <iostream>
 
@@ -1583,10 +1586,16 @@ Sophus::SE3f Tracking::GrabImageMonocular(const cv::Mat &im, const double &times
 
     if (mSensor == System::MONOCULAR)
     {
+#ifdef ORBSLAM3_WEB
+        mbWebKLTFrame = webConfig().kltEnable && TrackKLT(mImGray, timestamp);
+        if(!mbWebKLTFrame)
+#endif
+        {
         if(mState==NOT_INITIALIZED || mState==NO_IMAGES_YET ||(lastID - initID) < mMaxFrames)
             mCurrentFrame = Frame(mImGray,timestamp,mpIniORBextractor,mpORBVocabulary,mpCamera,mDistCoef,mbf,mThDepth);
         else
             mCurrentFrame = Frame(mImGray,timestamp,mpORBextractorLeft,mpORBVocabulary,mpCamera,mDistCoef,mbf,mThDepth);
+        }
     }
     else if(mSensor == System::IMU_MONOCULAR)
     {
@@ -1605,11 +1614,27 @@ Sophus::SE3f Tracking::GrabImageMonocular(const cv::Mat &im, const double &times
     mCurrentFrame.mnDataset = mnNumDataset;
 
 #ifdef REGISTER_TIMES
+#ifdef ORBSLAM3_WEB
+    if(!mbWebKLTFrame)  // KLT frames extract no ORB (their mTimeORB_Ext is a copy of the last frame's)
+#endif
     vdORBExtract_ms.push_back(mCurrentFrame.mTimeORB_Ext);
 #endif
 
     lastID = mCurrentFrame.mnId;
     Track();
+
+#ifdef ORBSLAM3_WEB
+    if(webConfig().kltEnable && mSensor == System::MONOCULAR)
+    {
+        if(!mbWebKLTFrame)
+        {
+            mnWebConsecutiveKLT = 0;
+            mbWebForceORB = false;
+            mnWebORBFrames++;
+        }
+        std::swap(mvWebPrevPyr, mvWebCurPyr);  // this image's LK pyramid is the previous one for the next frame
+    }
+#endif
 
     return mCurrentFrame.GetPose();
 }
@@ -1942,6 +1967,11 @@ void Tracking::Track()
                 // Local Mapping might have changed some MapPoints tracked in last frame
                 CheckReplacedInLastFrame();
 
+#ifdef ORBSLAM3_WEB
+                if(mbWebKLTFrame)
+                    bOK = true;  // pose already estimated by TrackKLT()
+                else
+#endif
                 if((!mbVelocity && !pCurrentMap->isImuInitialized()) || mCurrentFrame.mnId<mnLastRelocFrameId+2)
                 {
                     Verbose::PrintMess("TRACK: Track with respect to the reference KF ", Verbose::VERBOSITY_DEBUG);
@@ -2122,7 +2152,11 @@ void Tracking::Track()
         // If we have an initial estimation of the camera pose and matching. Track the local map.
         if(!mbOnlyTracking)
         {
+#ifdef ORBSLAM3_WEB
+            if(bOK && !mbWebKLTFrame)  // KLT frames have no descriptors: no local-map search
+#else
             if(bOK)
+#endif
             {
                 bOK = TrackLocalMap();
 
@@ -2194,6 +2228,9 @@ void Tracking::Track()
         std::chrono::steady_clock::time_point time_EndLMTrack = std::chrono::steady_clock::now();
 
         double timeLMTrack = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndLMTrack - time_StartLMTrack).count();
+#ifdef ORBSLAM3_WEB
+        if(!mbWebKLTFrame)
+#endif
         vdLMTrack_ms.push_back(timeLMTrack);
 #endif
 
@@ -2242,6 +2279,14 @@ void Tracking::Track()
             std::chrono::steady_clock::time_point time_StartNewKF = std::chrono::steady_clock::now();
 #endif
             bool bNeedKF = NeedNewKeyFrame();
+#ifdef ORBSLAM3_WEB
+            if(bNeedKF && mbWebKLTFrame)
+            {
+                // a KLT frame has no descriptors / BoW, so it cannot become a keyframe: track the next frame with ORB
+                mbWebForceORB = true;
+                bNeedKF = false;
+            }
+#endif
 
             // Check if we need to insert a new keyframe
             // if(bNeedKF && bOK)
@@ -2698,6 +2743,141 @@ void Tracking::CreateMapInAtlas()
 
     mbCreatedMap = true;
 }
+
+#ifdef ORBSLAM3_WEB
+// web port: KLT tracking frame (monocular). The last frame's map-point observations are carried into the current
+// image with pyramidal Lucas-Kanade (initialised from the constant-velocity prediction, forward-backward checked);
+// the pose then comes from motion-only BA on those 2D-3D pairs (Optimizer::PoseOptimization), exactly as ORB-SLAM3
+// refines poses. No ORB extraction and no local-map search. Gates (any failing -> normal ORB frame on this image):
+// tracking OK with a valid motion model, at most Web.KLT.MaxConsecutive KLT frames in a row, no pending keyframe,
+// enough surviving tracks (Web.KLT.MinTracked) and enough pose inliers (Web.KLT.MinInliers).
+bool Tracking::TrackKLT(const cv::Mat& im, double timestamp)
+{
+    const WebConfig& cfg = webConfig();
+    const cv::Size win(cfg.kltWinSize, cfg.kltWinSize);
+    const auto t0 = std::chrono::steady_clock::now();
+    // pyramid of this image; kept for the next frame by GrabImageMonocular whatever happens below
+    cv::buildOpticalFlowPyramid(im, mvWebCurPyr, win, cfg.kltLevels);
+
+    if(mState != OK || mbOnlyTracking || mbWebForceORB || mnWebConsecutiveKLT >= cfg.kltMaxConsecutive ||
+       mvWebPrevPyr.empty() || !mLastFrame.isSet() || !mbVelocity || !mpReferenceKF ||
+       mLastFrame.mnId < mnLastRelocFrameId + 2)
+        return false;
+
+    CheckReplacedInLastFrame();
+
+    // last frame's map-point observations and their predicted positions in this image
+    const Sophus::SE3f Tlw = mLastFrame.GetPose();
+    const Sophus::SE3f Tcw = mVelocity * Tlw;
+    vector<int> vIdx;
+    vector<cv::Point2f> vPrev, vCur;
+    for(int i = 0; i < mLastFrame.N; i++)
+    {
+        MapPoint* pMP = mLastFrame.mvpMapPoints[i];
+        if(!pMP || mLastFrame.mvbOutlier[i] || pMP->isBad())
+            continue;
+        const Eigen::Vector3f Xw = pMP->GetWorldPos();
+        const Eigen::Vector3f Xl = Tlw * Xw, Xc = Tcw * Xw;
+        if(Xl(2) <= 0 || Xc(2) <= 0)
+            continue;
+        const Eigen::Vector2f ul = mpCamera->project(Xl), uc = mpCamera->project(Xc);
+        const cv::Point2f p = mLastFrame.mvKeys[i].pt;
+        vIdx.push_back(i);
+        vPrev.push_back(p);
+        vCur.push_back(cv::Point2f(p.x + uc(0) - ul(0), p.y + uc(1) - ul(1)));  // predicted flow as initial guess
+    }
+    if((int)vIdx.size() < cfg.kltMinTracked)
+    {
+        mnWebKLTFallbacks++;
+        return false;
+    }
+
+    const cv::TermCriteria crit(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 30, 0.01);
+    vector<uchar> vStatus;
+    vector<float> vErr;
+    cv::calcOpticalFlowPyrLK(mvWebPrevPyr, mvWebCurPyr, vPrev, vCur, vStatus, vErr, win, cfg.kltLevels, crit,
+                             cv::OPTFLOW_USE_INITIAL_FLOW);
+    // forward-backward check on the forward survivors
+    vector<int> vFwd;
+    vector<cv::Point2f> vCurF, vBack;
+    for(size_t j = 0; j < vIdx.size(); j++)
+    {
+        const cv::Point2f& c = vCur[j];
+        if(vStatus[j] && c.x >= Frame::mnMinX && c.x < Frame::mnMaxX && c.y >= Frame::mnMinY && c.y < Frame::mnMaxY)
+        {
+            vFwd.push_back((int)j);
+            vCurF.push_back(c);
+            vBack.push_back(vPrev[j]);
+        }
+    }
+    if((int)vFwd.size() < cfg.kltMinTracked)
+    {
+        mnWebKLTFallbacks++;
+        return false;
+    }
+    vector<uchar> vStatusB;
+    vector<float> vErrB;
+    cv::calcOpticalFlowPyrLK(mvWebCurPyr, mvWebPrevPyr, vCurF, vBack, vStatusB, vErrB, win, cfg.kltLevels, crit,
+                             cv::OPTFLOW_USE_INITIAL_FLOW);
+    vector<cv::KeyPoint> vKeys;
+    vector<MapPoint*> vMPs;
+    const float fb2 = (float)(cfg.kltFBThreshold * cfg.kltFBThreshold);
+    for(size_t k = 0; k < vFwd.size(); k++)
+    {
+        const int j = vFwd[k];
+        const float dx = vBack[k].x - vPrev[j].x, dy = vBack[k].y - vPrev[j].y;
+        if(!vStatusB[k] || dx * dx + dy * dy > fb2)
+            continue;
+        cv::KeyPoint kp = mLastFrame.mvKeys[vIdx[j]];  // keeps octave/size/angle of the original ORB detection
+        kp.pt = vCurF[k];
+        vKeys.push_back(kp);
+        vMPs.push_back(mLastFrame.mvpMapPoints[vIdx[j]]);
+    }
+    if((int)vKeys.size() < cfg.kltMinTracked)
+    {
+        mnWebKLTFallbacks++;
+        return false;
+    }
+
+    Frame F(mLastFrame);
+    F.WebSetTrackedFeatures(vKeys, vMPs, timestamp);
+    F.mpReferenceKF = mpReferenceKF;
+    F.SetPose(Tcw);
+    Optimizer::PoseOptimization(&F);
+
+    // discard outliers (as TrackWithMotionModel) and count inliers that belong to the map
+    int nInliers = 0;
+    for(int i = 0; i < F.N; i++)
+    {
+        MapPoint* pMP = F.mvpMapPoints[i];
+        if(!pMP)
+            continue;
+        if(F.mvbOutlier[i])
+        {
+            F.mvpMapPoints[i] = static_cast<MapPoint*>(NULL);
+            F.mvbOutlier[i] = false;
+            pMP->mbTrackInView = false;
+            pMP->mnLastFrameSeen = F.mnId;
+        }
+        else if(pMP->Observations() > 0)
+            nInliers++;
+    }
+    if(nInliers < cfg.kltMinInliers)
+    {
+        mnWebKLTFallbacks++;
+        return false;
+    }
+
+    F.mNameFile = "";
+    F.mnDataset = mnNumDataset;
+    mCurrentFrame = F;
+    mnMatchesInliers = nInliers;
+    mnWebConsecutiveKLT++;
+    mnWebKLTFrames++;
+    mdWebKLTms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    return true;
+}
+#endif
 
 void Tracking::CheckReplacedInLastFrame()
 {

@@ -18,6 +18,15 @@ struct WebConfig
     int lbaMaxFixedKFs = 0;    // Web.LBA.MaxFixedKFs: fixed keyframes, most observations of local points first (0 = all, stock)
     int lbaIterations = 10;    // Web.LBA.Iterations: Levenberg-Marquardt iterations of local BA (stock 10)
     int mappingNeighbors = 0;  // Web.Mapping.Neighbors: covisible keyframes for triangulation / fusion (0 = stock: 30 mono)
+
+    // KLT tracking frames (monocular; see Tracking::TrackKLT). Off by default = stock ORB-SLAM3 (ORB on every frame).
+    int kltEnable = 0;         // Web.KLT.Enable: 1 = track some frames with pyramidal LK instead of ORB extraction
+    int kltMaxConsecutive = 2; // Web.KLT.MaxConsecutive: at most this many KLT frames between two ORB frames
+    int kltMinTracked = 60;    // Web.KLT.MinTracked: map-point tracks that must survive LK + forward-backward check
+    int kltMinInliers = 40;    // Web.KLT.MinInliers: pose-optimisation inliers to accept the KLT pose
+    int kltWinSize = 21;       // Web.KLT.WinSize: LK window (pixels)
+    int kltLevels = 3;         // Web.KLT.Levels: LK pyramid levels above full resolution
+    double kltFBThreshold = 1.0;  // Web.KLT.FBThreshold: max forward-backward error (pixels)
 };
 
 inline WebConfig& webConfig()
@@ -40,9 +49,22 @@ inline void loadWebConfig(const std::string& settingsFile)
     readInt("Web.LBA.MaxFixedKFs", c.lbaMaxFixedKFs);
     readInt("Web.LBA.Iterations", c.lbaIterations);
     readInt("Web.Mapping.Neighbors", c.mappingNeighbors);
+    readInt("Web.KLT.Enable", c.kltEnable);
+    readInt("Web.KLT.MaxConsecutive", c.kltMaxConsecutive);
+    readInt("Web.KLT.MinTracked", c.kltMinTracked);
+    readInt("Web.KLT.MinInliers", c.kltMinInliers);
+    readInt("Web.KLT.WinSize", c.kltWinSize);
+    readInt("Web.KLT.Levels", c.kltLevels);
+    cv::FileNode fb = fs["Web.KLT.FBThreshold"];
+    if (!fb.empty() && (fb.isInt() || fb.isReal())) c.kltFBThreshold = fb.real();
     std::cout << "Web config: LBA.MaxOptKFs " << c.lbaMaxOptKFs << ", LBA.MaxFixedKFs " << c.lbaMaxFixedKFs
               << ", LBA.Iterations " << c.lbaIterations << ", Mapping.Neighbors " << c.mappingNeighbors
-              << " (0 = stock)" << std::endl;
+              << " (0 = stock); KLT " << (c.kltEnable ? "on" : "off");
+    if (c.kltEnable)
+        std::cout << " (max consecutive " << c.kltMaxConsecutive << ", min tracked " << c.kltMinTracked
+                  << ", min inliers " << c.kltMinInliers << ", win " << c.kltWinSize << ", levels " << c.kltLevels
+                  << ", FB " << c.kltFBThreshold << " px)";
+    std::cout << std::endl;
 }
 
 }  // namespace ORB_SLAM3

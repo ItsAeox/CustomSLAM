@@ -781,6 +781,40 @@ void Frame::UndistortKeyPoints()
 
 }
 
+#ifdef ORBSLAM3_WEB
+void Frame::WebSetTrackedFeatures(const vector<cv::KeyPoint>& keys, const vector<MapPoint*>& mapPoints,
+                                  double timestamp)
+{
+    mnId = nNextId++;
+    mTimeStamp = timestamp;
+    N = (int)keys.size();
+    Nleft = -1;
+    Nright = -1;
+    mvKeys = keys;
+    mvKeysRight.clear();
+    mvpMapPoints = mapPoints;
+    mvbOutlier = vector<bool>(N, false);
+    mvuRight = vector<float>(N, -1);
+    mvDepth = vector<float>(N, -1);
+    mDescriptors = cv::Mat(N, 32, CV_8U, cv::Scalar(0));  // never used for matching (see header)
+    mDescriptorsRight.release();
+    mBowVec.clear();
+    mFeatVec.clear();
+    mmProjectPoints.clear();
+    mmMatchedInImage.clear();
+    mvLeftToRightMatch.clear();
+    mvRightToLeftMatch.clear();
+    mvStereo3Dpoints.clear();
+    mpPrevFrame = nullptr;
+    mpImuPreintegrated = nullptr;
+    mpImuPreintegratedFrame = nullptr;
+    mbHasPose = false;
+    mbHasVelocity = false;
+    UndistortKeyPoints();
+    AssignFeaturesToGrid();
+}
+#endif
+
 void Frame::ComputeImageBounds(const cv::Mat &imLeft)
 {
     if(mDistCoef.at<float>(0)!=0.0)

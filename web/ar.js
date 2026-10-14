@@ -38,6 +38,7 @@ let cactusProto = null, cactus = null;
 let downSum = [0, 0, 0], downN = 0;  // gravity direction in the SLAM world frame (sum of unit vectors)
 let accLP = null, motionEvents = 0;
 let lastMaps = 0, lastState = 0;
+const tracking = () => state === 2 || state === 5;  // 5: tracked by a KLT frame
 
 function layout() {  // cover-fit the processed image into the window; the GL canvas covers the same rectangle
   const s = Math.max(innerWidth / W, innerHeight / H);
@@ -115,7 +116,7 @@ function detectFloor() {
 }
 
 function placeCactus(clientX, clientY) {
-  if (!twc || state !== 2) return;
+  if (!twc || !tracking()) return;
   const u = (clientX - rect.x) / rect.s, v = (clientY - rect.y) / rect.s;  // image pixel
   const dir = normalize(mulR(rotOf(twc), [(u - W / 2) / F, (v - H / 2) / F, 1]));
   const o = [twc[12], twc[13], twc[14]];
@@ -167,7 +168,7 @@ function hint(s, holdMs = 0) {  // holdMs: keep this message instead of the per-
 function drawFrame(bmp) {
   bgx.drawImage(bmp, 0, 0);
   bmp.close();
-  if (showPoints && kps && state === 2) {
+  if (showPoints && kps && tracking()) {
     bgx.fillStyle = '#22c55e';
     for (let i = 0; i < kps.length; i += 3) if (kps[i + 2] === 1) bgx.fillRect(kps[i] - 1.5, kps[i + 1] - 1.5, 3, 3);
   }
@@ -257,7 +258,7 @@ async function start() {
       state = r.state; stats = r.viz.stats; kps = r.viz.kps;
       if ((lastState >= 2 && state === 1) || (stats[3] !== lastMaps && lastMaps)) resetAnchors('Tracking restarted. Move the phone slowly sideways.');
       lastState = state; lastMaps = stats[3];
-      if (state === 2) {
+      if (tracking()) {
         twc = r.twc;
         const g = gravityCam();
         if (g) { const gw = mulR(rotOf(twc), g); downSum = downSum.map((x, i) => x + gw[i]); downN++; }
@@ -265,15 +266,15 @@ async function start() {
       if (r.viz.mps) {
         localPts = [];
         for (let i = 0; i < r.viz.mps.length; i += 4) if (r.viz.mps[i + 3] > 0) localPts.push([r.viz.mps[i], r.viz.mps[i + 1], r.viz.mps[i + 2]]);
-        if (state === 2) detectFloor();
+        if (tracking()) detectFloor();
       }
       drawFrame(r.bmp);
       times.push(performance.now() - tf);
       if (times.length > 30) times.shift();
       if (state === 1) hint('Move the phone slowly sideways to start tracking');
       else if (state === 3 || state === 4) hint('Tracking lost: move back towards where you were');
-      else if (state === 2 && !cactus) hint(floor ? 'Tap the floor to place the cactus' : (downN ? 'Point at the floor…' : 'Tap a flat surface to place the cactus'));
-      else if (state === 2 && cactus && hintText) hint('');
+      else if (tracking() && !cactus) hint(floor ? 'Tap the floor to place the cactus' : (downN ? 'Point at the floor…' : 'Tap a flat surface to place the cactus'));
+      else if (tracking() && cactus && hintText) hint('');
       if (n % 5 === 0) {
         const fpsNow = 1000 / (times.reduce((a, b) => a + b, 0) / times.length);
         const mhz = motionEvents / ((performance.now() - t0) / 1000);

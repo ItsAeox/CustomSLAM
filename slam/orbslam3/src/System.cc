@@ -525,6 +525,10 @@ void System::Shutdown()
 #ifdef ORBSLAM3_WEB
     cout << "LM-STATS keyframes=" << mpLocalMapper->mnDiagKFs << " lba_done=" << mpLocalMapper->mnDiagLBADone
          << " lba_aborted=" << mpLocalMapper->mnDiagLBAAborted << " lba_skipped_newkf=" << mpLocalMapper->mnDiagLBASkipped << endl;
+    if(webConfig().kltEnable)
+        cout << "KLT-STATS klt_frames=" << mpTracker->mnWebKLTFrames << " orb_frames=" << mpTracker->mnWebORBFrames
+             << " klt_fallbacks=" << mpTracker->mnWebKLTFallbacks << " klt_ms_mean="
+             << (mpTracker->mnWebKLTFrames ? mpTracker->mdWebKLTms / mpTracker->mnWebKLTFrames : 0.0) << endl;
 #endif
     {
         unique_lock<mutex> lock(mMutexReset);

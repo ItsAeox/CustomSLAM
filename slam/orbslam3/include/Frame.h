@@ -303,6 +303,14 @@ public:
     double mTimeStereoMatch;
 #endif
 
+#ifdef ORBSLAM3_WEB
+    // web port: turn this frame (a copy of the previous frame) into a descriptor-free "KLT frame" for timestamp t:
+    // keypoints tracked by optical flow, each with its map point. Undistorts and grids the keypoints; descriptors and
+    // BoW stay empty, so such a frame must never become a keyframe or be matched by descriptor.
+    void WebSetTrackedFeatures(const std::vector<cv::KeyPoint>& keys, const std::vector<MapPoint*>& mapPoints,
+                               double timestamp);
+#endif
+
 private:
 
     // Undistort keypoints given OpenCV distortion parameters.

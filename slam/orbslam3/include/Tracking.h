@@ -137,6 +137,12 @@ public:
     // Current Frame
     Frame mCurrentFrame;
     Frame mLastFrame;
+#ifdef ORBSLAM3_WEB
+    // web port: KLT tracking frames (Web.KLT.*, see TrackKLT). Public for the browser bindings and statistics.
+    bool mbWebKLTFrame = false;        // the current frame was tracked by optical flow (no ORB extraction)
+    long mnWebKLTFrames = 0, mnWebORBFrames = 0, mnWebKLTFallbacks = 0;
+    double mdWebKLTms = 0;             // total time spent in accepted KLT frames (ms)
+#endif
 
     cv::Mat mImGray;
 
@@ -206,6 +212,14 @@ protected:
     void CreateInitialMapMonocular();
 
     void CheckReplacedInLastFrame();
+#ifdef ORBSLAM3_WEB
+    // web port: track the current image by pyramidal LK from the last frame's map-point observations + motion-only BA.
+    // Returns true and sets mCurrentFrame (a descriptor-free frame with pose) on success; false -> use ORB.
+    bool TrackKLT(const cv::Mat& im, double timestamp);
+    std::vector<cv::Mat> mvWebPrevPyr, mvWebCurPyr;  // LK pyramids of the previous / current image
+    bool mbWebForceORB = false;        // a keyframe was needed on a KLT frame: the next frame must be an ORB frame
+    int mnWebConsecutiveKLT = 0;
+#endif
     bool TrackReferenceKeyFrame();
     void UpdateLastFrame();
     bool TrackWithMotionModel();

@@ -156,7 +156,7 @@ function drawFrame(bmp, v, state) {
 function infoText(state, st) {  // FrameDrawer::DrawTextInfo
   if (state === 1) return 'TRYING TO INITIALIZE';
   if (state === 4 || state === 3) return `TRACK LOST. TRYING TO RELOCALIZE   |  Maps: ${st[3]}`;
-  if (state === 2 || state === 5) return `SLAM MODE |  Maps: ${st[3]}, KFs: ${st[0]}, MPs: ${st[1]}, Matches: ${st[2]}`;
+  if (state === 2 || state === 5) return `SLAM MODE${state === 5 ? " (KLT frame)" : ""} |  Maps: ${st[3]}, KFs: ${st[0]}, MPs: ${st[1]}, Matches: ${st[2]}`;
   return 'WAITING FOR IMAGES';
 }
 
@@ -322,7 +322,7 @@ async function startCamera() {
       const wallS = (performance.now() - t0) / 1000;
       $('sFrame').textContent = `${n} processed (${wallS.toFixed(0)} s)`;
       $('sState').textContent = STATE[r.state];
-      $('sState').className = r.state === 2 ? 'state-ok' : r.state === 1 || r.state === 3 ? 'state-warn' : 'state-bad';
+      $('sState').className = r.state === 2 || r.state === 5 ? 'state-ok' : r.state === 1 || r.state === 3 ? 'state-warn' : 'state-bad';
       $('sTrack').textContent = `${r.trackMs.toFixed(1)} / ${pct(trackMs, 0.5).toFixed(1)} / ${pct(trackMs, 0.95).toFixed(1)} ms`;
       $('sFps').textContent = `${(n / wallS).toFixed(1)} fps processed (camera ${s.frameRate ?? '?'} fps)`;
       $('sMap').textContent = `${st[0]} / ${st[1]} / ${st[3]}`;
@@ -452,7 +452,7 @@ async function start() {
       const wallS = (performance.now() - wall0 - pausedMs) / 1000;
       $('sFrame').textContent = `${i + 1} / ${frames.length}  (t = ${f.t.toFixed(1)} s${dropped ? `, ${dropped} dropped` : ''})`;
       $('sState').textContent = STATE[r.state];
-      $('sState').className = r.state === 2 ? 'state-ok' : r.state === 1 || r.state === 3 ? 'state-warn' : 'state-bad';
+      $('sState').className = r.state === 2 || r.state === 5 ? 'state-ok' : r.state === 1 || r.state === 3 ? 'state-warn' : 'state-bad';
       $('sTrack').textContent = `${r.trackMs.toFixed(1)} / ${pct(trackMs, 0.5).toFixed(1)} / ${pct(trackMs, 0.95).toFixed(1)} ms`;
       $('sFps').textContent = `${((i + 1 - dropped) / wallS).toFixed(1)} fps processed, ${(f.t / wallS).toFixed(2)}× real time`;
       $('sMap').textContent = `${st[0]} / ${st[1]} / ${st[3]}`;

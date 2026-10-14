@@ -43,7 +43,7 @@ if (BUILD_WASM)
   endif()
 endif()
 
-find_package(OpenCV REQUIRED COMPONENTS core imgproc features2d calib3d imgcodecs)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc video features2d calib3d imgcodecs)  # video: KLT frames
 message(STATUS "OpenCV ${OpenCV_VERSION} from ${OpenCV_DIR}")
 find_package(Threads REQUIRED)
 

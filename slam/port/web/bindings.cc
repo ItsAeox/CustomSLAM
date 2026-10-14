@@ -63,7 +63,8 @@ class WebSlam {
     }
     Sophus::SE3f Tcw = sys_->TrackMonocular(im, timestamp);
     lastMs_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    const int state = sys_->GetTrackingState();
+    int state = sys_->GetTrackingState();
+    if (state == ORB_SLAM3::Tracking::OK && sys_->WebTracker()->mbWebKLTFrame) state = 5;  // OK, tracked by KLT
     Eigen::Matrix4f Twc = Tcw.inverse().matrix();
     for (int c = 0; c < 4; ++c)
       for (int r = 0; r < 4; ++r) twc_[c * 4 + r] = Twc(r, c);
