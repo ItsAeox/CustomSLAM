@@ -18,6 +18,7 @@
 
 
 #include "LocalMapping.h"
+#include "WebConfig.h"
 #include "LoopClosing.h"
 #include "ORBmatcher.h"
 #include "Optimizer.h"
@@ -399,6 +400,10 @@ void LocalMapping::CreateNewMapPoints()
     // For stereo inertial case
     if(mbMonocular)
         nn=30;
+#ifdef ORBSLAM3_WEB
+    if(webConfig().mappingNeighbors > 0)
+        nn = webConfig().mappingNeighbors;  // stock: 30 (mono)
+#endif
     vector<KeyFrame*> vpNeighKFs = mpCurrentKeyFrame->GetBestCovisibilityKeyFrames(nn);
 
     if (mbInertial)
@@ -724,6 +729,10 @@ void LocalMapping::SearchInNeighbors()
     int nn = 10;
     if(mbMonocular)
         nn=30;
+#ifdef ORBSLAM3_WEB
+    if(webConfig().mappingNeighbors > 0)
+        nn = webConfig().mappingNeighbors;  // stock: 30 (mono)
+#endif
     const vector<KeyFrame*> vpNeighKFs = mpCurrentKeyFrame->GetBestCovisibilityKeyFrames(nn);
     vector<KeyFrame*> vpTargetKFs;
     for(vector<KeyFrame*>::const_iterator vit=vpNeighKFs.begin(), vend=vpNeighKFs.end(); vit!=vend; vit++)

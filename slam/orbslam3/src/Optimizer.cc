@@ -18,6 +18,7 @@
 
 
 #include "Optimizer.h"
+#include "WebConfig.h"
 
 
 #include <complex>
@@ -1123,9 +1124,16 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
     Map* pCurrentMap = pKF->GetMap();
 
     const vector<KeyFrame*> vNeighKFs = pKF->GetVectorCovisibleKeyFrames();
+#ifdef ORBSLAM3_WEB
+    const int maxOptKFs = webConfig().lbaMaxOptKFs;  // 0 = all covisible (stock); else the best-covisible ones
+#endif
     for(int i=0, iend=vNeighKFs.size(); i<iend; i++)
     {
         KeyFrame* pKFi = vNeighKFs[i];
+#ifdef ORBSLAM3_WEB
+        if(maxOptKFs > 0 && (int)lLocalKeyFrames.size() >= maxOptKFs)
+            break;
+#endif
         pKFi->mnBALocalForKF = pKF->mnId;
         if(!pKFi->isBad() && pKFi->GetMap() == pCurrentMap)
             lLocalKeyFrames.push_back(pKFi);
@@ -1161,6 +1169,36 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
 
     // Fixed Keyframes. Keyframes that see Local MapPoints but that are not Local Keyframes
     list<KeyFrame*> lFixedCameras;
+#ifdef ORBSLAM3_WEB
+    const int maxFixedKFs = webConfig().lbaMaxFixedKFs;  // 0 = all observers (stock)
+    if(maxFixedKFs > 0)
+    {
+        // keep the observers with the most observations of local map points (ties: newest first; never pointer order)
+        map<KeyFrame*,int> nObs;
+        for(list<MapPoint*>::iterator lit=lLocalMapPoints.begin(), lend=lLocalMapPoints.end(); lit!=lend; lit++)
+        {
+            const map<KeyFrame*,tuple<int,int>> observations = (*lit)->GetObservations();
+            for(map<KeyFrame*,tuple<int,int>>::const_iterator mit=observations.begin(); mit!=observations.end(); mit++)
+            {
+                KeyFrame* pKFi = mit->first;
+                if(pKFi->mnBALocalForKF!=pKF->mnId && !pKFi->isBad() && pKFi->GetMap() == pCurrentMap)
+                    nObs[pKFi]++;
+            }
+        }
+        vector<pair<int,KeyFrame*>> vObs;
+        vObs.reserve(nObs.size());
+        for(map<KeyFrame*,int>::iterator it=nObs.begin(); it!=nObs.end(); it++)
+            vObs.push_back(make_pair(it->second, it->first));
+        sort(vObs.begin(), vObs.end(), [](const pair<int,KeyFrame*>& a, const pair<int,KeyFrame*>& b) {
+            return a.first != b.first ? a.first > b.first : a.second->mnId > b.second->mnId; });
+        for(size_t i=0; i<vObs.size() && (int)i<maxFixedKFs; i++)
+        {
+            vObs[i].second->mnBAFixedForKF = pKF->mnId;
+            lFixedCameras.push_back(vObs[i].second);
+        }
+    }
+    else
+#endif
     for(list<MapPoint*>::iterator lit=lLocalMapPoints.begin(), lend=lLocalMapPoints.end(); lit!=lend; lit++)
     {
         map<KeyFrame*,tuple<int,int>> observations = (*lit)->GetObservations();
@@ -1299,6 +1337,13 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
 
             if(!pKFi->isBad() && pKFi->GetMap() == pCurrentMap)
             {
+#ifdef ORBSLAM3_WEB
+                // With Web.LBA caps some observers have no pose vertex (and their id may even equal a point vertex id).
+                // Never true for stock settings: every observer is then a local or fixed keyframe.
+                if((webConfig().lbaMaxOptKFs > 0 || webConfig().lbaMaxFixedKFs > 0) &&
+                   (pKFi->mnId > maxKFid || !dynamic_cast<g2o::VertexSE3Expmap*>(optimizer.vertex(pKFi->mnId))))
+                    continue;
+#endif
                 const int leftIndex = get<0>(mit->second);
 
                 // Monocular observation
@@ -1408,7 +1453,11 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
             return;
 
     optimizer.initializeOptimization();
+#ifdef ORBSLAM3_WEB
+    optimizer.optimize(webConfig().lbaIterations);  // stock: 10
+#else
     optimizer.optimize(10);
+#endif
 
     vector<pair<KeyFrame*,MapPoint*> > vToErase;
     vToErase.reserve(vpEdgesMono.size()+vpEdgesBody.size()+vpEdgesStereo.size());

@@ -20,6 +20,7 @@
 
 #include "System.h"
 #include "Converter.h"
+#include "WebConfig.h"
 #include <thread>
 #include <pangolin/pangolin.h>
 #include <iomanip>
@@ -77,6 +78,9 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
     }
 
     cv::FileNode node = fsSettings["File.version"];
+#ifdef ORBSLAM3_WEB
+    loadWebConfig(strSettingsFile);  // optional Web.* tuning keys; defaults = stock ORB-SLAM3
+#endif
     if(!node.empty() && node.isString() && node.string() == "1.0"){
         settings_ = new Settings(strSettingsFile,mSensor);
 

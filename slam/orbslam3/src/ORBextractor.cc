@@ -60,6 +60,7 @@
 #include <opencv2/imgproc/imgproc.hpp>
 #include <vector>
 #include <iostream>
+#include <chrono>
 
 #include "ORBextractor.h"
 
@@ -69,6 +70,17 @@ using namespace std;
 
 namespace ORB_SLAM3
 {
+#ifdef REGISTER_TIMES
+    // web port (profiling builds only): per-stage ORB extraction times, printed as "ORB-PROF" every 300 frames
+    namespace {
+        struct OrbProf { double pyramid = 0, fast = 0, orient = 0, blur = 0, desc = 0; long n = 0; };
+        OrbProf gOrbProf;
+        inline double orbMsSince(const std::chrono::steady_clock::time_point& t)
+        {
+            return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+        }
+    }
+#endif
 
     const int PATCH_SIZE = 31;
     const int HALF_PATCH_SIZE = 15;
@@ -116,9 +128,16 @@ namespace ORB_SLAM3
         const uchar* center = &img.at<uchar>(cvRound(kpt.pt.y), cvRound(kpt.pt.x));
         const int step = (int)img.step;
 
+#if defined(ORBSLAM3_WEB) && defined(__wasm__)
+        // web port: cvRound(float) is a lrintf() library call on wasm (~1M calls per frame here). rintf lowers to the
+        // f32.nearest instruction with the same round-half-to-even result, so descriptors are bit-identical.
+#define ORB_ROUND(x) ((int)__builtin_rintf(x))
+#else
+#define ORB_ROUND(x) cvRound(x)
+#endif
 #define GET_VALUE(idx) \
-        center[cvRound(pattern[idx].x*b + pattern[idx].y*a)*step + \
-               cvRound(pattern[idx].x*a - pattern[idx].y*b)]
+        center[ORB_ROUND(pattern[idx].x*b + pattern[idx].y*a)*step + \
+               ORB_ROUND(pattern[idx].x*a - pattern[idx].y*b)]
 
 
         for (int i = 0; i < 32; ++i, pattern += 16)
@@ -893,8 +912,14 @@ namespace ORB_SLAM3
         }
 
         // compute orientations
+#ifdef REGISTER_TIMES
+        const auto tOri = std::chrono::steady_clock::now();
+#endif
         for (int level = 0; level < nlevels; ++level)
             computeOrientation(mvImagePyramid[level], allKeypoints[level], umax);
+#ifdef REGISTER_TIMES
+        gOrbProf.orient += orbMsSince(tOri);
+#endif
     }
 
     void ORBextractor::ComputeKeyPointsOld(std::vector<std::vector<KeyPoint> > &allKeypoints)
@@ -1096,10 +1121,21 @@ namespace ORB_SLAM3
         assert(image.type() == CV_8UC1 );
 
         // Pre-compute the scale pyramid
+#ifdef REGISTER_TIMES
+        const auto tPyr = std::chrono::steady_clock::now();
+#endif
         ComputePyramid(image);
+#ifdef REGISTER_TIMES
+        gOrbProf.pyramid += orbMsSince(tPyr);
+        const double orientBefore = gOrbProf.orient;
+        const auto tFast = std::chrono::steady_clock::now();
+#endif
 
         vector < vector<KeyPoint> > allKeypoints;
         ComputeKeyPointsOctTree(allKeypoints);
+#ifdef REGISTER_TIMES
+        gOrbProf.fast += orbMsSince(tFast) - (gOrbProf.orient - orientBefore);  // FAST + octree distribution
+#endif
         //ComputeKeyPointsOld(allKeypoints);
 
         Mat descriptors;
@@ -1131,13 +1167,23 @@ namespace ORB_SLAM3
                 continue;
 
             // preprocess the resized image
+#ifdef REGISTER_TIMES
+            const auto tBlur = std::chrono::steady_clock::now();
+#endif
             Mat workingMat = mvImagePyramid[level].clone();
             GaussianBlur(workingMat, workingMat, Size(7, 7), 2, 2, BORDER_REFLECT_101);
+#ifdef REGISTER_TIMES
+            gOrbProf.blur += orbMsSince(tBlur);
+            const auto tDesc = std::chrono::steady_clock::now();
+#endif
 
             // Compute the descriptors
             //Mat desc = descriptors.rowRange(offset, offset + nkeypointsLevel);
             Mat desc = cv::Mat(nkeypointsLevel, 32, CV_8U);
             computeDescriptors(workingMat, keypoints, desc, pattern);
+#ifdef REGISTER_TIMES
+            gOrbProf.desc += orbMsSince(tDesc);
+#endif
 
             offset += nkeypointsLevel;
 
@@ -1166,6 +1212,15 @@ namespace ORB_SLAM3
             }
         }
         //cout << "[ORBextractor]: extracted " << _keypoints.size() << " KeyPoints" << endl;
+#ifdef REGISTER_TIMES
+        if (++gOrbProf.n % 300 == 0)
+        {
+            const double n = (double)gOrbProf.n;
+            cout << "ORB-PROF frames=" << gOrbProf.n << " ms/frame: pyramid=" << gOrbProf.pyramid / n
+                 << " fast+octree=" << gOrbProf.fast / n << " orientation=" << gOrbProf.orient / n
+                 << " blur=" << gOrbProf.blur / n << " descriptors=" << gOrbProf.desc / n << endl;
+        }
+#endif
         return monoIndex;
     }
 
