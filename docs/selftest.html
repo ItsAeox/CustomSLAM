@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SLAM Self-test</title>
+<script src="./coi.js"></script>
+<style>
+  :root { --bg: #0f1115; --fg: #e6e6e6; --muted: #9aa0a6; --ok: #4ade80; --bad: #f87171; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+  li.ok::marker { color: var(--ok); } li.bad::marker { color: var(--bad); }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+  a { color: var(--ok); }
+  code { color: var(--muted); }
+</style>
+</head>
+<body>
+<h1>SLAM self-test</h1>
+<p>Checks that this device/browser can run the WebAssembly SLAM: cross-origin isolation (threads), WASM SIMD,
+vocabulary download, SLAM start-up and a few synthetic frames. Then go to <a href="./ar.html">the AR page</a>.</p>
+<ul id="out"></ul>
+<script type="module">
+import { createSlamWorker, cameraSettings, VOCAB_URL } from './slamclient.js';
+const out = document.getElementById('out');
+const line = (ok, text) => { const li = document.createElement('li'); li.className = ok ? 'ok' : 'bad';
+  li.innerHTML = `<span class="${ok ? 'ok' : 'bad'}">${ok ? 'OK' : 'FAIL'}</span> ${text}`; out.append(li); return ok; };
+line(crossOriginIsolated, `cross-origin isolated (SharedArrayBuffer / threads): ${crossOriginIsolated}`);
+line(true, `${navigator.hardwareConcurrency} hardware threads; ${navigator.userAgent}`);
+const simd = WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]));
+line(simd, `WebAssembly SIMD: ${simd}`);
+if (crossOriginIsolated) {
+  const t0 = performance.now();
+  const slam = createSlamWorker(() => {});
+  const ready = await slam.request({ type: 'init', vocabUrl: VOCAB_URL, clahe: false, seed: 1, settingsText: cameraSettings(480, 640, 69, 30) });
+  if (line(ready.type === 'ready', `SLAM start-up incl. vocabulary (${VOCAB_URL.split('/').pop()}): ${(performance.now() - t0).toFixed(0)} ms, ` +
+           `${ready.vocabBytes ? (ready.vocabBytes / 1e6).toFixed(1) + ' MB' : ready.text || ''}`)) {
+    const c = new OffscreenCanvas(480, 640), x = c.getContext('2d');
+    const ms = [];
+    for (let i = 0; i < 10; i++) {  // textured synthetic frames (random rectangles, shifted a little each frame)
+      x.fillStyle = '#777'; x.fillRect(0, 0, 480, 640);
+      let s = 7; const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647);
+      for (let k = 0; k < 400; k++) { x.fillStyle = `rgb(${rnd() * 255 | 0},${rnd() * 255 | 0},${rnd() * 255 | 0})`; x.fillRect(rnd() * 480 + i * 2, rnd() * 640, 6 + rnd() * 20, 6 + rnd() * 20); }
+      const bitmap = c.transferToImageBitmap();
+      const r = await slam.request({ type: 'bitmap', bitmap, t: i / 30 }, [bitmap]);
+      r.bmp && r.bmp.close();
+      ms.push(r.trackMs);
+    }
+    ms.sort((a, b) => a - b);
+    line(true, `ORB-SLAM3 processed 10 frames: median ${ms[5].toFixed(1)} ms per frame (synthetic image, 480×640)`);
+  }
+  slam.terminate();
+} else {
+  line(false, 'not isolated: if this is the first visit, reload once (the service worker installs on the first load)');
+}
+</script>
+</body>
+</html>

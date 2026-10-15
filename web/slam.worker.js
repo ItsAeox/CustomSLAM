@@ -56,7 +56,8 @@ self.onmessage = async (e) => {
       const t0 = performance.now();
       M = await createOrbSlam3({ print: log, printErr: log });
       const [voc, settings] = await Promise.all([
-        fetch(msg.vocabUrl).then((r) => r.arrayBuffer()),
+        fetch(msg.vocabUrl).then((r) => (msg.vocabUrl.endsWith('.gz')  // static hosting ships ORBvoc.bin.gz
+          ? new Response(r.body.pipeThrough(new DecompressionStream('gzip'))) : r).arrayBuffer()),
         msg.settingsText ?? fetch(msg.settingsUrl).then((r) => r.text()),  // settingsText: generated (live camera)
       ]);
       M.FS.writeFile('/ORBvoc.bin', new Uint8Array(voc));

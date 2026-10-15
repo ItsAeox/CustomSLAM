@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Web SLAM</title>
+<script src="./coi.js"></script>
+<style>
+  body { margin: 0; padding: 16px; background: #0f1115; color: #e6e6e6; font: 16px/1.5 system-ui, sans-serif; }
+  a { color: #5bd18b; } li { margin: 10px 0; } code { color: #9aa0a6; }
+</style>
+</head>
+<body>
+<h1>Markerless SLAM in the browser</h1>
+<p>ORB-SLAM3 (monocular) compiled to WebAssembly, with an ORB+KLT hybrid tracker. Everything runs on this device.</p>
+<ul>
+  <li><a href="./ar.html"><b>AR: place a cactus on the floor</b></a> (rear camera, hybrid ORB+KLT tracker)</li>
+  <li><a href="./ar.html?tracker=stock">AR with stock ORB-SLAM3 tracking</a> (ORB on every frame, for comparison)</li>
+  <li><a href="./selftest.html">Self-test</a>: threads, SIMD, vocabulary download (33 MB) and SLAM start-up</li>
+</ul>
+<p><code>The first visit installs a small service worker and reloads once (WebAssembly threads need it on static hosting).</code></p>
+</body>
+</html>

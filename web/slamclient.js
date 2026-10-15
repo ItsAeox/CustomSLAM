@@ -53,4 +53,9 @@ Viewer.ViewpointF: 500.0
 `;
 }
 
+// Vocabulary URL: the dev server (web/serve.py) serves /vocab/ORBvoc.bin; the static (GitHub Pages) build ships a
+// gzipped copy next to the pages (decompressed by the worker).
+export const VOCAB_URL = location.pathname.startsWith('/web/')
+  ? '/vocab/ORBvoc.bin' : new URL('./vocab/ORBvoc.bin.gz', location.href).href;
+
 export const STATE = { '-1': 'not ready', 0: 'no images', 1: 'initialising', 2: 'tracking', 3: 'recently lost', 4: 'lost', 5: 'tracking (KLT)' };
