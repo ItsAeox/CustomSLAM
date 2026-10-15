@@ -330,7 +330,7 @@ async function start() {
 
     tele(`start: ${navigator.userAgent} | cores ${navigator.hardwareConcurrency} | image ${W}x${H} | ` +
          `fx ${K.fx.toFixed(1)} fy ${K.fy.toFixed(1)} cx ${K.cx.toFixed(1)} cy ${K.cy.toFixed(1)} px | ` +
-         (calib ? `calibrated ${calib.date.slice(0, 10)} (rms ${calib.rms.toFixed(2)} px, k1 ${calib.k1.toFixed(3)} k2 ${calib.k2.toFixed(3)})` : `hfov ${hfov} (assumed)`) +
+         (seq ? 'dataset intrinsics' : calib ? `calibrated ${calib.date.slice(0, 10)} (rms ${calib.rms.toFixed(2)} px, k1 ${calib.k1.toFixed(3)} k2 ${calib.k2.toFixed(3)})` : `hfov ${hfov} (assumed)`) +
          ` | options ${describeOptions(opts)} | source ${seq || 'camera'}`);
     let lastSlamLine = '', slamRepeats = 0;
     const slam = createSlamWorker((s) => {
