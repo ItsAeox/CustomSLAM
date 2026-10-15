@@ -8,6 +8,7 @@ Variants (applied to baselines/orbslam3/settings/{EuRoC,TUM-VI}_mono.yaml):
   light-all  light-orb + light-map
   klt        Web.KLT.Enable 1 (hybrid ORB+KLT tracker, defaults in include/WebConfig.h)
   klt-orb    klt + light-orb
+  lba5       Web.LBA.Iterations 5 (local BA Levenberg-Marquardt iterations, stock 10)
   tsm        Web.Track.TimeScaledMotion 1 (motion prediction rescaled to the frame interval; for --live runs)
 
 Usage: make_variants.py <out_dir> [variant ...]   (default: all)
@@ -43,7 +44,8 @@ def tsm(text):
 
 
 VARIANTS = {"stock": lambda t: t, "light-orb": light_orb, "light-map": light_map,
-            "light-all": lambda t: light_map(light_orb(t)), "klt": klt, "klt-orb": lambda t: klt(light_orb(t)), "tsm": tsm}
+            "light-all": lambda t: light_map(light_orb(t)), "klt": klt, "klt-orb": lambda t: klt(light_orb(t)), "tsm": tsm,
+            "lba5": lambda t: t.rstrip("\n") + "\n\n# web port: local BA iterations (include/WebConfig.h)\nWeb.LBA.Iterations: 5\n"}
 
 
 def main():

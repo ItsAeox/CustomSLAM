@@ -42,7 +42,6 @@ let rect = { x: 0, y: 0, w: 1, h: 1, s: 1 };
 let twc = null, state = 0, stats = [0, 0, 0, 0];
 let localPts = [];                  // local map points [[x,y,z]]
 let kps = null;
-let showPoints = true;
 let floor = null, floorMesh = null;  // plane {n (up), d, height}
 let cactusProto = null, cactus = null;  // the placed object (now a tree: assets/tree.glb)
 let objBase = 1;                     // placement size (map units); the Size slider scales it
@@ -227,7 +226,7 @@ function placeCactus(clientX, clientY) {
   objBase = size;
   cactus.scale.setScalar(size * sizeFactor());  // cactusProto is normalised to height 1, base at the origin
   scene.add(cactus);
-  $('sizeRow').hidden = false;
+  $('sizeRow').style.visibility = 'visible';
   tele(`tree placed: ${floor ? 'floor plane' : 'tap plane'}, distance ${Math.hypot(hit[0] - o[0], hit[1] - o[1], hit[2] - o[2]).toFixed(2)}, size ${size.toFixed(3)} x ${sizeFactor().toFixed(2)} (map units)`);
   hint('');
 }
@@ -243,7 +242,7 @@ function hint(s, holdMs = 0) {  // holdMs: keep this message instead of the per-
 function drawFrame(bmp) {
   bgx.drawImage(bmp, 0, 0);
   bmp.close();
-  if (showPoints && kps && tracking()) {
+  if (kps && tracking()) {
     bgx.fillStyle = '#22c55e';
     for (let i = 0; i < kps.length; i += 3) if (kps[i + 2] === 1) bgx.fillRect(kps[i] - 1.5, kps[i + 1] - 1.5, 3, 3);
   }
@@ -370,7 +369,7 @@ async function start() {
       }
     }
     layout();
-    $('start').hidden = true; $('hud').hidden = $('bar').hidden = false;
+    $('start').hidden = true; $('hud').hidden = $('bar').hidden = $('topRow').hidden = false;
     // Back / Options return to the start screen (options kept in the URL): reload ends the camera and the worker
     history.pushState({ running: true }, '');
     addEventListener('popstate', () => location.reload());
@@ -419,7 +418,7 @@ async function start() {
       tele(`slam: ${s}`);
     }, onProgress);
     const tInit = performance.now();
-    const ready = await slam.request({ type: 'init', vocabUrl: vocabUrl(opts.desc), clahe, seed: 1,
+    const ready = await slam.request({ type: 'init', vocabUrl: vocabUrl(opts.desc), clahe, seed: 1, prof: params.get('prof') === '1',
                                        settingsText: withTracker(settingsText) });
     loadingDone = true; clearInterval(stallTimer);
     if (camStream) {  // WebCodecs: frames go straight to the worker; use it only if they match the stream we calibrated for
@@ -442,8 +441,7 @@ async function start() {
       if (stash) { if (stash.cactus) scene.remove(stash.cactus); if (stash.floorMesh) scene.remove(stash.floorMesh); stash = null; }
       resetAnchors('Map reset. Move the phone slowly sideways.');
     };
-    $('btnPoints').onclick = () => { showPoints = !showPoints; };
-    $('btnClear').onclick = () => { if (cactus) { scene.remove(cactus); cactus = null; $('sizeRow').hidden = true; tele('tree removed'); } };
+    $('btnClear').onclick = () => { if (cactus) { scene.remove(cactus); cactus = null; $('sizeRow').style.visibility = 'hidden'; tele('tree removed'); } };
     let sizeLog = 0;
     $('size').oninput = () => {  // resize the placed tree (2^value: 0.25x .. 4x of the placement size)
       $('sizeVal').textContent = `${sizeFactor().toFixed(2)}×`;
@@ -521,12 +519,30 @@ async function start() {
           `KFs ${stats[0]} · points ${stats[2]} · floor ${floor ? 'yes' : 'no'} · gravity ${mhz ? mhz.toFixed(0) + ' Hz' : 'n/a'} · ${W}×${H} ${seq ? 'dataset camera' : calib ? 'calibrated' : `${hfov}° FOV (assumed)`}`;
       }
       trackTimes.push(r.trackMs);
+      if (n % 15 === 0) {  // resource panel (top right): memory, map size, tracking load, threads
+        const avg = times.reduce((a, b) => a + b, 0) / Math.max(1, times.length);
+        const js = performance.memory ? performance.memory.usedJSHeapSize / 1048576 : null;
+        const trk = trackTimes.length ? trackTimes.reduce((a, b) => a + b, 0) / trackTimes.length : r.trackMs;
+        $('res').innerHTML = `WASM ${(r.heap / 1048576).toFixed(0)} MB` + (js != null ? ` · JS ${js.toFixed(0)} MB` : '') +
+          `<br>map ${stats[1]} pts · ${stats[0]} KFs · ${stats[3]} map${stats[3] === 1 ? '' : 's'}` +
+          `<br>tracking ${Math.min(100, 100 * trk / Math.max(avg, 1)).toFixed(0)}% busy · ${navigator.hardwareConcurrency || '?'} cores, SLAM threads 3`;
+      }
+      if (n % 300 === 0) {  // per-stage profile (?prof=1 loads the profiling build; KLT counters always)
+        const pr = await slam.request({ type: 'profile' });
+        const p = pr.p || [], f = (x) => (x == null ? '-' : x.toFixed(1));
+        let line = `profile: KLT frames ${p[0]} ORB frames ${p[1]} | KLT ms ${f(p[2])} | LK pyramid ms/frame ${f(p[3])}`;
+        if (p.length > 4) {
+          line += ` | tracking (ms, mean of ${p[9]} frames): ORB ${f(p[4])} pose ${f(p[5])} local map ${f(p[6])} new KF ${f(p[7])} total ${f(p[8])}` +
+                  ` | mapping (ms per KF, ${p[16]} KFs): insert ${f(p[10])} MP culling ${f(p[11])} MP creation ${f(p[12])} local BA ${f(p[13])} KF culling ${f(p[14])} total ${f(p[15])}`;
+        }
+        tele(line + ` | page: gray ${decodeTimes.length ? f([...decodeTimes].sort((x, y) => x - y)[decodeTimes.length >> 1]) : '-'} ms (${camMode})`);
+      }
       if (n % 30 === 0) {
         const s = [...trackTimes].sort((a, b) => a - b);
         const fpsNow = 1000 / (times.reduce((a, b) => a + b, 0) / times.length);
         tele(`frame ${n}: ${STATE[state]} | ${fpsNow.toFixed(1)} fps | track ms med ${s[s.length >> 1].toFixed(1)} p95 ${s[Math.floor(s.length * 0.95)].toFixed(1)} | ` +
              `gray ms ${decodeTimes.length ? [...decodeTimes].sort((x, y) => x - y)[decodeTimes.length >> 1].toFixed(1) : '-'} (${camMode}) | ` +
-             `KFs ${stats[0]} MPs ${stats[1]} matches ${stats[2]} maps ${stats[3]} | floor ${floor ? `yes (cam height ${floor.height.toFixed(2)}, ${floor.inliers} inl)` : 'no'} | ` +
+             `KFs ${stats[0]} MPs ${stats[1]} matches ${stats[2]} maps ${stats[3]} | wasm heap ${(r.heap / 1048576).toFixed(0)} MB | floor ${floor ? `yes (cam height ${floor.height.toFixed(2)}, ${floor.inliers} inl)` : 'no'} | ` +
              `gravity ${(motionEvents / ((performance.now() - t0) / 1000)).toFixed(0)} Hz | tree ${cactus ? 'placed' : 'no'}` +
              (camFrames ? ` | camera ${camFrames} frames, ${(100 * (camDropped - camLast[1]) / Math.max(1, camFrames - camLast[0])).toFixed(0)}% dropped (last 30 frames)` : ''));
         camLast = [camFrames, camDropped];

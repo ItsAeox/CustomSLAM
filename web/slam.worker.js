@@ -11,7 +11,11 @@
 //                {type:'calibRemove', index} {type:'calibClear'} {type:'calibSolve', cols, rows}   (calib.html)
 // Messages out:  {type:'log', text} {type:'ready', ms} {type:'pose', idx, t, state, twc, trackMs, decodeMs}
 //                {type:'finished', frames, keyframes}  (ORB-SLAM3 final trajectories, EuRoC format)
-import createOrbSlam3 from './build/orbslam3.js';
+// the module is loaded on 'init' / 'calibInit': ./build (release) or ./build-prof (profiling build, AR ?prof=1)
+let createOrbSlam3 = null;
+const loadModule = async (prof) => {
+  if (!createOrbSlam3) createOrbSlam3 = (await import(prof ? './build-prof/orbslam3.js' : './build/orbslam3.js')).default;
+};
 
 let M = null;
 let slam = null;
@@ -101,6 +105,7 @@ self.onmessage = async (e) => {
   try {
     if (msg.type === 'init') {
       const t0 = performance.now();
+      await loadModule(!!msg.prof);
       M = await createOrbSlam3({ print: log, printErr: log });
       // download progress: bytes received (compressed, for .gz) vs Content-Length, posted ~10x per second
       const counted = (r) => {
@@ -178,6 +183,8 @@ self.onmessage = async (e) => {
       postMessage({ type: 'camera', ok: first && !!f, format: f && f.format, codedW: f && f.codedWidth, codedH: f && f.codedHeight,
                     displayW: f && f.displayWidth, displayH: f && f.displayHeight, visibleW: f && f.visibleRect.width,
                     visibleH: f && f.visibleRect.height, rotation: f && 'rotation' in f ? f.rotation : null });
+    } else if (msg.type === 'profile') {  // live per-stage profile (see bindings.cc WebSlam::profile)
+      postMessage({ type: 'profile', p: Array.from(slam.profile()) });
     } else if (msg.type === 'cameraStop') {
       if (camReader) { camReader.cancel().catch(() => {}); camReader = null; }
       if (camLatest) { camLatest.close(); camLatest = null; }
@@ -203,6 +210,7 @@ self.onmessage = async (e) => {
       slam.reset();
       postMessage({ type: 'reset' });
     } else if (msg.type === 'calibInit') {  // camera calibration (calib.html): the module without SLAM / vocabulary
+      await loadModule(false);
       M = M || await createOrbSlam3({ print: log, printErr: log });
       cal = new M.Calibrator();
       postMessage({ type: 'calibReady' });

@@ -183,6 +183,7 @@ public:
     // from the thread that calls Track*, between frames.
     Tracking* WebTracker() { return mpTracker; }
     Atlas* WebAtlas() { return mpAtlas; }
+    LocalMapping* WebLocalMapper() { return mpLocalMapper; }
 #endif
     std::vector<MapPoint*> GetTrackedMapPoints();
     std::vector<cv::KeyPoint> GetTrackedKeyPointsUn();

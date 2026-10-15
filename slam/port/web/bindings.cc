@@ -26,6 +26,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "Atlas.h"
+#include "LocalMapping.h"
 #include "KeyFrame.h"
 #include "Map.h"
 #include "MapPoint.h"
@@ -214,6 +215,33 @@ class WebSlam {
     return val(typed_memory_view(4, stats_));
   }
 
+  // Live per-stage profile (AR page, ?prof=1). Always: [KLT frames, ORB frames, KLT ms mean, LK pyramid ms per frame].
+  // Profiling build (WEB_PROFILE = ORB-SLAM3's REGISTER_TIMES) adds the running means (ms) of the stage timers:
+  // tracking [ORB extraction, pose prediction, local-map tracking, new keyframe, total, frames] and local mapping
+  // [KF insertion, map-point culling, map-point creation, local BA, KF culling, total, keyframes]. Diagnostic: the
+  // mapping vectors are read while the mapping thread may append to them.
+  val profile() {
+    prof_.clear();
+    if (!sys_) return val(typed_memory_view(0, prof_.data()));
+    ORB_SLAM3::Tracking* t = sys_->WebTracker();
+    const long kf = t->mnWebKLTFrames, of = t->mnWebORBFrames;
+    prof_ = {(double)kf, (double)of, kf ? t->mdWebKLTms / kf : 0.0, t->mdWebKLTPyrMs / std::max(1L, kf + of)};
+#ifdef REGISTER_TIMES
+    auto mean = [](const std::vector<double>& v) {
+      const size_t n = v.size();
+      double s = 0;
+      for (size_t i = 0; i < n; ++i) s += v[i];
+      return n ? s / n : 0.0;
+    };
+    ORB_SLAM3::LocalMapping* m = sys_->WebLocalMapper();
+    prof_.insert(prof_.end(), {mean(t->vdORBExtract_ms), mean(t->vdPosePred_ms), mean(t->vdLMTrack_ms), mean(t->vdNewKF_ms),
+                               mean(t->vdTrackTotal_ms), (double)t->vdTrackTotal_ms.size(),
+                               mean(m->vdKFInsert_ms), mean(m->vdMPCulling_ms), mean(m->vdMPCreation_ms), mean(m->vdLBA_ms),
+                               mean(m->vdKFCulling_ms), mean(m->vdLMTotal_ms), (double)m->vdLMTotal_ms.size()});
+#endif
+    return val(typed_memory_view(prof_.size(), prof_.data()));
+  }
+
   void reset() { if (sys_) sys_->ResetActiveMap(); }
   // AR page: while an anchor is placed, a tracking loss keeps relocalising in the active map instead of resetting it
   // or starting a new one (WebConfig::keepMap). Called between frames, on the thread that calls track().
@@ -237,6 +265,7 @@ class WebSlam {
   cv::Ptr<cv::CLAHE> claheOp_;
   float twc_[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
   std::vector<float> pts_, kps_, mps_, kfs_, edges_, ini_;
+  std::vector<double> prof_;
   int nMatches_ = 0;
   int stats_[4] = {0, 0, 0, 0};
   double lastMs_ = 0;
@@ -343,6 +372,7 @@ EMSCRIPTEN_BINDINGS(orbslam3_web) {
       .function("initMatches", &WebSlam::initMatches)
       .function("mapStats", &WebSlam::mapStats)
       .function("reset", &WebSlam::reset)
+      .function("profile", &WebSlam::profile)
       .function("setKeepMap", &WebSlam::setKeepMap)
       .function("shutdown", &WebSlam::shutdown)
       .function("finishAndSave", &WebSlam::finishAndSave);
