@@ -348,6 +348,10 @@ protected:
     //Motion Model
     bool mbVelocity{false};
     Sophus::SE3f mVelocity;
+#ifdef ORBSLAM3_WEB
+    double mWebVelocityDt = 0;  // interval (s) of the two frames that define mVelocity
+    Sophus::SE3f WebMotionPrediction(double tNow) const;  // mVelocity, rescaled to tNow (Web.Track.TimeScaledMotion)
+#endif
 
     //Color order (true RGB, false BGR, ignored if grayscale)
     bool mbRGB;

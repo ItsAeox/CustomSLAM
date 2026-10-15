@@ -2263,6 +2263,9 @@ void Tracking::Track()
                 Sophus::SE3f LastTwc = mLastFrame.GetPose().inverse();
                 mVelocity = mCurrentFrame.GetPose() * LastTwc;
                 mbVelocity = true;
+#ifdef ORBSLAM3_WEB
+                mWebVelocityDt = mCurrentFrame.mTimeStamp - mLastFrame.mTimeStamp;
+#endif
             }
             else {
                 mbVelocity = false;
@@ -2761,6 +2764,21 @@ void Tracking::CreateMapInAtlas()
 }
 
 #ifdef ORBSLAM3_WEB
+// Constant-velocity prediction for a frame at tNow. Stock ORB-SLAM3 applies the last inter-frame motion unchanged,
+// which assumes a fixed frame interval. A live camera in a browser delivers the newest frame, so frames are dropped
+// whenever tracking is slower than the camera, and intervals vary. Web.Track.TimeScaledMotion rescales the motion
+// on SE(3), exp(r log V) with r = dt_now / dt_last, clamped to [0, 4] (a long stall is not extrapolated further).
+Sophus::SE3f Tracking::WebMotionPrediction(double tNow) const
+{
+    if(!webConfig().timeScaledMotion || mWebVelocityDt <= 0)
+        return mVelocity;
+    double r = (tNow - mLastFrame.mTimeStamp) / mWebVelocityDt;
+    if(!(r > 0) || std::abs(r - 1.0) < 1e-3)
+        return mVelocity;
+    r = std::min(r, 4.0);
+    return Sophus::SE3f::exp(static_cast<float>(r) * mVelocity.log());
+}
+
 // web port: KLT tracking frame (monocular). The last frame's map-point observations are carried into the current
 // image with pyramidal Lucas-Kanade (initialised from the constant-velocity prediction, forward-backward checked);
 // the pose then comes from motion-only BA on those 2D-3D pairs (Optimizer::PoseOptimization), exactly as ORB-SLAM3
@@ -2786,7 +2804,7 @@ bool Tracking::TrackKLT(const cv::Mat& im, double timestamp)
 
     // last frame's map-point observations and their predicted positions in this image
     const Sophus::SE3f Tlw = mLastFrame.GetPose();
-    const Sophus::SE3f Tcw = mVelocity * Tlw;
+    const Sophus::SE3f Tcw = WebMotionPrediction(timestamp) * Tlw;
     vector<int> vIdx;
     vector<cv::Point2f> vPrev, vCur;
     for(int i = 0; i < mLastFrame.N; i++)
@@ -3086,7 +3104,11 @@ bool Tracking::TrackWithMotionModel()
     }
     else
     {
+#ifdef ORBSLAM3_WEB
+        mCurrentFrame.SetPose(WebMotionPrediction(mCurrentFrame.mTimeStamp) * mLastFrame.GetPose());
+#else
         mCurrentFrame.SetPose(mVelocity * mLastFrame.GetPose());
+#endif
     }
 
 

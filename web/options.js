@@ -8,6 +8,7 @@ export const OPTIONS = [
   { key: 'features', label: 'ORB features', values: [['0', 'settings default'], ['500', '500'], ['600', '600'], ['800', '800'], ['1000', '1000'], ['1500', '1500']], def: '0' },
   { key: 'levels', label: 'Pyramid levels', values: [['0', 'settings default (8)'], ['4', '4'], ['5', '5'], ['6', '6'], ['8', '8']], def: '0' },
   { key: 'reloc', label: 'Relocalise before new map', values: [['3', '3 s (stock)'], ['10', '10 s'], ['30', '30 s']], def: '3' },
+  { key: 'motion', label: 'Motion model', values: [['stock', 'stock (constant velocity per frame)'], ['time', 'time-scaled (dropped frames)']], def: 'stock' },
   { key: 'anchor', label: 'Tracking lost with a cactus placed', page: 'ar',
     values: [['keep', 'keep the map, relocalise only'], ['stock', 'stock (new map after the timeout)']], def: 'keep' },
   { key: 'map', label: 'Local mapping', values: [['stock', 'stock'], ['light', 'light (local BA 20/20, 15 neighbours)']], def: 'stock' },
@@ -53,6 +54,7 @@ export function applyOptions(yaml, o) {
   }
   if (Number(o.reloc) !== 3) extra.push(`Web.Track.RelocTimeout: ${Number(o.reloc)}`);
   if (o.desc === 'teblid') extra.push('Web.Descriptor: 1');  // the page also loads the TEBLID vocabulary (vocabUrl)
+  if (o.motion === 'time') extra.push('Web.Track.TimeScaledMotion: 1');  // live camera: prediction scaled to the frame interval
   if (o.map === 'light') extra.push('Web.LBA.MaxOptKFs: 20', 'Web.LBA.MaxFixedKFs: 20', 'Web.Mapping.Neighbors: 15');
   return extra.length ? `${y.replace(/\s*$/, '\n')}\n# web options (web/options.js)\n${extra.join('\n')}\n` : y;
 }

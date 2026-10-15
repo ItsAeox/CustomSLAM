@@ -178,7 +178,10 @@ int main(int argc, char** argv) {
   string dataset, mode, seq, vocab, settings, out;
   bool clahe = false;
   bool realtime = false;  // pace frames at the dataset rate, as ORB-SLAM3's own examples do
-  double rateScale = 1.0; // with --realtime: frame period multiplier (2 = play at half speed)
+  double rateScale = 1.0; // with --realtime / --live: frame period multiplier (2 = play at half speed)
+  bool live = false;      // phone-like pacing: frames arrive at the dataset rate (x rate-scale) and the tracker always
+                          // takes the newest one, so frames that arrive while it is busy are dropped (as a live camera
+                          // in the browser). rate-scale < 1 emulates a slower device.
   int maxFrames = 0;      // 0 = all frames
   bool syncMapping = false; // web port diagnostic: wait for local mapping to go idle after every frame
   bool trace = false;       // diagnostic: per-frame trace (state, tracked points, live Twc) -> trace.txt
@@ -195,6 +198,7 @@ int main(int argc, char** argv) {
     else if (a == "--clahe") clahe = true;
     else if (a == "--seed") seed = std::stoi(next());
     else if (a == "--realtime") realtime = true;
+    else if (a == "--live") live = true;
     else if (a == "--rate-scale") rateScale = std::stod(next());
     else if (a == "--max-frames") maxFrames = std::stoi(next());
     else if (a == "--sync-mapping") syncMapping = true;
@@ -237,7 +241,10 @@ int main(int argc, char** argv) {
   std::ofstream tr;
   if (trace) { tr.open(fs::path(out) / "trace.txt"); tr << std::setprecision(9); }
   vector<ORB_SLAM3::IMU::Point> meas;
+  const auto wall0 = std::chrono::steady_clock::now();
+  int processed = 0, dropped = 0;
   for (int i = 0; i < N; ++i) {
+    ++processed;
     cv::Mat im = cv::imread(d.images[i].string(), cv::IMREAD_GRAYSCALE);
     if (im.empty()) { std::cerr << "failed to read " << d.images[i] << "\n"; return 1; }
     if (clahe) claheOp->apply(im, im);
@@ -268,7 +275,15 @@ int main(int argc, char** argv) {
     times << i << " " << ttrack * 1000.0 << " " << SLAM.GetTrackingState() << "\n";
     // Real-time protocol of ORB-SLAM3's examples: wait for the rest of the frame period, which leaves time for
     // the local-mapping / loop-closing threads. Without it, results depend on the relative thread speeds.
-    if (realtime) {
+    if (live) {  // next frame: the newest one that has "arrived" by now; wait if the next one is not there yet
+      const double now = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall0).count();
+      int j = i + 1;
+      while (j + 1 < N && rateScale * (d.t[j + 1] - d.t[0]) <= now) ++j;
+      if (j < N && rateScale * (d.t[j] - d.t[0]) > now)
+        std::this_thread::sleep_for(std::chrono::duration<double>(rateScale * (d.t[j] - d.t[0]) - now));
+      dropped += j - i - 1;
+      i = j - 1;  // the loop increments
+    } else if (realtime) {
       const double T = rateScale * ((i + 1 < N) ? d.t[i + 1] - d.t[i] : (i > 0 ? d.t[i] - d.t[i - 1] : 0.0));
       if (ttrack < T) std::this_thread::sleep_for(std::chrono::duration<double>(T - ttrack));
     }
@@ -286,8 +301,8 @@ int main(int argc, char** argv) {
   std::ofstream info(fs::path(out) / "run_info.txt");
   info << std::setprecision(17) << "dataset " << dataset << "\nmode " << mode << "\nseq " << seq
        << "\nsettings " << settings << "\nclahe " << clahe << "\nseed " << seed << "\nrealtime " << realtime
-       << "\nrate_scale " << rateScale << "\nsync_mapping " << syncMapping
-       << "\nframes " << N
+       << "\nrate_scale " << rateScale << "\nlive " << live << "\nsync_mapping " << syncMapping
+       << "\nframes " << N << "\nprocessed " << processed << "\ndropped " << dropped
        << "\nt_base " << d.tBase << "\n";
   return 0;
 }

@@ -20,6 +20,8 @@ struct WebConfig
     int mappingNeighbors = 0;  // Web.Mapping.Neighbors: covisible keyframes for triangulation / fusion (0 = stock: 30 mono)
     int descriptor = 0;        // Web.Descriptor: 0 = ORB (rotated BRIEF, stock), 1 = TEBLID-256 (needs a TEBLID vocabulary)
     double relocTimeout = 3.0; // Web.Track.RelocTimeout: seconds of relocalisation in the current map before a new map (stock 3)
+    int timeScaledMotion = 0;  // Web.Track.TimeScaledMotion: 1 = the constant-velocity prediction is rescaled to the
+                               // actual frame interval (live cameras drop frames when tracking is slow). 0 = stock
     int keepMap = 0;           // Web.Track.KeepMap: 1 = a tracking loss never resets or replaces the active map; the tracker
                                // relocalises in it until the camera returns (AR anchors stay valid). Also set at runtime
                                // by the AR page while a cactus is placed (bindings: setKeepMap). 0 = stock.
@@ -60,6 +62,7 @@ inline void loadWebConfig(const std::string& settingsFile)
     readInt("Web.Mapping.Neighbors", c.mappingNeighbors);
     readInt("Web.Descriptor", c.descriptor);
     readInt("Web.Track.KeepMap", c.keepMap);
+    readInt("Web.Track.TimeScaledMotion", c.timeScaledMotion);
     readInt("Web.KLT.Enable", c.kltEnable);
     readInt("Web.KLT.MaxConsecutive", c.kltMaxConsecutive);
     readInt("Web.KLT.MinTracked", c.kltMinTracked);
@@ -78,7 +81,7 @@ inline void loadWebConfig(const std::string& settingsFile)
     std::cout << "Web config: LBA.MaxOptKFs " << c.lbaMaxOptKFs << ", LBA.MaxFixedKFs " << c.lbaMaxFixedKFs
               << ", LBA.Iterations " << c.lbaIterations << ", Mapping.Neighbors " << c.mappingNeighbors
               << " (0 = stock); descriptor " << (c.descriptor == 1 ? "TEBLID-256" : "ORB") << "; reloc timeout "
-              << c.relocTimeout << " s" << (c.keepMap ? " (keep map)" : "") << "; KLT " << (c.kltEnable ? "on" : "off");
+              << c.relocTimeout << " s" << (c.keepMap ? " (keep map)" : "") << (c.timeScaledMotion ? "; time-scaled motion" : "") << "; KLT " << (c.kltEnable ? "on" : "off");
     if (c.kltEnable)
         std::cout << " (max consecutive " << c.kltMaxConsecutive << ", min tracked " << c.kltMinTracked
                   << ", min inliers " << c.kltMinInliers << ", win " << c.kltWinSize << ", levels " << c.kltLevels
