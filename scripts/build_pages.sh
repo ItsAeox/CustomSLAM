@@ -14,6 +14,9 @@ mkdir -p "$OUT/build" "$OUT/assets" "$OUT/vocab" "$OUT/models"
 cp "$W/ar.html" "$W/ar.js" "$W/calib.html" "$W/calib.js" "$W/slamclient.js" "$W/options.js" "$W/plane.js" "$W/slam.worker.js" "$W/coi.js" "$W/coi-sw.js" \
    "$W/selftest.html" "$W/xfeat.html" "$OUT/"
 cp "$W/build/orbslam3.js" "$W/build/orbslam3.wasm" "$W/build/orbslam3.worker.mjs" "$OUT/build/"
+if [ -f "$W/build-prof/orbslam3.wasm" ]; then  # profiling build (REGISTER_TIMES), loaded by ar.html?prof=1
+  mkdir -p "$OUT/build-prof" && cp "$W/build-prof/orbslam3.js" "$W/build-prof/orbslam3.wasm" "$W/build-prof/orbslam3.worker.mjs" "$OUT/build-prof/"
+fi
 cp "$W/assets/tree.glb" "$W/assets/cactus.glb" "$OUT/assets/"  # tree.glb: the user's free_tree.blend, base trimmed
 cp "$W/models/xfeat_640x480.onnx" "$W/models/xfeat_480x640.onnx" "$OUT/models/"  # scripts/xfeat_export.py
 gzip -6 -n -c "$VOCAB" > "$OUT/vocab/ORBvoc.bin.gz"

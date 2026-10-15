@@ -118,6 +118,8 @@ def main():
             "frames": info.get("frames", ""), "processed": info.get("processed", ""), "dropped": info.get("dropped", ""),
             "protocol": protocol(info), "rate_scale": info.get("rate_scale", ""),
             "effective_rate": info.get("effective_rate", ""), "sync_mapping": info.get("sync_mapping", ""),
+            "map_points": info.get("map_points", ""), "keyframes": info.get("keyframes", ""),
+            "maps": info.get("maps", ""), "mem_mb": info.get("mem_mb", ""),  # final map size; WASM heap / native peak RSS
             "settings": sset, "descriptor": tags["descriptor"], "web_keys": tags["web_keys"],
             "clahe": info.get("clahe", ""),
         })

@@ -29,6 +29,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <functional>
@@ -43,6 +44,38 @@
 #include <sstream>
 #include <string>
 #include <vector>
+
+#include "Atlas.h"
+#include "Map.h"
+#ifdef __EMSCRIPTEN__
+#include <emscripten/heap.h>
+#else
+#include <sys/resource.h>
+#endif
+
+// Memory of this process (MB): WASM heap size (grows, never shrinks) or the native peak resident set.
+static double memoryMB() {
+#ifdef __EMSCRIPTEN__
+  return emscripten_get_heap_size() / 1048576.0;
+#else
+  struct rusage ru;
+  getrusage(RUSAGE_SELF, &ru);
+  return ru.ru_maxrss / 1024.0;  // KB on Linux
+#endif
+}
+
+// Map size over all maps of the atlas: [map points, keyframes, maps]
+static std::array<long, 3> mapSize(ORB_SLAM3::System& slam) {
+  std::array<long, 3> r{0, 0, 0};
+#ifdef ORBSLAM3_WEB
+  for (ORB_SLAM3::Map* m : slam.WebAtlas()->GetAllMaps()) {
+    r[0] += (long)m->MapPointsInMap();
+    r[1] += (long)m->KeyFramesInMap();
+    ++r[2];
+  }
+#endif
+  return r;
+}
 
 namespace fs = std::filesystem;
 using std::string;
@@ -398,12 +431,17 @@ int main(int argc, char** argv) {
       const double T = rateScale * ((i + 1 < N) ? d.t[i + 1] - d.t[i] : (i > 0 ? d.t[i] - d.t[i - 1] : 0.0));
       if (ttrack < T) std::this_thread::sleep_for(std::chrono::duration<double>(T - ttrack));
     }
-    if (i % 200 == 0) std::cerr << "frame " << i << "/" << N - 1 << " state=" << SLAM.GetTrackingState() << "\n";
+    if (i % 200 == 0) {  // progress + map growth curve
+      const auto ms = mapSize(SLAM);
+      std::cerr << "frame " << i << "/" << N - 1 << " state=" << SLAM.GetTrackingState() << " map_points=" << ms[0]
+                << " keyframes=" << ms[1] << " maps=" << ms[2] << " mem_mb=" << memoryMB() << "\n";
+    }
   }
 
   const double wallS = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall0).count();
   const double seqS = lastIdx > 0 ? d.t[lastIdx] - d.t[0] : 0.0;
   src.reset();
+  const auto msEnd = mapSize(SLAM);  // before the final global optimisation / shutdown
   fs::current_path(out);  // REGISTER_TIMES builds write their *TimeStats.txt files to the working directory
   SLAM.Shutdown();
   const fs::path rawF = fs::path(out) / "f_euroc_ns.txt", rawKF = fs::path(out) / "kf_euroc_ns.txt";
@@ -419,6 +457,8 @@ int main(int argc, char** argv) {
        << "\nframes " << N << "\nprocessed " << processed << "\ndropped " << dropped
        << "\nwall_s " << wallS << "\nseq_s " << seqS
        << "\neffective_rate " << (wallS > 0 ? seqS / wallS : 0.0)  // 1 = real time (x 1/rate_scale when scaled)
+       << "\nmap_points " << msEnd[0] << "\nkeyframes " << msEnd[1] << "\nmaps " << msEnd[2]
+       << "\nmem_mb " << memoryMB()  // WASM heap size or native peak RSS
        << "\nt_base " << d.tBase << "\n";
   return 0;
 }
