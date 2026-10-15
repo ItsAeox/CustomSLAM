@@ -25,12 +25,28 @@ let cal = null;  // camera calibration (calib.html)
 // keeps only the newest VideoFrame (older ones are closed and counted as dropped). For tracking, the luma (Y) plane of
 // NV12 / I420 frames is the grayscale image: it is copied into the wasm frame buffer directly (no canvas, no RGBA).
 let camReader = null, camLatest = null, camWaiter = null, camFrames = 0, camDropped = 0, camScratch = null;
+// absolute clock for VideoFrames (inertial mode: IMU samples use the page's timeOrigin + event.timeStamp): the smallest
+// observed (receipt time - frame timestamp) approximates the capture -> receipt latency floor
+let camOffset = Infinity;
+// IMU samples waiting for their frame (inertial mode): [t, ax, ay, az, gx, gy, gz]; each frame gets those with t <= its time
+let imuBuf = [];
+function feedImu(add, T) {
+  if (add && add.length) for (let i = 0; i + 6 < add.length; i += 7) imuBuf.push(Array.prototype.slice.call(add, i, i + 7));
+  let k = 0;
+  while (k < imuBuf.length && imuBuf[k][0] <= T) k++;
+  if (!k) return;
+  const out = new Float64Array(7 * k);
+  for (let i = 0; i < k; i++) out.set(imuBuf[i], 7 * i);
+  imuBuf = imuBuf.slice(k);
+  slam.setImu(out);
+}
 async function camLoop() {
   for (;;) {
     let r;
     try { r = await camReader.read(); } catch { return; }
     if (r.done) return;
     camFrames++;
+    camOffset = Math.min(camOffset, performance.timeOrigin + performance.now() - r.value.timestamp / 1000);
     if (camLatest) { camLatest.close(); camDropped++; }
     camLatest = r.value;
     if (camWaiter) { const w = camWaiter; camWaiter = null; w(); }
@@ -129,7 +145,8 @@ self.onmessage = async (e) => {
       M.FS.writeFile('/ORBvoc.bin', new Uint8Array(voc));
       M.FS.writeFile('/settings.yaml', settings);
       slam = new M.WebSlam();
-      slam.init('/ORBvoc.bin', '/settings.yaml', !!msg.clahe, msg.seed ?? -1);
+      if (msg.inertial) slam.initSensor('/ORBvoc.bin', '/settings.yaml', !!msg.clahe, msg.seed ?? -1, true);  // IMU_MONOCULAR
+      else slam.init('/ORBvoc.bin', '/settings.yaml', !!msg.clahe, msg.seed ?? -1);
       M.FS.unlink('/ORBvoc.bin');  // the vocabulary is in the tree now; free the 48 MB file copy
       postMessage({ type: 'ready', ms: performance.now() - t0, vocabBytes: voc.byteLength, heap: M.HEAPU8.length });
     } else if (msg.type === 'frame') {
@@ -139,6 +156,7 @@ self.onmessage = async (e) => {
       const ptr = slam.frameBuffer(w, h);
       toGray(img.data, M.HEAPU8.subarray(ptr, ptr + w * h));  // HEAPU8 re-read: memory may have grown
       const decodeMs = performance.now() - td;
+      feedImu(msg.imu, msg.t);  // inertial mode: IMU samples up to this frame
       const state = slam.track(msg.t);
       const out = { type: 'pose', idx: msg.idx, t: msg.t, state, twc: Array.from(slam.poseTwc()),
                     trackMs: slam.lastTrackMs(), decodeMs, heap: M.HEAPU8.length };
@@ -165,6 +183,7 @@ self.onmessage = async (e) => {
       const ptr = slam.frameBuffer(img.width, img.height);
       toGray(img.data, M.HEAPU8.subarray(ptr, ptr + img.width * img.height));
       const decodeMs = performance.now() - td;
+      feedImu(msg.imu, msg.t);  // inertial mode: IMU samples up to this frame
       const state = slam.track(msg.t);
       const out = { type: 'pose', t: msg.t, state, twc: Array.from(slam.poseTwc()), trackMs: slam.lastTrackMs(),
                     decodeMs, heap: M.HEAPU8.length, bmp };
@@ -195,7 +214,9 @@ self.onmessage = async (e) => {
       const td = performance.now();
       await frameToGray(f);
       const decodeMs = performance.now() - td;
-      const t = f.timestamp / 1e6;  // capture timestamp (microseconds) -> seconds
+      const t = msg.absClock ? (f.timestamp / 1000 + camOffset) / 1000  // absolute seconds (same clock as the IMU)
+                             : f.timestamp / 1e6;  // capture timestamp (microseconds) -> seconds
+      feedImu(msg.imu, t);
       const state = slam.track(t);
       const out = { type: 'pose', t, state, twc: Array.from(slam.poseTwc()), trackMs: slam.lastTrackMs(), decodeMs,
                     heap: M.HEAPU8.length, bmp: f, cam: [camFrames, camDropped] };

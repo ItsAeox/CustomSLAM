@@ -73,6 +73,25 @@ TUMVI_R_BC = [[-0.9995250378696743, 0.0075019185074052044, -0.02989013031643309]
               [-0.008522328211654736, -0.9993800792498829, 0.03415885127385616]]
 
 
+def imu_raw(seq: Path) -> dict:
+    """Every IMU sample (EuRoC-format imu0, IMU body frame) on the camera timeline: t (s), acc (m/s^2), gyro (rad/s).
+    For mono-inertial runs in ar.html's dataset test mode (?inertial=1)."""
+    ns0 = None
+    for l in (seq / "mav0" / "cam0" / "data.csv").read_text().splitlines():
+        if l.strip() and not l.startswith("#"):
+            ns0 = int(l.split(",", 1)[0])
+            break
+    t, acc, gyro = [], [], []
+    for l in (seq / "mav0" / "imu0" / "data.csv").read_text().splitlines():
+        if not l.strip() or l.startswith("#"):
+            continue
+        f = l.split(",")
+        t.append(round((int(f[0]) - ns0) * 1e-9, 6))
+        gyro.append([float(f[1]), float(f[2]), float(f[3])])
+        acc.append([float(f[4]), float(f[5]), float(f[6])])
+    return {"t": t, "acc": acc, "gyro": gyro}
+
+
 def imu_manifest(seq: Path, dataset: str, hz: float = 50.0) -> dict:
     """Accelerometer (specific force, m/s^2, IMU frame; at rest it points up) averaged into 1/hz bins, with t on the
     camera timeline (seconds since the first cam0 frame, as asl_manifest), and R_cb (camera <- IMU, row-major)."""
@@ -183,7 +202,7 @@ class Handler(SimpleHTTPRequestHandler):
             seq = (base / name).resolve()
             if not sub or not name or base not in seq.parents or not (seq / "mav0" / "imu0" / "data.csv").exists():
                 return self.send_error(404, "no IMU for this sequence")
-            return self.send_json(imu_manifest(seq, dataset))
+            return self.send_json(imu_raw(seq) if q.get("raw", ["0"])[0] == "1" else imu_manifest(seq, dataset))
         return super().do_GET()
 
     def send_json(self, obj):

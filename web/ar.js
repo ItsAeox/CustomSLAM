@@ -7,7 +7,7 @@
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { createSlamWorker, cameraSettings, intrinsics, loadCalibration, savedCalibrations, STATE, vocabUrl } from './slamclient.js';
+import { createSlamWorker, cameraSettings, intrinsics, loadCalibration, phoneImuSettings, savedCalibrations, STATE, vocabUrl } from './slamclient.js';
 import { dot, fitPlaneRansac, normalize, rayPlane } from './plane.js';
 import { applyOptions, buildOptionsUI, describeOptions, optionsFromParams, optionsToParams } from './options.js';
 
@@ -55,6 +55,9 @@ let camStream = null, camTrack = null; // MediaStreamTrackProcessor.readable (on
 let stopRvfc = () => {};
 const decodeTimes = [];               // per frame: gray image preparation in the worker (ms)  // live camera: frames presented / replaced before tracking
 const gyroHist = [];                 // [time ms, |rotation rate| deg/s] of the last second (logged on tracking loss)
+const inertial = opts.imu === 'on';  // ORB-SLAM3 mono-inertial (experimental)
+let imuPending = [];
+let imuFlags = [0, 0];               // last logged IMU initialisation flags (map stats [4], [5])                 // live IMU samples not yet sent: [t abs s, ax, ay, az (m/s^2), gx, gy, gz (rad/s)] flat
 let lastMaps = 0, lastState = 0;
 let stash = null;          // anchors of a map that went inactive (tracking lost -> new map); restored on map merge
 let resetRequested = false;  // Reset button: sent to the worker between frames (one request at a time)
@@ -85,6 +88,10 @@ function onMotion(e) {
   accLP = accLP ? accLP.map((x, i) => 0.7 * x + 0.3 * v[i]) : v;
   motionEvents++;
   const r = e.rotationRate;
+  if (inertial && r && r.alpha != null && a.x != null) {  // device axes = IMU body; rotationRate alpha/beta/gamma = z/x/y (deg/s)
+    const d = Math.PI / 180;
+    imuPending.push((performance.timeOrigin + e.timeStamp) / 1000, a.x, a.y, a.z, r.beta * d, r.gamma * d, r.alpha * d);
+  }
   if (r && r.alpha != null) {
     const now = performance.now();
     gyroHist.push([now, Math.hypot(r.alpha, r.beta, r.gamma)]);
@@ -183,6 +190,10 @@ function detectFloor() {
 
 function placeCactus(clientX, clientY) {
   if (!twc || !tracking()) return;
+  if (inertial && !(stats[4] && stats[5])) {  // the IMU initialisation rotates and rescales the map: place afterwards
+    hint(stats[4] ? 'IMU almost ready (refining). Keep moving a few more seconds.' : 'IMU initialising: move the phone around (walk, turn).', 2500);
+    return;
+  }
   const u = (clientX - rect.x) / rect.s, v = (clientY - rect.y) / rect.s;  // image pixel
   const dir = normalize(mulR(rotOf(twc), [(u - K.cx) / K.fx, (v - K.cy) / K.fy, 1]));  // (lens distortion ignored)
   const o = [twc[12], twc[13], twc[14]];
@@ -271,6 +282,16 @@ async function start() {
       // rotated into the camera frame (R_cb). At rest it is the reaction to gravity, so "down" = -a. noimu=1: none.
       const imu = params.get('noimu') ? null : await fetch(`/api/imu?dataset=${dataset}&name=${encodeURIComponent(name)}`)
         .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      const imuRaw = inertial ? await (await fetch(`/api/imu?dataset=${dataset}&name=${encodeURIComponent(name)}&raw=1`)).json() : null;
+      let kRaw = 0;
+      const imuUpTo = (t) => {  // raw dataset IMU samples up to t (inertial test mode)
+        const out = [];
+        while (imuRaw && kRaw < imuRaw.t.length && imuRaw.t[kRaw] <= t) {
+          const a = imuRaw.acc[kRaw], g = imuRaw.gyro[kRaw];
+          out.push(imuRaw.t[kRaw], a[0], a[1], a[2], g[0], g[1], g[2]); kRaw++;
+        }
+        return out;
+      };
       let ki = 0;
       const imuDown = (t) => {
         if (!imu) return null;
@@ -282,7 +303,8 @@ async function start() {
         const R = imu.R_cb;
         return normalize([0, 1, 2].map((i) => -(R[i][0] * a[0] + R[i][1] * a[1] + R[i][2] * a[2])));
       };
-      settingsUrl = info.settings; clahe = info.clahe;
+      settingsUrl = inertial ? info.settings.replace('_mono.yaml', '_mono_inertial.yaml') : info.settings;  // ORB-SLAM3's own
+      clahe = info.clahe;
       const yaml = await (await fetch(settingsUrl)).text();
       settingsText = yaml;
       const num = (key) => Number((new RegExp(`Camera1\\.${key}:\\s*([\\d.eE+-]+)`).exec(yaml) || [])[1] || 0);
@@ -299,9 +321,9 @@ async function start() {
         const f = man.frames[Math.min(i++, man.frames.length - 1)];
         if (cover && f.t - man.frames[0].t >= cover[0] && f.t - man.frames[0].t < cover[1]) {  // camera covered
           if (!blank) { blank = new OffscreenCanvas(W, H); blank.getContext('2d').fillRect(0, 0, W, H); }
-          return { bitmap: await createImageBitmap(blank), t: f.t, down: imuDown(f.t) };
+          return { bitmap: await createImageBitmap(blank), t: f.t, down: imuDown(f.t), imu: imuUpTo(f.t) };
         }
-        return { bitmap: await createImageBitmap(await (await fetch(f.url)).blob()), t: f.t, down: imuDown(f.t) };
+        return { bitmap: await createImageBitmap(await (await fetch(f.url)).blob()), t: f.t, down: imuDown(f.t), imu: imuUpTo(f.t) };
       };
       const first = await nextBitmap();
       W = first.bitmap.width; H = first.bitmap.height;
@@ -319,13 +341,14 @@ async function start() {
       calib = params.get('calib') === '0' ? null : loadCalibration(W, H);  // calib.html, this browser, this stream size
       K = intrinsics(W, H, hfov, calib);  // without a calibration: the FOV is along the sensor long side (portrait streams too)
       fps = stream.getVideoTracks()[0].getSettings().frameRate || 30;
-      settingsText = cameraSettings(W, H, hfov, fps, Number(params.get('features') || 1000), calib);
+      settingsText = cameraSettings(W, H, hfov, fps, Number(params.get('features') || 1000), calib) + (inertial ? phoneImuSettings(100) : '');
       const tc = performance.now();
       if ('MediaStreamTrackProcessor' in window && params.get('webcodecs') !== '0') {
         camTrack = stream.getVideoTracks()[0].clone();  // its own track: the <video> element keeps the original
         camStream = new MediaStreamTrackProcessor({ track: camTrack }).readable;
       }
-      const grab = async () => ({ bitmap: await createImageBitmap(video), t: (performance.now() - tc) / 1000 });
+      const grab = async () => ({ bitmap: await createImageBitmap(video),
+                                  t: inertial ? (performance.timeOrigin + performance.now()) / 1000 : (performance.now() - tc) / 1000 });
       nextBitmap = grab;
       frameClock = 'grab time (performance.now)';
       if ('requestVideoFrameCallback' in HTMLVideoElement.prototype && params.get('rvfc') !== '0') {
@@ -343,7 +366,7 @@ async function start() {
           createImageBitmap(video).then((bmp) => {
             if (!active) { bmp.close(); return; }
             if (latest) { latest.bitmap.close(); camDropped++; }  // replaced before the tracker took it
-            latest = { bitmap: bmp, t: meta.mediaTime };
+            latest = { bitmap: bmp, t: inertial ? (performance.timeOrigin + now) / 1000 : meta.mediaTime };
             if (waiter) { const w = waiter; waiter = null; w(); }
           });
           video.requestVideoFrameCallback(onFrame);
@@ -418,7 +441,7 @@ async function start() {
       tele(`slam: ${s}`);
     }, onProgress);
     const tInit = performance.now();
-    const ready = await slam.request({ type: 'init', vocabUrl: vocabUrl(opts.desc), clahe, seed: 1, prof: params.get('prof') === '1',
+    const ready = await slam.request({ type: 'init', vocabUrl: vocabUrl(opts.desc), clahe, seed: 1, prof: params.get('prof') === '1', inertial,
                                        settingsText: withTracker(settingsText) });
     loadingDone = true; clearInterval(stallTimer);
     if (camStream) {  // WebCodecs: frames go straight to the worker; use it only if they match the stream we calibrated for
@@ -469,13 +492,16 @@ async function start() {
       const tf = performance.now();
       let r, down = null;
       if (camMode === 'webcodecs') {
-        r = await slam.request({ type: 'trackCamera', viz: true, withMap: n % 10 === 0 });
+        const imu = inertial ? new Float64Array(imuPending) : null; imuPending = [];
+        r = await slam.request({ type: 'trackCamera', viz: true, withMap: n % 10 === 0, absClock: inertial, imu });
         if (r.cam) { camFrames = r.cam[0]; camDropped = r.cam[1]; }
       } else {
         const f = await nextBitmap();  // f.down: dataset IMU gravity (camera frame), test mode only
         down = f.down;
         if (down) motionEvents++;
-        r = await slam.request({ type: 'bitmap', bitmap: f.bitmap, t: f.t, viz: true, withMap: n % 10 === 0 }, [f.bitmap]);
+        let imu = null;
+        if (inertial) { imu = new Float64Array(f.imu || imuPending); if (!f.imu) imuPending = []; }
+        r = await slam.request({ type: 'bitmap', bitmap: f.bitmap, t: f.t, viz: true, withMap: n % 10 === 0, imu }, [f.bitmap]);
       }
       if (r.decodeMs != null) { decodeTimes.push(r.decodeMs); if (decodeTimes.length > 30) decodeTimes.shift(); }
       if (r.type !== 'pose') throw new Error(r.text || 'tracking error');
@@ -494,6 +520,10 @@ async function start() {
       if (lastMaps && stats[3] > lastMaps) stashAnchors();              // lost -> ORB-SLAM3 started a new map
       else if (lastMaps && stats[3] < lastMaps) restoreAnchors();       // maps merged back into the old one
       else if (lastState >= 2 && state === 1 && !stash) resetAnchors('Tracking restarted. Move the phone slowly sideways.');
+      if (inertial && (stats[4] !== imuFlags[0] || stats[5] !== imuFlags[1])) {
+        tele(`IMU: initialised ${stats[4] ? 'yes' : 'no'}, refined (VIBA2) ${stats[5] ? 'yes' : 'no'}`);
+        imuFlags = [stats[4], stats[5]];
+      }
       lastState = state; lastMaps = stats[3];
       if (tracking()) {
         twc = r.twc;
@@ -510,6 +540,7 @@ async function start() {
       if (times.length > 30) times.shift();
       if (state === 1) hint('Move the phone slowly sideways to start tracking');
       else if (state === 3 || state === 4) hint(keepMapOn ? 'Tracking lost: point the camera back at where the tree was' : 'Tracking lost: move back towards where you were');
+      else if (tracking() && inertial && !(stats[4] && stats[5])) hint(stats[4] ? 'IMU refining… keep moving' : 'IMU initialising: move the phone around');
       else if (tracking() && !cactus) hint(floor ? 'Tap the floor to place the tree' : (downN ? 'Point at the floor…' : 'Tap a flat surface to place the tree'));
       else if (tracking() && cactus && hintText) hint('');
       if (n % 5 === 0) {

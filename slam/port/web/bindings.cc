@@ -26,6 +26,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "Atlas.h"
+#include "ImuTypes.h"
 #include "LocalMapping.h"
 #include "KeyFrame.h"
 #include "Map.h"
@@ -41,12 +42,29 @@ class WebSlam {
  public:
   // seed < 0 keeps ORB-SLAM3's default (TwoViewReconstruction seeds with 0); otherwise the RANSAC seed.
   bool init(const std::string& vocabFile, const std::string& settingsFile, bool clahe, int seed) {
+    return initSensor(vocabFile, settingsFile, clahe, seed, false);
+  }
+
+  // inertial: ORB-SLAM3 IMU_MONOCULAR (the settings must have the IMU.* block); IMU samples come with each frame
+  // (setImu before track).
+  bool initSensor(const std::string& vocabFile, const std::string& settingsFile, bool clahe, int seed, bool inertial) {
     if (seed >= 0) DUtils::Random::SeedRandOnce(seed);
     clahe_ = clahe;
     if (clahe_) claheOp_ = cv::createCLAHE(3.0, cv::Size(8, 8));  // as in ORB-SLAM3's TUM-VI examples
-    sys_ = std::make_unique<ORB_SLAM3::System>(vocabFile, settingsFile, ORB_SLAM3::System::MONOCULAR,
+    sys_ = std::make_unique<ORB_SLAM3::System>(vocabFile, settingsFile,
+                                               inertial ? ORB_SLAM3::System::IMU_MONOCULAR : ORB_SLAM3::System::MONOCULAR,
                                                /*bUseViewer=*/false);
     return true;
+  }
+
+  // IMU samples since the previous frame, up to this frame's timestamp: [t, ax, ay, az, gx, gy, gz] * n
+  // (seconds; m/s^2 specific force, as a real IMU reads it: +g upwards at rest; rad/s), in the IMU body frame of the
+  // settings (IMU.T_b_c1). Used by the next track() call, then cleared.
+  void setImu(val samples) {
+    const std::vector<double> v = convertJSArrayToNumberVector<double>(samples);
+    for (size_t i = 0; i + 6 < v.size(); i += 7)
+      imu_.emplace_back((float)v[i + 1], (float)v[i + 2], (float)v[i + 3], (float)v[i + 4], (float)v[i + 5],
+                        (float)v[i + 6], v[i]);
   }
 
   // Returns the address of a w*h gray8 buffer in the wasm heap that JS fills before calling track().
@@ -68,7 +86,8 @@ class WebSlam {
       cv::resize(im, scaled_, cv::Size((int)(im.cols * scale), (int)(im.rows * scale)));
       im = scaled_;
     }
-    Sophus::SE3f Tcw = sys_->TrackMonocular(im, timestamp);
+    Sophus::SE3f Tcw = sys_->TrackMonocular(im, timestamp, imu_);  // IMU samples only in IMU_MONOCULAR mode
+    imu_.clear();
     lastMs_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     int state = sys_->GetTrackingState();
     if (state == ORB_SLAM3::Tracking::OK && sys_->WebTracker()->mbWebKLTFrame) state = 5;  // OK, tracked by KLT
@@ -200,19 +219,21 @@ class WebSlam {
   }
 
   // [keyframes in active map, map points in active map, map-point matches in the last frame (frameKeyPoints()),
-  //  number of maps in the atlas]
+  //  number of maps in the atlas, IMU initialised (inertial mode), IMU initialisation refined (VIBA2 done)]
   val mapStats() {
-    stats_[0] = stats_[1] = stats_[3] = 0;
+    stats_[0] = stats_[1] = stats_[3] = stats_[4] = stats_[5] = 0;
     stats_[2] = nMatches_;
     if (sys_) {
       ORB_SLAM3::Atlas* atlas = sys_->WebAtlas();
       if (ORB_SLAM3::Map* map = atlas->GetCurrentMap()) {
         stats_[0] = (int)map->KeyFramesInMap();
         stats_[1] = (int)map->MapPointsInMap();
+        stats_[4] = map->isImuInitialized() ? 1 : 0;
+        stats_[5] = map->GetIniertialBA2() ? 1 : 0;
       }
       stats_[3] = atlas->CountMaps();
     }
-    return val(typed_memory_view(4, stats_));
+    return val(typed_memory_view(6, stats_));
   }
 
   // Live per-stage profile (AR page, ?prof=1). Always: [KLT frames, ORB frames, KLT ms mean, LK pyramid ms per frame].
@@ -266,8 +287,9 @@ class WebSlam {
   float twc_[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
   std::vector<float> pts_, kps_, mps_, kfs_, edges_, ini_;
   std::vector<double> prof_;
+  std::vector<ORB_SLAM3::IMU::Point> imu_;
   int nMatches_ = 0;
-  int stats_[4] = {0, 0, 0, 0};
+  int stats_[6] = {0, 0, 0, 0, 0, 0};
   double lastMs_ = 0;
 };
 
@@ -360,6 +382,8 @@ EMSCRIPTEN_BINDINGS(orbslam3_web) {
   class_<WebSlam>("WebSlam")
       .constructor<>()
       .function("init", &WebSlam::init)
+      .function("initSensor", &WebSlam::initSensor)
+      .function("setImu", &WebSlam::setImu)
       .function("frameBuffer", &WebSlam::frameBuffer)
       .function("track", &WebSlam::track)
       .function("poseTwc", &WebSlam::poseTwc)
