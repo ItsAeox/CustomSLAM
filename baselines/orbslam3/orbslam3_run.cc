@@ -13,7 +13,12 @@
 //                     pose = Twc of camera (mono) or Twb of IMU body (mono_inertial; see ORB-SLAM3 SaveTrajectoryEuRoC)
 //   kf_traj_tum.txt   keyframes only
 //   track_times.txt   per-frame TrackMonocular wall time (ms)
-//   run_info.txt
+//   run_info.txt      includes frames processed / dropped and the effective playback rate (sequence time / wall time)
+//
+// Pacing (see ISSUES H1): --realtime is the protocol of ORB-SLAM3's examples (after each frame sleep for the frame
+// period minus the TrackMonocular time). It ignores image loading, which on WSL's /mnt drives made runs play at
+// ~0.5x. --rt-wall plays every frame on a wall-clock schedule while a background thread loads the next one;
+// --live behaves like a camera (the tracker always gets the newest frame, late frames are dropped).
 
 #include <System.h>
 #include <ImuTypes.h>
@@ -25,6 +30,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
+#include <functional>
+#include <mutex>
 #include <thread>
 #include <cmath>
 #include <ctime>
@@ -161,6 +169,95 @@ static Data loadAsl(const fs::path& seq) {
   return d;
 }
 
+// Whole-file read + imdecode: cv::imread's small buffered reads cost ~23 ms per EuRoC PNG on WSL's 9P mount (/mnt/h)
+// against ~7 ms for one large read.
+static cv::Mat readGray(const fs::path& p) {
+  std::ifstream f(p, std::ios::binary | std::ios::ate);
+  if (!f) return {};
+  const std::streamsize n = f.tellg();
+  if (n <= 0) return {};
+  std::vector<uchar> buf((size_t)n);
+  f.seekg(0);
+  if (!f.read(reinterpret_cast<char*>(buf.data()), n)) return {};
+  return cv::imdecode(buf, cv::IMREAD_GRAYSCALE);
+}
+
+// Frames for the tracker, loaded on a background thread.
+//  - in order (rt-wall): every frame, the next one loaded while the current one is tracked;
+//  - camera (live): frame k "arrives" at wall time rate * (t[k] - t[0]); the thread keeps loading the newest arrived
+//    frame, and the tracker always takes the newest loaded one, so frames that arrive while it is busy are dropped.
+class FrameSource {
+ public:
+  FrameSource(std::function<cv::Mat(int)> load, const vector<double>& t, int n, double rate, bool camera)
+      : load_(std::move(load)), t_(t), n_(n), rate_(rate), camera_(camera), wall0_(std::chrono::steady_clock::now()) {
+    th_ = std::thread([this] { run(); });
+  }
+  ~FrameSource() {
+    { std::lock_guard<std::mutex> l(m_); stop_ = true; }
+    cv_.notify_all();
+    th_.join();
+  }
+  // Blocks until a frame newer than the last one taken is ready; returns its index (or -1 at the end).
+  int next(cv::Mat& im) {
+    std::unique_lock<std::mutex> l(m_);
+    cv_.wait(l, [this] { return readyIdx_ > taken_ || (done_ && readyIdx_ <= taken_); });
+    if (readyIdx_ <= taken_) return -1;
+    taken_ = readyIdx_;
+    im = ready_;
+    ready_ = cv::Mat();
+    cv_.notify_all();
+    return taken_;
+  }
+  double arrival(int k) const { return rate_ * (t_[k] - t_[0]); }  // seconds after start
+  double now() const { return std::chrono::duration<double>(std::chrono::steady_clock::now() - wall0_).count(); }
+
+ private:
+  void run() {
+    int k = 0;
+    while (true) {
+      if (camera_) {  // newest frame that has arrived (wait for the next one if none is new)
+        double tn = now();
+        while (k + 1 < n_ && arrival(k + 1) <= tn) ++k;
+        { std::lock_guard<std::mutex> l(m_); if (stop_) return; }
+        if (k <= loaded_) {
+          if (k + 1 >= n_) break;
+          std::this_thread::sleep_for(std::chrono::duration<double>(std::max(0.0, arrival(k + 1) - tn)));
+          continue;
+        }
+      } else {  // in order: wait until the tracker took the previous frame
+        std::unique_lock<std::mutex> l(m_);
+        cv_.wait(l, [this] { return stop_ || readyIdx_ <= taken_; });
+        if (stop_) return;
+        k = loaded_ + 1;
+        if (k >= n_) break;
+      }
+      cv::Mat im = load_(k);
+      std::lock_guard<std::mutex> l(m_);
+      loaded_ = k;
+      ready_ = im;
+      readyIdx_ = k;
+      cv_.notify_all();
+      if (!camera_ && k + 1 >= n_) break;
+    }
+    std::lock_guard<std::mutex> l(m_);
+    done_ = true;
+    cv_.notify_all();
+  }
+
+  std::function<cv::Mat(int)> load_;
+  const vector<double>& t_;
+  const int n_;
+  const double rate_;
+  const bool camera_;
+  const std::chrono::steady_clock::time_point wall0_;
+  std::thread th_;
+  std::mutex m_;
+  std::condition_variable cv_;
+  cv::Mat ready_;
+  int readyIdx_ = -1, taken_ = -1, loaded_ = -1;
+  bool done_ = false, stop_ = false;
+};
+
 // ORB-SLAM3 writes EuRoC-style files with timestamp in ns (of the rebased time); convert to TUM seconds (absolute).
 static void euRoCToTum(const fs::path& in, const fs::path& out, double tBase) {
   std::ifstream f(in);
@@ -182,6 +279,7 @@ int main(int argc, char** argv) {
   bool live = false;      // phone-like pacing: frames arrive at the dataset rate (x rate-scale) and the tracker always
                           // takes the newest one, so frames that arrive while it is busy are dropped (as a live camera
                           // in the browser). rate-scale < 1 emulates a slower device.
+  bool rtWall = false;    // every frame on a wall-clock schedule, next frame loaded in the background (honest real time)
   int maxFrames = 0;      // 0 = all frames
   bool syncMapping = false; // web port diagnostic: wait for local mapping to go idle after every frame
   bool trace = false;       // diagnostic: per-frame trace (state, tracked points, live Twc) -> trace.txt
@@ -199,6 +297,7 @@ int main(int argc, char** argv) {
     else if (a == "--seed") seed = std::stoi(next());
     else if (a == "--realtime") realtime = true;
     else if (a == "--live") live = true;
+    else if (a == "--rt-wall") rtWall = true;
     else if (a == "--rate-scale") rateScale = std::stod(next());
     else if (a == "--max-frames") maxFrames = std::stoi(next());
     else if (a == "--sync-mapping") syncMapping = true;
@@ -241,14 +340,34 @@ int main(int argc, char** argv) {
   std::ofstream tr;
   if (trace) { tr.open(fs::path(out) / "trace.txt"); tr << std::setprecision(9); }
   vector<ORB_SLAM3::IMU::Point> meas;
-  const auto wall0 = std::chrono::steady_clock::now();
-  int processed = 0, dropped = 0;
-  for (int i = 0; i < N; ++i) {
-    ++processed;
-    cv::Mat im = cv::imread(d.images[i].string(), cv::IMREAD_GRAYSCALE);
-    if (im.empty()) { std::cerr << "failed to read " << d.images[i] << "\n"; return 1; }
-    if (clahe) claheOp->apply(im, im);
+  auto prep = [&](int k) {  // read + CLAHE + resize (runs on the FrameSource thread with --live / --rt-wall)
+    cv::Mat im = readGray(d.images[k]);
+    if (im.empty()) return im;
+    if (clahe) claheOp->apply(im, im);  // (a cv::CLAHE object is used by one thread at a time here)
     if (imageScale != 1.f) cv::resize(im, im, cv::Size(im.cols * imageScale, im.rows * imageScale));
+    return im;
+  };
+  std::unique_ptr<FrameSource> src;
+  if (live || rtWall) src = std::make_unique<FrameSource>(prep, d.t, N, rateScale, live);
+  const auto wall0 = std::chrono::steady_clock::now();
+  int processed = 0, dropped = 0, lastIdx = -1;
+  for (int i = 0; i < N; ++i) {
+    cv::Mat im;
+    if (src) {
+      const int k = src->next(im);
+      if (k < 0) break;
+      dropped += k - lastIdx - 1;
+      i = k;
+      if (rtWall) {  // wall-clock schedule: not before the frame's time (no sleep when behind)
+        const double wait = src->arrival(i) - src->now();
+        if (wait > 0) std::this_thread::sleep_for(std::chrono::duration<double>(wait));
+      }
+    } else {
+      im = prep(i);
+    }
+    lastIdx = i;
+    ++processed;
+    if (im.empty()) { std::cerr << "failed to read " << d.images[i] << "\n"; return 1; }
 
     meas.clear();
     if (inertial && i > 0) {
@@ -275,21 +394,16 @@ int main(int argc, char** argv) {
     times << i << " " << ttrack * 1000.0 << " " << SLAM.GetTrackingState() << "\n";
     // Real-time protocol of ORB-SLAM3's examples: wait for the rest of the frame period, which leaves time for
     // the local-mapping / loop-closing threads. Without it, results depend on the relative thread speeds.
-    if (live) {  // next frame: the newest one that has "arrived" by now; wait if the next one is not there yet
-      const double now = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall0).count();
-      int j = i + 1;
-      while (j + 1 < N && rateScale * (d.t[j + 1] - d.t[0]) <= now) ++j;
-      if (j < N && rateScale * (d.t[j] - d.t[0]) > now)
-        std::this_thread::sleep_for(std::chrono::duration<double>(rateScale * (d.t[j] - d.t[0]) - now));
-      dropped += j - i - 1;
-      i = j - 1;  // the loop increments
-    } else if (realtime) {
+    if (!src && realtime) {
       const double T = rateScale * ((i + 1 < N) ? d.t[i + 1] - d.t[i] : (i > 0 ? d.t[i] - d.t[i - 1] : 0.0));
       if (ttrack < T) std::this_thread::sleep_for(std::chrono::duration<double>(T - ttrack));
     }
     if (i % 200 == 0) std::cerr << "frame " << i << "/" << N - 1 << " state=" << SLAM.GetTrackingState() << "\n";
   }
 
+  const double wallS = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall0).count();
+  const double seqS = lastIdx > 0 ? d.t[lastIdx] - d.t[0] : 0.0;
+  src.reset();
   fs::current_path(out);  // REGISTER_TIMES builds write their *TimeStats.txt files to the working directory
   SLAM.Shutdown();
   const fs::path rawF = fs::path(out) / "f_euroc_ns.txt", rawKF = fs::path(out) / "kf_euroc_ns.txt";
@@ -301,8 +415,10 @@ int main(int argc, char** argv) {
   std::ofstream info(fs::path(out) / "run_info.txt");
   info << std::setprecision(17) << "dataset " << dataset << "\nmode " << mode << "\nseq " << seq
        << "\nsettings " << settings << "\nclahe " << clahe << "\nseed " << seed << "\nrealtime " << realtime
-       << "\nrate_scale " << rateScale << "\nlive " << live << "\nsync_mapping " << syncMapping
+       << "\nrate_scale " << rateScale << "\nlive " << live << "\nrt_wall " << rtWall << "\nsync_mapping " << syncMapping
        << "\nframes " << N << "\nprocessed " << processed << "\ndropped " << dropped
+       << "\nwall_s " << wallS << "\nseq_s " << seqS
+       << "\neffective_rate " << (wallS > 0 ? seqS / wallS : 0.0)  // 1 = real time (x 1/rate_scale when scaled)
        << "\nt_base " << d.tBase << "\n";
   return 0;
 }
