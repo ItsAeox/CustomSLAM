@@ -6,6 +6,8 @@ Variants (applied to baselines/orbslam3/settings/{EuRoC,TUM-VI}_mono.yaml):
   light-orb  ORBextractor.nFeatures x0.6, nLevels 8 -> 6
   light-map  Web.LBA.MaxOptKFs 20, Web.LBA.MaxFixedKFs 20, Web.Mapping.Neighbors 15   (see include/WebConfig.h)
   light-all  light-orb + light-map
+  klt        Web.KLT.Enable 1 (hybrid ORB+KLT tracker, defaults in include/WebConfig.h)
+  klt-orb    klt + light-orb
 
 Usage: make_variants.py <out_dir>
 """
@@ -31,8 +33,12 @@ def light_map(text):
         "".join(f"{k}: {v}\n" for k, v in MAP.items())
 
 
+def klt(text):
+    return text.rstrip("\n") + "\n\n# web port: KLT tracking frames (include/WebConfig.h)\nWeb.KLT.Enable: 1\n"
+
+
 VARIANTS = {"stock": lambda t: t, "light-orb": light_orb, "light-map": light_map,
-            "light-all": lambda t: light_map(light_orb(t))}
+            "light-all": lambda t: light_map(light_orb(t)), "klt": klt, "klt-orb": lambda t: klt(light_orb(t))}
 
 
 def main():
