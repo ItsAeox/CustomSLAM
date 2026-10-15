@@ -722,8 +722,14 @@ void TemplatedVocabulary<TDescriptor,F>::HKmeansStep(NodeId parent_id,
           {
             cluster_descriptors.push_back(descriptors[*vit]);
           }
-          
-          
+
+#ifdef ORBSLAM3_WEB
+          // web port: an empty cluster (possible with many identical descriptors, e.g. TEBLID on flat patches,
+          // where k-means++ can pick duplicate centres) would get an empty mean, and the next distance
+          // computation dereferences it (segfault). Keep the previous centre instead; no change otherwise.
+          if(cluster_descriptors.empty())
+            continue;
+#endif
           F::meanValue(cluster_descriptors, clusters[c]);
         }
         
