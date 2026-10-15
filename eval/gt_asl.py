@@ -11,7 +11,7 @@ Camera poses: T_W_C = T_W_B * T_B_C, with
 Output: one pose per cam0 frame inside a continuous GT segment (gaps > --max-gap not bridged), timestamps in seconds
 (ns * 1e-9), matching orbslam3_run's output.
 
-Usage: gt_asl.py --dataset euroc|tumvi --seq <sequence root (contains mav0)> --out gt_tum.txt
+Usage: gt_asl.py --dataset euroc|tumvi --seq <sequence root (contains mav0)> --out gt_tum.txt [--frame cam0|body]
 """
 import argparse
 import re
@@ -50,6 +50,8 @@ def main():
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--tumvi-yaml", type=Path, default=DEFAULT_TUMVI_YAML)
     ap.add_argument("--max-gap", type=float, default=0.1)
+    ap.add_argument("--frame", choices=["cam0", "body"], default="cam0",
+                    help="body: IMU body poses T_W_B (what ORB-SLAM3 saves in mono-inertial mode) instead of cam0")
     a = ap.parse_args()
 
     mav0 = a.seq / "mav0"
@@ -59,7 +61,7 @@ def main():
     else:
         T_B_C = matrix_after(a.tumvi_yaml.read_text(), "IMU.T_b_c1")
         t_gt, T_W_B = load_gt(mav0 / "mocap0" / "data.csv")
-    T_W_C = T_W_B @ T_B_C
+    T_W_C = T_W_B @ T_B_C if a.frame == "cam0" else T_W_B
 
     t_cam = np.array([int(l.split(",")[0]) for l in (mav0 / "cam0" / "data.csv").read_text().splitlines()
                       if l.strip() and not l.startswith("#")], dtype=np.int64) * 1e-9
@@ -72,7 +74,7 @@ def main():
             t_out.append(t_cam[m])
             T_out.append(interp_poses(t_gt[s:e + 1], T_W_C[s:e + 1], t_cam[m]))
     t_out, T_out = np.concatenate(t_out), np.concatenate(T_out)
-    write_tum(a.out, t_out, T_out, header=f"{a.dataset} GT, cam0 (T_W_B * T_B_C), {a.seq.name}")
+    write_tum(a.out, t_out, T_out, header=f"{a.dataset} GT, " + ("cam0 (T_W_B * T_B_C)" if a.frame == "cam0" else "IMU body (T_W_B)") + f", {a.seq.name}")
     print(f"wrote {len(t_out)} / {len(t_cam)} cam0 frames with GT coverage -> {a.out}")
 
 
