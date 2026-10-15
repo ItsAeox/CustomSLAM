@@ -9,6 +9,7 @@ export const OPTIONS = [
   { key: 'levels', label: 'Pyramid levels', values: [['0', 'settings default (8)'], ['4', '4'], ['5', '5'], ['6', '6'], ['8', '8']], def: '0' },
   { key: 'reloc', label: 'Relocalise before new map', values: [['3', '3 s (stock)'], ['10', '10 s'], ['30', '30 s']], def: '3' },
   { key: 'motion', label: 'Motion model', values: [['stock', 'stock (constant velocity per frame)'], ['time', 'time-scaled (dropped frames)']], def: 'stock' },
+  { key: 'imu', label: 'IMU (mono-inertial, experimental)', page: 'ar', values: [['off', 'off (visual only)'], ['on', 'on (DeviceMotion)']], def: 'off' },
   { key: 'anchor', label: 'Tracking lost with a cactus placed', page: 'ar',
     values: [['keep', 'keep the map, relocalise only'], ['stock', 'stock (new map after the timeout)']], def: 'keep' },
   { key: 'map', label: 'Local mapping', values: [['stock', 'stock'], ['light', 'light (local BA 20/20, 15 neighbours)']], def: 'stock' },

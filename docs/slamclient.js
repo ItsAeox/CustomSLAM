@@ -47,6 +47,29 @@ export function savedCalibrations() {
   return out;
 }
 
+// IMU block for ORB-SLAM3 mono-inertial on a phone (appended to cameraSettings). Body = the device's DeviceMotion axes
+// (x right, y up, z out of the screen); the rear camera (x right, y down, z forward) is R_bc = diag(1, -1, -1) in
+// portrait, translation ~1 cm (ignored). Noise: typical phone MEMS densities x ~5 (browser filtering / resampling).
+export function phoneImuSettings(hz = 100) {
+  return `
+# IMU (phone, DeviceMotion): web/slamclient.js phoneImuSettings
+IMU.T_b_c1: !!opencv-matrix
+   rows: 4
+   cols: 4
+   dt: f
+   data: [1.0, 0.0, 0.0, 0.0,
+          0.0, -1.0, 0.0, 0.0,
+          0.0, 0.0, -1.0, 0.0,
+          0.0, 0.0, 0.0, 1.0]
+IMU.InsertKFsWhenLost: 0
+IMU.NoiseGyro: 6.0e-4
+IMU.NoiseAcc: 1.0e-2
+IMU.GyroWalk: 2.0e-5
+IMU.AccWalk: 3.0e-3
+IMU.Frequency: ${hz.toFixed(1)}
+`;
+}
+
 // ORB-SLAM3 settings for a camera stream: calibrated (calib.html) or pinhole from the horizontal FOV, no distortion.
 export function cameraSettings(w, h, hfovDeg, fps, nFeatures = 1000, calib = null) {
   const K = intrinsics(w, h, hfovDeg, calib);

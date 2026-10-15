@@ -7,7 +7,7 @@
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { createSlamWorker, cameraSettings, intrinsics, loadCalibration, savedCalibrations, STATE, vocabUrl } from './slamclient.js';
+import { createSlamWorker, cameraSettings, intrinsics, loadCalibration, phoneImuSettings, savedCalibrations, STATE, vocabUrl } from './slamclient.js';
 import { dot, fitPlaneRansac, normalize, rayPlane } from './plane.js';
 import { applyOptions, buildOptionsUI, describeOptions, optionsFromParams, optionsToParams } from './options.js';
 
@@ -15,10 +15,10 @@ const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 if (params.get('fov')) $('fov').value = params.get('fov');
 if (params.get('res')) $('res').value = params.get('res');
-// algorithm / settings variant (web/options.js), also in the URL. AR defaults: stock ORB-SLAM3 tracking (the hybrid is
-// faster but not shown to be as robust under fast handheld motion yet), relocalise 10 s before a new map (stock 3 s),
-// and keep the map while a cactus is placed.
-const AR_DEFAULTS = { reloc: '10', tracker: 'stock' };
+// algorithm / settings variant (web/options.js), also in the URL. AR defaults: the hybrid ORB+KLT tracker (2-3x faster;
+// at honest real time on the five hardest sequences, 10 seeds, WASM: 22/50 bad vs 27/50 for stock, native 12 vs 12 —
+// results/hard10_rt), relocalise 10 s before a new map (stock 3 s), and keep the map while the tree is placed.
+const AR_DEFAULTS = { reloc: '10', tracker: 'klt' };
 const opts = optionsFromParams(params, AR_DEFAULTS, 'ar');
 buildOptionsUI($('opts'), opts, () => history.replaceState(null, '', `?${optionsToParams(opts, new URLSearchParams(location.search), AR_DEFAULTS)}`));
 
@@ -42,7 +42,6 @@ let rect = { x: 0, y: 0, w: 1, h: 1, s: 1 };
 let twc = null, state = 0, stats = [0, 0, 0, 0];
 let localPts = [];                  // local map points [[x,y,z]]
 let kps = null;
-let showPoints = true;
 let floor = null, floorMesh = null;  // plane {n (up), d, height}
 let cactusProto = null, cactus = null;  // the placed object (now a tree: assets/tree.glb)
 let objBase = 1;                     // placement size (map units); the Size slider scales it
@@ -56,6 +55,9 @@ let camStream = null, camTrack = null; // MediaStreamTrackProcessor.readable (on
 let stopRvfc = () => {};
 const decodeTimes = [];               // per frame: gray image preparation in the worker (ms)  // live camera: frames presented / replaced before tracking
 const gyroHist = [];                 // [time ms, |rotation rate| deg/s] of the last second (logged on tracking loss)
+const inertial = opts.imu === 'on';  // ORB-SLAM3 mono-inertial (experimental)
+let imuPending = [];
+let imuFlags = [0, 0];               // last logged IMU initialisation flags (map stats [4], [5])                 // live IMU samples not yet sent: [t abs s, ax, ay, az (m/s^2), gx, gy, gz (rad/s)] flat
 let lastMaps = 0, lastState = 0;
 let stash = null;          // anchors of a map that went inactive (tracking lost -> new map); restored on map merge
 let resetRequested = false;  // Reset button: sent to the worker between frames (one request at a time)
@@ -86,6 +88,10 @@ function onMotion(e) {
   accLP = accLP ? accLP.map((x, i) => 0.7 * x + 0.3 * v[i]) : v;
   motionEvents++;
   const r = e.rotationRate;
+  if (inertial && r && r.alpha != null && a.x != null) {  // device axes = IMU body; rotationRate alpha/beta/gamma = z/x/y (deg/s)
+    const d = Math.PI / 180;
+    imuPending.push((performance.timeOrigin + e.timeStamp) / 1000, a.x, a.y, a.z, r.beta * d, r.gamma * d, r.alpha * d);
+  }
   if (r && r.alpha != null) {
     const now = performance.now();
     gyroHist.push([now, Math.hypot(r.alpha, r.beta, r.gamma)]);
@@ -184,6 +190,10 @@ function detectFloor() {
 
 function placeCactus(clientX, clientY) {
   if (!twc || !tracking()) return;
+  if (inertial && !(stats[4] && stats[5])) {  // the IMU initialisation rotates and rescales the map: place afterwards
+    hint(stats[4] ? 'IMU almost ready (refining). Keep moving a few more seconds.' : 'IMU initialising: move the phone around (walk, turn).', 2500);
+    return;
+  }
   const u = (clientX - rect.x) / rect.s, v = (clientY - rect.y) / rect.s;  // image pixel
   const dir = normalize(mulR(rotOf(twc), [(u - K.cx) / K.fx, (v - K.cy) / K.fy, 1]));  // (lens distortion ignored)
   const o = [twc[12], twc[13], twc[14]];
@@ -227,7 +237,7 @@ function placeCactus(clientX, clientY) {
   objBase = size;
   cactus.scale.setScalar(size * sizeFactor());  // cactusProto is normalised to height 1, base at the origin
   scene.add(cactus);
-  $('sizeRow').hidden = false;
+  $('sizeRow').style.visibility = 'visible';
   tele(`tree placed: ${floor ? 'floor plane' : 'tap plane'}, distance ${Math.hypot(hit[0] - o[0], hit[1] - o[1], hit[2] - o[2]).toFixed(2)}, size ${size.toFixed(3)} x ${sizeFactor().toFixed(2)} (map units)`);
   hint('');
 }
@@ -243,7 +253,7 @@ function hint(s, holdMs = 0) {  // holdMs: keep this message instead of the per-
 function drawFrame(bmp) {
   bgx.drawImage(bmp, 0, 0);
   bmp.close();
-  if (showPoints && kps && tracking()) {
+  if (kps && tracking()) {
     bgx.fillStyle = '#22c55e';
     for (let i = 0; i < kps.length; i += 3) if (kps[i + 2] === 1) bgx.fillRect(kps[i] - 1.5, kps[i + 1] - 1.5, 3, 3);
   }
@@ -272,6 +282,16 @@ async function start() {
       // rotated into the camera frame (R_cb). At rest it is the reaction to gravity, so "down" = -a. noimu=1: none.
       const imu = params.get('noimu') ? null : await fetch(`/api/imu?dataset=${dataset}&name=${encodeURIComponent(name)}`)
         .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      const imuRaw = inertial ? await (await fetch(`/api/imu?dataset=${dataset}&name=${encodeURIComponent(name)}&raw=1`)).json() : null;
+      let kRaw = 0;
+      const imuUpTo = (t) => {  // raw dataset IMU samples up to t (inertial test mode)
+        const out = [];
+        while (imuRaw && kRaw < imuRaw.t.length && imuRaw.t[kRaw] <= t) {
+          const a = imuRaw.acc[kRaw], g = imuRaw.gyro[kRaw];
+          out.push(imuRaw.t[kRaw], a[0], a[1], a[2], g[0], g[1], g[2]); kRaw++;
+        }
+        return out;
+      };
       let ki = 0;
       const imuDown = (t) => {
         if (!imu) return null;
@@ -283,7 +303,8 @@ async function start() {
         const R = imu.R_cb;
         return normalize([0, 1, 2].map((i) => -(R[i][0] * a[0] + R[i][1] * a[1] + R[i][2] * a[2])));
       };
-      settingsUrl = info.settings; clahe = info.clahe;
+      settingsUrl = inertial ? info.settings.replace('_mono.yaml', '_mono_inertial.yaml') : info.settings;  // ORB-SLAM3's own
+      clahe = info.clahe;
       const yaml = await (await fetch(settingsUrl)).text();
       settingsText = yaml;
       const num = (key) => Number((new RegExp(`Camera1\\.${key}:\\s*([\\d.eE+-]+)`).exec(yaml) || [])[1] || 0);
@@ -300,9 +321,9 @@ async function start() {
         const f = man.frames[Math.min(i++, man.frames.length - 1)];
         if (cover && f.t - man.frames[0].t >= cover[0] && f.t - man.frames[0].t < cover[1]) {  // camera covered
           if (!blank) { blank = new OffscreenCanvas(W, H); blank.getContext('2d').fillRect(0, 0, W, H); }
-          return { bitmap: await createImageBitmap(blank), t: f.t, down: imuDown(f.t) };
+          return { bitmap: await createImageBitmap(blank), t: f.t, down: imuDown(f.t), imu: imuUpTo(f.t) };
         }
-        return { bitmap: await createImageBitmap(await (await fetch(f.url)).blob()), t: f.t, down: imuDown(f.t) };
+        return { bitmap: await createImageBitmap(await (await fetch(f.url)).blob()), t: f.t, down: imuDown(f.t), imu: imuUpTo(f.t) };
       };
       const first = await nextBitmap();
       W = first.bitmap.width; H = first.bitmap.height;
@@ -320,13 +341,14 @@ async function start() {
       calib = params.get('calib') === '0' ? null : loadCalibration(W, H);  // calib.html, this browser, this stream size
       K = intrinsics(W, H, hfov, calib);  // without a calibration: the FOV is along the sensor long side (portrait streams too)
       fps = stream.getVideoTracks()[0].getSettings().frameRate || 30;
-      settingsText = cameraSettings(W, H, hfov, fps, Number(params.get('features') || 1000), calib);
+      settingsText = cameraSettings(W, H, hfov, fps, Number(params.get('features') || 1000), calib) + (inertial ? phoneImuSettings(100) : '');
       const tc = performance.now();
       if ('MediaStreamTrackProcessor' in window && params.get('webcodecs') !== '0') {
         camTrack = stream.getVideoTracks()[0].clone();  // its own track: the <video> element keeps the original
         camStream = new MediaStreamTrackProcessor({ track: camTrack }).readable;
       }
-      const grab = async () => ({ bitmap: await createImageBitmap(video), t: (performance.now() - tc) / 1000 });
+      const grab = async () => ({ bitmap: await createImageBitmap(video),
+                                  t: inertial ? (performance.timeOrigin + performance.now()) / 1000 : (performance.now() - tc) / 1000 });
       nextBitmap = grab;
       frameClock = 'grab time (performance.now)';
       if ('requestVideoFrameCallback' in HTMLVideoElement.prototype && params.get('rvfc') !== '0') {
@@ -344,7 +366,7 @@ async function start() {
           createImageBitmap(video).then((bmp) => {
             if (!active) { bmp.close(); return; }
             if (latest) { latest.bitmap.close(); camDropped++; }  // replaced before the tracker took it
-            latest = { bitmap: bmp, t: meta.mediaTime };
+            latest = { bitmap: bmp, t: inertial ? (performance.timeOrigin + now) / 1000 : meta.mediaTime };
             if (waiter) { const w = waiter; waiter = null; w(); }
           });
           video.requestVideoFrameCallback(onFrame);
@@ -370,7 +392,7 @@ async function start() {
       }
     }
     layout();
-    $('start').hidden = true; $('hud').hidden = $('bar').hidden = false;
+    $('start').hidden = true; $('hud').hidden = $('bar').hidden = $('topRow').hidden = false;
     // Back / Options return to the start screen (options kept in the URL): reload ends the camera and the worker
     history.pushState({ running: true }, '');
     addEventListener('popstate', () => location.reload());
@@ -419,7 +441,7 @@ async function start() {
       tele(`slam: ${s}`);
     }, onProgress);
     const tInit = performance.now();
-    const ready = await slam.request({ type: 'init', vocabUrl: vocabUrl(opts.desc), clahe, seed: 1,
+    const ready = await slam.request({ type: 'init', vocabUrl: vocabUrl(opts.desc), clahe, seed: 1, prof: params.get('prof') === '1', inertial,
                                        settingsText: withTracker(settingsText) });
     loadingDone = true; clearInterval(stallTimer);
     if (camStream) {  // WebCodecs: frames go straight to the worker; use it only if they match the stream we calibrated for
@@ -442,8 +464,7 @@ async function start() {
       if (stash) { if (stash.cactus) scene.remove(stash.cactus); if (stash.floorMesh) scene.remove(stash.floorMesh); stash = null; }
       resetAnchors('Map reset. Move the phone slowly sideways.');
     };
-    $('btnPoints').onclick = () => { showPoints = !showPoints; };
-    $('btnClear').onclick = () => { if (cactus) { scene.remove(cactus); cactus = null; $('sizeRow').hidden = true; tele('tree removed'); } };
+    $('btnClear').onclick = () => { if (cactus) { scene.remove(cactus); cactus = null; $('sizeRow').style.visibility = 'hidden'; tele('tree removed'); } };
     let sizeLog = 0;
     $('size').oninput = () => {  // resize the placed tree (2^value: 0.25x .. 4x of the placement size)
       $('sizeVal').textContent = `${sizeFactor().toFixed(2)}×`;
@@ -471,13 +492,16 @@ async function start() {
       const tf = performance.now();
       let r, down = null;
       if (camMode === 'webcodecs') {
-        r = await slam.request({ type: 'trackCamera', viz: true, withMap: n % 10 === 0 });
+        const imu = inertial ? new Float64Array(imuPending) : null; imuPending = [];
+        r = await slam.request({ type: 'trackCamera', viz: true, withMap: n % 10 === 0, absClock: inertial, imu });
         if (r.cam) { camFrames = r.cam[0]; camDropped = r.cam[1]; }
       } else {
         const f = await nextBitmap();  // f.down: dataset IMU gravity (camera frame), test mode only
         down = f.down;
         if (down) motionEvents++;
-        r = await slam.request({ type: 'bitmap', bitmap: f.bitmap, t: f.t, viz: true, withMap: n % 10 === 0 }, [f.bitmap]);
+        let imu = null;
+        if (inertial) { imu = new Float64Array(f.imu || imuPending); if (!f.imu) imuPending = []; }
+        r = await slam.request({ type: 'bitmap', bitmap: f.bitmap, t: f.t, viz: true, withMap: n % 10 === 0, imu }, [f.bitmap]);
       }
       if (r.decodeMs != null) { decodeTimes.push(r.decodeMs); if (decodeTimes.length > 30) decodeTimes.shift(); }
       if (r.type !== 'pose') throw new Error(r.text || 'tracking error');
@@ -496,6 +520,10 @@ async function start() {
       if (lastMaps && stats[3] > lastMaps) stashAnchors();              // lost -> ORB-SLAM3 started a new map
       else if (lastMaps && stats[3] < lastMaps) restoreAnchors();       // maps merged back into the old one
       else if (lastState >= 2 && state === 1 && !stash) resetAnchors('Tracking restarted. Move the phone slowly sideways.');
+      if (inertial && (stats[4] !== imuFlags[0] || stats[5] !== imuFlags[1])) {
+        tele(`IMU: initialised ${stats[4] ? 'yes' : 'no'}, refined (VIBA2) ${stats[5] ? 'yes' : 'no'}`);
+        imuFlags = [stats[4], stats[5]];
+      }
       lastState = state; lastMaps = stats[3];
       if (tracking()) {
         twc = r.twc;
@@ -512,21 +540,40 @@ async function start() {
       if (times.length > 30) times.shift();
       if (state === 1) hint('Move the phone slowly sideways to start tracking');
       else if (state === 3 || state === 4) hint(keepMapOn ? 'Tracking lost: point the camera back at where the tree was' : 'Tracking lost: move back towards where you were');
+      else if (tracking() && inertial && !(stats[4] && stats[5])) hint(stats[4] ? 'IMU refining… keep moving' : 'IMU initialising: move the phone around');
       else if (tracking() && !cactus) hint(floor ? 'Tap the floor to place the tree' : (downN ? 'Point at the floor…' : 'Tap a flat surface to place the tree'));
       else if (tracking() && cactus && hintText) hint('');
       if (n % 5 === 0) {
         const fpsNow = 1000 / (times.reduce((a, b) => a + b, 0) / times.length);
         const mhz = motionEvents / ((performance.now() - t0) / 1000);
-        $('hud').innerHTML = `<b>${STATE[state]}</b> · ${opts.tracker === 'klt' ? 'hybrid' : 'stock'} · ${fpsNow.toFixed(1)} fps · track ${r.trackMs.toFixed(0)} ms · ` +
+        $('hud').innerHTML = `<b>${STATE[state]}</b> · ${(opts.tracker === "klt" && !inertial) ? "hybrid" : "stock"} · ${fpsNow.toFixed(1)} fps · track ${r.trackMs.toFixed(0)} ms · ` +
           `KFs ${stats[0]} · points ${stats[2]} · floor ${floor ? 'yes' : 'no'} · gravity ${mhz ? mhz.toFixed(0) + ' Hz' : 'n/a'} · ${W}×${H} ${seq ? 'dataset camera' : calib ? 'calibrated' : `${hfov}° FOV (assumed)`}`;
       }
       trackTimes.push(r.trackMs);
+      if (n % 15 === 0) {  // resource panel (top right): memory, map size, tracking load, threads
+        const avg = times.reduce((a, b) => a + b, 0) / Math.max(1, times.length);
+        const js = performance.memory ? performance.memory.usedJSHeapSize / 1048576 : null;
+        const trk = trackTimes.length ? trackTimes.reduce((a, b) => a + b, 0) / trackTimes.length : r.trackMs;
+        $('res').innerHTML = `WASM ${(r.heap / 1048576).toFixed(0)} MB` + (js != null ? ` · JS ${js.toFixed(0)} MB` : '') +
+          `<br>map ${stats[1]} pts · ${stats[0]} KFs · ${stats[3]} map${stats[3] === 1 ? '' : 's'}` +
+          `<br>tracking ${Math.min(100, 100 * trk / Math.max(avg, 1)).toFixed(0)}% busy · ${navigator.hardwareConcurrency || '?'} cores, SLAM threads 3`;
+      }
+      if (n % 300 === 0) {  // per-stage profile (?prof=1 loads the profiling build; KLT counters always)
+        const pr = await slam.request({ type: 'profile' });
+        const p = pr.p || [], f = (x) => (x == null ? '-' : x.toFixed(1));
+        let line = `profile: KLT frames ${p[0]} ORB frames ${p[1]} | KLT ms ${f(p[2])} | LK pyramid ms/frame ${f(p[3])}`;
+        if (p.length > 4) {
+          line += ` | tracking (ms, mean of ${p[9]} frames): ORB ${f(p[4])} pose ${f(p[5])} local map ${f(p[6])} new KF ${f(p[7])} total ${f(p[8])}` +
+                  ` | mapping (ms per KF, ${p[16]} KFs): insert ${f(p[10])} MP culling ${f(p[11])} MP creation ${f(p[12])} local BA ${f(p[13])} KF culling ${f(p[14])} total ${f(p[15])}`;
+        }
+        tele(line + ` | page: gray ${decodeTimes.length ? f([...decodeTimes].sort((x, y) => x - y)[decodeTimes.length >> 1]) : '-'} ms (${camMode})`);
+      }
       if (n % 30 === 0) {
         const s = [...trackTimes].sort((a, b) => a - b);
         const fpsNow = 1000 / (times.reduce((a, b) => a + b, 0) / times.length);
         tele(`frame ${n}: ${STATE[state]} | ${fpsNow.toFixed(1)} fps | track ms med ${s[s.length >> 1].toFixed(1)} p95 ${s[Math.floor(s.length * 0.95)].toFixed(1)} | ` +
              `gray ms ${decodeTimes.length ? [...decodeTimes].sort((x, y) => x - y)[decodeTimes.length >> 1].toFixed(1) : '-'} (${camMode}) | ` +
-             `KFs ${stats[0]} MPs ${stats[1]} matches ${stats[2]} maps ${stats[3]} | floor ${floor ? `yes (cam height ${floor.height.toFixed(2)}, ${floor.inliers} inl)` : 'no'} | ` +
+             `KFs ${stats[0]} MPs ${stats[1]} matches ${stats[2]} maps ${stats[3]} | wasm heap ${(r.heap / 1048576).toFixed(0)} MB | floor ${floor ? `yes (cam height ${floor.height.toFixed(2)}, ${floor.inliers} inl)` : 'no'} | ` +
              `gravity ${(motionEvents / ((performance.now() - t0) / 1000)).toFixed(0)} Hz | tree ${cactus ? 'placed' : 'no'}` +
              (camFrames ? ` | camera ${camFrames} frames, ${(100 * (camDropped - camLast[1]) / Math.max(1, camFrames - camLast[0])).toFixed(0)}% dropped (last 30 frames)` : ''));
         camLast = [camFrames, camDropped];
@@ -572,6 +619,12 @@ addEventListener('unhandledrejection', (e) => tele(`ERROR (promise) ${e.reason &
 
 // tracker=klt: ORB-SLAM3 with KLT tracking frames between ORB frames (Web.KLT.*, include/WebConfig.h)
 function withTracker(yaml) {  // applies the selected options (web/options.js)
+  // IMU on: stock tracking. KLT frames do not carry IMU preintegration yet; with them, mono-inertial never gets past the
+  // early resets (EuRoC MH01 in the dataset test mode), while stock tracking initialises and refines the IMU.
+  if (inertial && opts.tracker === 'klt') {
+    tele('IMU on: hybrid tracker disabled (KLT frames are not IMU-aware yet), stock ORB-SLAM3 tracking');
+    return applyOptions(yaml, { ...opts, tracker: 'stock' });
+  }
   return applyOptions(yaml, opts);
 }
 
