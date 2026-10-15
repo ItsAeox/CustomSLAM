@@ -157,6 +157,10 @@ function detectFloor() {
   const height = dot(pl.n, c) + pl.d;  // camera height above the plane
   if (height <= 0) return;
   if (floor && pl.inliers.length < 0.8 * floor.inliers) return;  // keep a better earlier estimate
+  if (!floor || Math.abs(height - floor.height) > 0.2 * floor.height) {  // log new / clearly changed floor estimates
+    const tilt = Math.acos(Math.min(1, Math.abs(dot(pl.n, up)))) * 180 / Math.PI;
+    tele(`floor ${floor ? 'updated' : 'found'}: camera height ${height.toFixed(3)} (map units), ${pl.inliers.length} of ${below.length} points below the camera, tilt to gravity ${tilt.toFixed(1)} deg`);
+  }
   floor = { n: pl.n, d: pl.d, height, inliers: pl.inliers.length, centroid: pl.centroid };
   if (!floorMesh) {
     floorMesh = new THREE.GridHelper(1, 10, 0x22c55e, 0x22c55e);
@@ -206,7 +210,8 @@ function placeCactus(clientX, clientY) {
     }
   }
   const hit = rayPlane(o, dir, plane);
-  if (!hit || !cactusProto) return;
+  if (!hit) { hint('Tap on the floor (below the horizon).', 2500); tele('tap rejected: the ray misses the floor plane'); return; }
+  if (!cactusProto) return;
   if (cactus) scene.remove(cactus);
   cactus = cactusProto.clone();
   cactus.position.set(...hit);
@@ -253,6 +258,21 @@ async function start() {
       const [dataset, name] = seq.split('/');
       const info = (await (await fetch('/api/sequences')).json()).find((s) => s.dataset === dataset && s.name === name);
       const man = await (await fetch(`/api/sequence?dataset=${dataset}&name=${encodeURIComponent(name)}`)).json();
+      // gravity from the dataset IMU (EuRoC / TUM-VI): the accelerometer averaged over +-0.25 s around the frame,
+      // rotated into the camera frame (R_cb). At rest it is the reaction to gravity, so "down" = -a. noimu=1: none.
+      const imu = params.get('noimu') ? null : await fetch(`/api/imu?dataset=${dataset}&name=${encodeURIComponent(name)}`)
+        .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      let ki = 0;
+      const imuDown = (t) => {
+        if (!imu) return null;
+        while (ki + 1 < imu.t.length && imu.t[ki] < t - 0.25) ki++;
+        const a = [0, 0, 0];
+        let n = 0;
+        for (let k = ki; k < imu.t.length && imu.t[k] <= t + 0.25; k++) { a[0] += imu.acc[k][0]; a[1] += imu.acc[k][1]; a[2] += imu.acc[k][2]; n++; }
+        if (!n) return null;
+        const R = imu.R_cb;
+        return normalize([0, 1, 2].map((i) => -(R[i][0] * a[0] + R[i][1] * a[1] + R[i][2] * a[2])));
+      };
       settingsUrl = info.settings; clahe = info.clahe;
       const yaml = await (await fetch(settingsUrl)).text();
       settingsText = yaml;
@@ -270,9 +290,9 @@ async function start() {
         const f = man.frames[Math.min(i++, man.frames.length - 1)];
         if (cover && f.t - man.frames[0].t >= cover[0] && f.t - man.frames[0].t < cover[1]) {  // camera covered
           if (!blank) { blank = new OffscreenCanvas(W, H); blank.getContext('2d').fillRect(0, 0, W, H); }
-          return { bitmap: await createImageBitmap(blank), t: f.t };
+          return { bitmap: await createImageBitmap(blank), t: f.t, down: imuDown(f.t) };
         }
-        return { bitmap: await createImageBitmap(await (await fetch(f.url)).blob()), t: f.t };
+        return { bitmap: await createImageBitmap(await (await fetch(f.url)).blob()), t: f.t, down: imuDown(f.t) };
       };
       const first = await nextBitmap();
       W = first.bitmap.width; H = first.bitmap.height;
@@ -351,7 +371,8 @@ async function start() {
         tele(k.type === 'error' ? `keep map failed: ${k.text}` : `keep map ${keep ? 'on (cactus placed)' : 'off'}`);
       }
       const tf = performance.now();
-      const { bitmap, t } = await nextBitmap();
+      const { bitmap, t, down } = await nextBitmap();  // down: dataset IMU gravity (camera frame), test mode only
+      if (down) motionEvents++;
       const r = await slam.request({ type: 'bitmap', bitmap, t, viz: true, withMap: n % 10 === 0 }, [bitmap]);
       if (r.type !== 'pose') throw new Error(r.text || 'tracking error');
       n++;
@@ -372,7 +393,7 @@ async function start() {
       lastState = state; lastMaps = stats[3];
       if (tracking()) {
         twc = r.twc;
-        const g = gravityCam();
+        const g = down || gravityCam();
         if (g) { const gw = mulR(rotOf(twc), g); downSum = downSum.map((x, i) => x + gw[i]); downN++; }
       }
       if (r.viz.mps) {
@@ -453,6 +474,14 @@ $('go').onclick = start;
     : `Camera not calibrated: the field of view below is assumed. <a href="./calib.html" style="color:#5bd18b">Calibrate (chessboard)</a>`;
 }
 // debugging handle (console): scene graph, camera, anchors
-window.__ar = { scene, cam3, renderer, get cactus() { return cactus; }, get floor() { return floor; }, get twc() { return twc; },
+window.__ar = { scene, cam3, renderer,
+                snapshot: (quality = 0.8) => {  // JPEG data URL of the camera image with the 3D overlay
+                  renderer.render(scene, cam3);
+                  const c = Object.assign(document.createElement('canvas'), { width: W, height: H });
+                  const g = c.getContext('2d');
+                  g.drawImage(bg, 0, 0);
+                  g.drawImage($('gl'), 0, 0, W, H);
+                  return c.toDataURL('image/jpeg', quality);
+                }, get cactus() { return cactus; }, get floor() { return floor; }, get twc() { return twc; },
                 get rect() { return rect; }, get K() { return K; } };
 if (!crossOriginIsolated) $('err').textContent = 'Not cross-origin isolated: open through web/serve.py (WASM threads need COOP/COEP).';

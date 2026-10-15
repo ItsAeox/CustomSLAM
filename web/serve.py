@@ -9,6 +9,8 @@
     /settings/...  generated ORB-SLAM3 settings files
 - GET  /api/sequence?dataset=tumvie|euroc|tumvi&name=<seq>  -> JSON manifest (image URLs + timestamps, as orbslam3_run)
 - GET  /api/sequences                          -> all runnable sequences with settings + GT URLs (viewer)
+- GET  /api/imu?dataset=euroc|tumvi&name=<seq>  -> accelerometer on the camera timeline + camera<-IMU rotation
+                                                  (ar.html dataset test mode: gravity instead of DeviceMotion)
 - /orbsettings/... ORB-SLAM3's official settings (baselines/orbslam3/settings)
 - /gt/...          ground truth, TUM format, camera frame (<root>/results/gt/<dataset>_<name>.txt)
 - POST /api/result?name=<file>[&append=1]      -> saves (or appends) the body to <results>/browser/<file>
@@ -62,6 +64,45 @@ def asl_manifest(seq: Path, dataset: str, url_prefix: str) -> dict:
               for i, (ns, name) in enumerate(rows) if (seq / "mav0" / "cam0" / "data" / name).exists()]
     return {"dataset": dataset, "name": seq.name, "tBase": ns0 * 1e-9, "clahe": dataset == "tumvi",
             "frames": frames, "missing": len(rows) - len(frames)}
+
+
+# Camera -> IMU rotation for TUM-VI (512x512, cam0): IMU.T_b_c1 from ORB-SLAM3's
+# Examples/Monocular-Inertial/TUM-VI.yaml (the IMU is the body frame). EuRoC: read from mav0/cam0/sensor.yaml (T_BS).
+TUMVI_R_BC = [[-0.9995250378696743, 0.0075019185074052044, -0.02989013031643309],
+              [0.029615343885863205, -0.03439736061393144, -0.998969345370175],
+              [-0.008522328211654736, -0.9993800792498829, 0.03415885127385616]]
+
+
+def imu_manifest(seq: Path, dataset: str, hz: float = 50.0) -> dict:
+    """Accelerometer (specific force, m/s^2, IMU frame; at rest it points up) averaged into 1/hz bins, with t on the
+    camera timeline (seconds since the first cam0 frame, as asl_manifest), and R_cb (camera <- IMU, row-major)."""
+    ns0 = None
+    for l in (seq / "mav0" / "cam0" / "data.csv").read_text().splitlines():
+        if l.strip() and not l.startswith("#"):
+            ns0 = int(l.split(",", 1)[0])
+            break
+    if dataset == "euroc":  # EuRoC: imu0 is the body frame; cam0 T_BS maps camera -> body
+        txt = (seq / "mav0" / "cam0" / "sensor.yaml").read_text()
+        m = re.search(r"T_BS:.*?data:\s*\[([^\]]*)\]", txt, re.S)
+        v = [float(x) for x in m.group(1).replace("\n", " ").split(",")]
+        r_bc = [v[0:3], v[4:7], v[8:11]]
+    else:
+        r_bc = TUMVI_R_BC
+    r_cb = [[r_bc[j][i] for j in range(3)] for i in range(3)]
+    bins = {}
+    for l in (seq / "mav0" / "imu0" / "data.csv").read_text().splitlines():
+        if not l.strip() or l.startswith("#"):
+            continue
+        f = l.split(",")
+        t = (int(f[0]) - ns0) * 1e-9
+        b = bins.setdefault(int(t * hz // 1), [0.0, 0.0, 0.0, 0.0, 0])
+        b[0] += t; b[1] += float(f[4]); b[2] += float(f[5]); b[3] += float(f[6]); b[4] += 1
+    ts, acc = [], []
+    for k in sorted(bins):
+        b = bins[k]
+        ts.append(round(b[0] / b[4], 4))
+        acc.append([round(b[1] / b[4], 4), round(b[2] / b[4], 4), round(b[3] / b[4], 4)])
+    return {"t": ts, "acc": acc, "R_cb": r_cb, "hz": hz}
 
 
 def list_sequences(root: Path) -> list:
@@ -133,6 +174,16 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_error(404, "unknown sequence")
             manifest = (asl_manifest(seq, dataset, f"/datasets/{sub}") if sub else tumvie_manifest(seq))
             return self.send_json(manifest)
+        if u.path == "/api/imu":
+            q = parse_qs(u.query)
+            name = q.get("name", [""])[0]
+            dataset = q.get("dataset", [""])[0]
+            sub = {"euroc": "euroc", "tumvi": "tumvi"}.get(dataset, "")
+            base = (self.root / "datasets" / sub).resolve()
+            seq = (base / name).resolve()
+            if not sub or not name or base not in seq.parents or not (seq / "mav0" / "imu0" / "data.csv").exists():
+                return self.send_error(404, "no IMU for this sequence")
+            return self.send_json(imu_manifest(seq, dataset))
         return super().do_GET()
 
     def send_json(self, obj):
