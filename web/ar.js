@@ -38,6 +38,8 @@ let cactusProto = null, cactus = null;
 let downSum = [0, 0, 0], downN = 0;  // gravity direction in the SLAM world frame (sum of unit vectors)
 let accLP = null, motionEvents = 0;
 let lastMaps = 0, lastState = 0;
+let stash = null;          // anchors of a map that went inactive (tracking lost -> new map); restored on map merge
+let resetRequested = false;  // Reset button: sent to the worker between frames (one request at a time)
 const tracking = () => state === 2 || state === 5;  // 5: tracked by a KLT frame
 
 function layout() {  // cover-fit the processed image into the window; the GL canvas covers the same rectangle
@@ -87,7 +89,31 @@ function resetAnchors(reason) {
   if (floorMesh) { scene.remove(floorMesh); floorMesh = null; }
   if (cactus) { scene.remove(cactus); cactus = null; }
   downSum = [0, 0, 0]; downN = 0;
-  if (reason) hint(reason);
+  if (reason) hint(reason, 3000);
+}
+
+// ORB-SLAM3 started a new map after losing tracking: the cactus/floor live in the old map's coordinates, so hide them
+// (not delete). If the user returns and ORB-SLAM3 merges the maps, the merged map uses the old map's coordinates
+// (LoopClosing::MergeLocal corrects the new map into it and makes it active again), so the anchors become valid again.
+function stashAnchors() {
+  if (!cactus && !floor) return;
+  if (stash) { if (stash.cactus) scene.remove(stash.cactus); if (stash.floorMesh) scene.remove(stash.floorMesh); }
+  stash = { cactus, floor, floorMesh, downSum, downN };
+  if (cactus) cactus.visible = false;
+  if (floorMesh) floorMesh.visible = false;
+  cactus = null; floor = null; floorMesh = null; downSum = [0, 0, 0]; downN = 0;
+  tele('anchors stashed (new map after tracking loss)');
+  hint('Tracking lost: new map started. Go back to where the cactus was to recover it.', 4000);
+}
+function restoreAnchors() {
+  if (!stash) return;
+  if (cactus) scene.remove(cactus);
+  if (floorMesh) scene.remove(floorMesh);
+  ({ cactus, floor, floorMesh, downSum, downN } = stash);
+  stash = null;
+  if (cactus) cactus.visible = true;
+  tele('anchors restored (maps merged)');
+  hint('Map recovered: cactus restored', 3000);
 }
 
 function detectFloor() {
@@ -110,10 +136,11 @@ function detectFloor() {
     floorMesh.material.transparent = true; floorMesh.material.opacity = 0.35;
     scene.add(floorMesh);
   }
-  const foot = [c[0] - floor.n[0] * height, c[1] - floor.n[1] * height, c[2] - floor.n[2] * height];
-  floorMesh.position.set(...foot);
+  // the grid is fixed in the world: centred on the floor points that support the plane (not under the camera)
+  const k = dot(pl.n, pl.centroid) + pl.d;
+  floorMesh.position.set(pl.centroid[0] - pl.n[0] * k, pl.centroid[1] - pl.n[1] * k, pl.centroid[2] - pl.n[2] * k);
   floorMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(...floor.n));
-  floorMesh.scale.setScalar(height * 3);
+  floorMesh.scale.setScalar(height * 2);
 }
 
 function placeCactus(clientX, clientY) {
@@ -175,7 +202,8 @@ function drawFrame(bmp) {
     for (let i = 0; i < kps.length; i += 3) if (kps[i + 2] === 1) bgx.fillRect(kps[i] - 1.5, kps[i + 1] - 1.5, 3, 3);
   }
   if (twc) setCameraPose(twc);
-  if (floorMesh) floorMesh.visible = !cactus;
+  if (floorMesh) floorMesh.visible = !cactus && tracking();
+  if (cactus) cactus.visible = tracking();  // hidden while lost: the last pose is stale
   renderer.render(scene, cam3);
 }
 
@@ -248,7 +276,11 @@ async function start() {
                                        settingsText: withTracker(settingsText) });
     if (ready.type === 'error') throw new Error(ready.text);
     tele(`init ${(performance.now() - tInit).toFixed(0)} ms (vocabulary ${(ready.vocabBytes / 1e6).toFixed(1)} MB), wasm heap ${(ready.heap / 1048576).toFixed(0)} MiB`);
-    $('btnReset').onclick = () => { slam.request({ type: 'reset' }); resetAnchors('Map reset. Move the phone slowly sideways.'); };
+    $('btnReset').onclick = () => {  // applied between frames: the worker handles one request at a time
+      resetRequested = true;
+      if (stash) { if (stash.cactus) scene.remove(stash.cactus); if (stash.floorMesh) scene.remove(stash.floorMesh); stash = null; }
+      resetAnchors('Map reset. Move the phone slowly sideways.');
+    };
     $('btnPoints').onclick = () => { showPoints = !showPoints; };
     $('btnClear').onclick = () => { if (cactus) { scene.remove(cactus); cactus = null; } };
     $('stage').addEventListener('pointerdown', (e) => placeCactus(e.clientX, e.clientY));
@@ -257,13 +289,20 @@ async function start() {
     const times = [], trackTimes = [];
     let n = 0;
     for (;;) {
+      if (resetRequested) {
+        resetRequested = false;
+        await slam.request({ type: 'reset' });
+        tele('map reset requested');
+      }
       const tf = performance.now();
       const { bitmap, t } = await nextBitmap();
       const r = await slam.request({ type: 'bitmap', bitmap, t, viz: true, withMap: n % 10 === 0 }, [bitmap]);
       if (r.type !== 'pose') throw new Error(r.text || 'tracking error');
       n++;
       state = r.state; stats = r.viz.stats; kps = r.viz.kps;
-      if ((lastState >= 2 && state === 1) || (stats[3] !== lastMaps && lastMaps)) resetAnchors('Tracking restarted. Move the phone slowly sideways.');
+      if (lastMaps && stats[3] > lastMaps) stashAnchors();              // lost -> ORB-SLAM3 started a new map
+      else if (lastMaps && stats[3] < lastMaps) restoreAnchors();       // maps merged back into the old one
+      else if (lastState >= 2 && state === 1 && !stash) resetAnchors('Tracking restarted. Move the phone slowly sideways.');
       lastState = state; lastMaps = stats[3];
       if (tracking()) {
         twc = r.twc;
