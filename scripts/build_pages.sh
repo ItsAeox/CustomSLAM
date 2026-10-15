@@ -40,8 +40,8 @@ cat > "$OUT/index.html" <<'EOF'
 <h1>Markerless SLAM in the browser</h1>
 <p>ORB-SLAM3 (monocular) compiled to WebAssembly. Everything runs on this device.</p>
 <ul>
-  <li><a href="./ar.html"><b>AR: place a tree on the floor</b></a> (rear camera, stock ORB-SLAM3 tracking; resize the tree with the slider)</li>
-  <li><a href="./ar.html?tracker=klt">AR with the hybrid ORB+KLT tracker</a> (faster; compare how often it loses track)</li>
+  <li><a href="./ar.html"><b>AR: place a tree on the floor</b></a> (rear camera, hybrid ORB+KLT tracker; resize the tree with the slider)</li>
+  <li><a href="./ar.html?tracker=stock">AR with stock ORB-SLAM3 tracking</a> (ORB on every frame; slower)</li>
   <li><a href="./calib.html">Camera calibration</a>: film a chessboard (shown on a laptop / monitor with the same page) so the AR page uses this phone's real focal length and lens distortion instead of an assumed 69° field of view</li>
   <li><a href="./selftest.html">Self-test</a>: threads, SIMD, vocabulary download (33 MB) and SLAM start-up</li>
   <li><a href="./xfeat.html">XFeat benchmark</a>: learned features (CVPR 2024) on this device, WebGPU vs WebAssembly</li>

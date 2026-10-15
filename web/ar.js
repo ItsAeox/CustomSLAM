@@ -15,10 +15,10 @@ const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 if (params.get('fov')) $('fov').value = params.get('fov');
 if (params.get('res')) $('res').value = params.get('res');
-// algorithm / settings variant (web/options.js), also in the URL. AR defaults: stock ORB-SLAM3 tracking (the hybrid is
-// faster but not shown to be as robust under fast handheld motion yet), relocalise 10 s before a new map (stock 3 s),
-// and keep the map while a cactus is placed.
-const AR_DEFAULTS = { reloc: '10', tracker: 'stock' };
+// algorithm / settings variant (web/options.js), also in the URL. AR defaults: the hybrid ORB+KLT tracker (2-3x faster;
+// at honest real time on the five hardest sequences, 10 seeds, WASM: 22/50 bad vs 27/50 for stock, native 12 vs 12 —
+// results/hard10_rt), relocalise 10 s before a new map (stock 3 s), and keep the map while the tree is placed.
+const AR_DEFAULTS = { reloc: '10', tracker: 'klt' };
 const opts = optionsFromParams(params, AR_DEFAULTS, 'ar');
 buildOptionsUI($('opts'), opts, () => history.replaceState(null, '', `?${optionsToParams(opts, new URLSearchParams(location.search), AR_DEFAULTS)}`));
 
