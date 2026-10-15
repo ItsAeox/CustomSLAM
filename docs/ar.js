@@ -49,7 +49,8 @@ let objBase = 1;                     // placement size (map units); the Size sli
 const sizeFactor = () => 2 ** Number($('size').value);
 let downSum = [0, 0, 0], downN = 0;  // gravity direction in the SLAM world frame (sum of unit vectors)
 let accLP = null, motionEvents = 0;
-let camFrames = 0, camDropped = 0, frameClock = 'dataset';  // live camera: frames presented / replaced before tracking
+let camFrames = 0, camDropped = 0, frameClock = 'dataset';
+let camLast = [0, 0];  // camera counters at the previous status line (per-interval drop rate)  // live camera: frames presented / replaced before tracking
 const gyroHist = [];                 // [time ms, |rotation rate| deg/s] of the last second (logged on tracking loss)
 let lastMaps = 0, lastState = 0;
 let stash = null;          // anchors of a map that went inactive (tracking lost -> new map); restored on map merge
@@ -361,6 +362,10 @@ async function start() {
     }
     layout();
     $('start').hidden = true; $('hud').hidden = $('bar').hidden = false;
+    // Back / Options return to the start screen (options kept in the URL): reload ends the camera and the worker
+    history.pushState({ running: true }, '');
+    addEventListener('popstate', () => location.reload());
+    $('btnOpts').onclick = () => location.reload();
     hint('Loading SLAM…');
     new GLTFLoader().load('./assets/tree.glb', (g) => {  // normalise: height 1, base centre at the origin
       const box = new THREE.Box3().setFromObject(g.scene);
@@ -428,6 +433,7 @@ async function start() {
     const t0 = performance.now();
     const times = [], trackTimes = [];
     let n = 0, keepMapOn = false, prevStats = stats, prevTrackMs = 0, lostSince = 0;
+    camLast = [camFrames, camDropped];  // frames that arrived while SLAM was loading do not count as dropped
     for (;;) {
       if (resetRequested) {
         resetRequested = false;
@@ -491,7 +497,8 @@ async function start() {
         tele(`frame ${n}: ${STATE[state]} | ${fpsNow.toFixed(1)} fps | track ms med ${s[s.length >> 1].toFixed(1)} p95 ${s[Math.floor(s.length * 0.95)].toFixed(1)} | ` +
              `KFs ${stats[0]} MPs ${stats[1]} matches ${stats[2]} maps ${stats[3]} | floor ${floor ? `yes (cam height ${floor.height.toFixed(2)}, ${floor.inliers} inl)` : 'no'} | ` +
              `gravity ${(motionEvents / ((performance.now() - t0) / 1000)).toFixed(0)} Hz | tree ${cactus ? 'placed' : 'no'}` +
-             (camFrames ? ` | camera ${camFrames} frames, ${(100 * camDropped / camFrames).toFixed(0)}% dropped` : ''));
+             (camFrames ? ` | camera ${camFrames} frames, ${(100 * (camDropped - camLast[1]) / Math.max(1, camFrames - camLast[0])).toFixed(0)}% dropped (last 30 frames)` : ''));
+        camLast = [camFrames, camDropped];
         trackTimes.length = 0;
       }
     }
