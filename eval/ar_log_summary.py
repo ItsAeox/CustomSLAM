@@ -38,6 +38,13 @@ def summarise(path: Path) -> None:
                 r"Relocalized|Creation of new map|Reseting|Merge detected|anchors (stashed|restored|reset)|"
                 r"keep map|cactus (placed|removed)|tap rejected|map reset requested|ERROR", l):
             events.append(l[:200])
+    cam = [re.search(r"camera (\d+) frames, (\d+)% dropped", l) for l in lines]
+    cam = [m for m in cam if m]
+    if cam:
+        print(f"  camera: {cam[-1].group(1)} frames presented, {cam[-1].group(2)}% dropped (replaced before tracking)")
+    for l in lines:
+        if "frame clock fallback" in l:
+            print("  " + l[13:])
     if fps:
         print(f"  throughput: {st.median(fps):.1f} fps median (min {min(fps):.1f}); track ms median-of-medians "
               f"{st.median(t[0] for t in track):.1f}, worst p95 {max(t[1] for t in track):.1f}")

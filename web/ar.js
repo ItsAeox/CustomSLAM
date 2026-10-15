@@ -47,6 +47,7 @@ let floor = null, floorMesh = null;  // plane {n (up), d, height}
 let cactusProto = null, cactus = null;
 let downSum = [0, 0, 0], downN = 0;  // gravity direction in the SLAM world frame (sum of unit vectors)
 let accLP = null, motionEvents = 0;
+let camFrames = 0, camDropped = 0, frameClock = 'dataset';  // live camera: frames presented / replaced before tracking
 const gyroHist = [];                 // [time ms, |rotation rate| deg/s] of the last second (logged on tracking loss)
 let lastMaps = 0, lastState = 0;
 let stash = null;          // anchors of a map that went inactive (tracking lost -> new map); restored on map merge
@@ -312,7 +313,47 @@ async function start() {
       fps = stream.getVideoTracks()[0].getSettings().frameRate || 30;
       settingsText = cameraSettings(W, H, hfov, fps, Number(params.get('features') || 1000), calib);
       const tc = performance.now();
-      nextBitmap = async () => ({ bitmap: await createImageBitmap(video), t: (performance.now() - tc) / 1000 });
+      const grab = async () => ({ bitmap: await createImageBitmap(video), t: (performance.now() - tc) / 1000 });
+      nextBitmap = grab;
+      frameClock = 'grab time (performance.now)';
+      if ('requestVideoFrameCallback' in HTMLVideoElement.prototype && params.get('rvfc') !== '0') {
+        // Camera frames with their own timestamps (metadata.mediaTime): every presented frame is grabbed when it
+        // arrives and the tracker takes the newest one, so the frame interval seen by SLAM is the camera's, not the
+        // JS loop's, and frames that arrive while tracking runs are counted as dropped. The video element is kept in
+        // the page (1 px) so that the browser presents its frames; if no callback arrives within 400 ms, the page
+        // falls back to grabbing frames on demand (grab time).
+        Object.assign(video.style, { position: 'fixed', left: '0', top: '0', width: '1px', height: '1px', opacity: '0.01', pointerEvents: 'none' });
+        document.body.append(video);
+        let latest = null, waiter = null, active = true;
+        const onFrame = (now, meta) => {
+          if (!active) return;
+          camFrames++;
+          createImageBitmap(video).then((bmp) => {
+            if (!active) { bmp.close(); return; }
+            if (latest) { latest.bitmap.close(); camDropped++; }  // replaced before the tracker took it
+            latest = { bitmap: bmp, t: meta.mediaTime };
+            if (waiter) { const w = waiter; waiter = null; w(); }
+          });
+          video.requestVideoFrameCallback(onFrame);
+        };
+        video.requestVideoFrameCallback(onFrame);
+        frameClock = 'camera (requestVideoFrameCallback)';
+        nextBitmap = async () => {
+          if (!active) return grab();
+          if (!latest) {
+            const ok = await new Promise((res) => { waiter = () => res(true); setTimeout(() => res(false), 400); });
+            if (!ok && !latest && camFrames === 0) {  // the browser never presented a frame: use on-demand grabs
+              active = false; waiter = null;
+              frameClock = 'grab time (no requestVideoFrameCallback frames)';
+              tele(`frame clock fallback: ${frameClock}`);
+              return grab();
+            }
+            if (!latest) await new Promise((res) => { waiter = res; });  // camera paused (page hidden): wait
+          }
+          const f = latest; latest = null;
+          return f;
+        };
+      }
     }
     layout();
     $('start').hidden = true; $('hud').hidden = $('bar').hidden = false;
@@ -331,7 +372,7 @@ async function start() {
     tele(`start: ${navigator.userAgent} | cores ${navigator.hardwareConcurrency} | image ${W}x${H} | ` +
          `fx ${K.fx.toFixed(1)} fy ${K.fy.toFixed(1)} cx ${K.cx.toFixed(1)} cy ${K.cy.toFixed(1)} px | ` +
          (seq ? 'dataset intrinsics' : calib ? `calibrated ${calib.date.slice(0, 10)} (rms ${calib.rms.toFixed(2)} px, k1 ${calib.k1.toFixed(3)} k2 ${calib.k2.toFixed(3)})` : `hfov ${hfov} (assumed)`) +
-         ` | options ${describeOptions(opts)} | source ${seq || 'camera'}`);
+         ` | options ${describeOptions(opts)} | source ${seq || 'camera'} | frame clock ${frameClock}`);
     let lastSlamLine = '', slamRepeats = 0;
     const slam = createSlamWorker((s) => {
       console.log(s);
@@ -420,7 +461,8 @@ async function start() {
         const fpsNow = 1000 / (times.reduce((a, b) => a + b, 0) / times.length);
         tele(`frame ${n}: ${STATE[state]} | ${fpsNow.toFixed(1)} fps | track ms med ${s[s.length >> 1].toFixed(1)} p95 ${s[Math.floor(s.length * 0.95)].toFixed(1)} | ` +
              `KFs ${stats[0]} MPs ${stats[1]} matches ${stats[2]} maps ${stats[3]} | floor ${floor ? `yes (cam height ${floor.height.toFixed(2)}, ${floor.inliers} inl)` : 'no'} | ` +
-             `gravity ${(motionEvents / ((performance.now() - t0) / 1000)).toFixed(0)} Hz | cactus ${cactus ? 'placed' : 'no'}`);
+             `gravity ${(motionEvents / ((performance.now() - t0) / 1000)).toFixed(0)} Hz | cactus ${cactus ? 'placed' : 'no'}` +
+             (camFrames ? ` | camera ${camFrames} frames, ${(100 * camDropped / camFrames).toFixed(0)}% dropped` : ''));
         trackTimes.length = 0;
       }
     }
