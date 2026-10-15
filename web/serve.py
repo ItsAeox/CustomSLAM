@@ -11,7 +11,7 @@
 - GET  /api/sequences                          -> all runnable sequences with settings + GT URLs (viewer)
 - /orbsettings/... ORB-SLAM3's official settings (baselines/orbslam3/settings)
 - /gt/...          ground truth, TUM format, camera frame (<root>/results/gt/<dataset>_<name>.txt)
-- POST /api/result?name=<file>                 -> saves the body to <results>/browser/<file>
+- POST /api/result?name=<file>[&append=1]      -> saves (or appends) the body to <results>/browser/<file>
 - Optional HTTPS (for phones on the LAN): --cert cert.pem --key key.pem --host 0.0.0.0
 
 Usage: python serve.py [--root H:/Research] [--port 8000] [--host localhost] [--cert C --key K]
@@ -147,13 +147,19 @@ class Handler(SimpleHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path != "/api/result":
             return self.send_error(404)
-        name = parse_qs(u.query).get("name", [""])[0]
+        q = parse_qs(u.query)
+        name = q.get("name", [""])[0]
         if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
             return self.send_error(400, "bad name")
         n = int(self.headers.get("Content-Length", 0))
         out = self.results / "browser" / name
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_bytes(self.rfile.read(n))
+        body = self.rfile.read(n)
+        if q.get("append", ["0"])[0] == "1":
+            with out.open("ab") as f:
+                f.write(body)
+        else:
+            out.write_bytes(body)
         self.send_response(204)
         self.send_header("Content-Length", "0")
         self.end_headers()

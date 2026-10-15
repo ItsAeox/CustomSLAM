@@ -1997,7 +1997,12 @@ void Tracking::Track()
                     {
                         mState = LOST;
                     }
+#ifdef ORBSLAM3_WEB
+                    // keep map (AR anchor placed): relocalise even in a young map instead of resetting it
+                    else if(pCurrentMap->KeyFramesInMap()>10 || webConfig().keepMap)
+#else
                     else if(pCurrentMap->KeyFramesInMap()>10)
+#endif
                     {
                         // cout << "KF in map: " << pCurrentMap->KeyFramesInMap() << endl;
                         mState = RECENTLY_LOST;
@@ -2040,7 +2045,8 @@ void Tracking::Track()
 #ifdef ORBSLAM3_WEB
                         // web port: how long to keep relocalising in the current map before starting a new one
                         // (Web.Track.RelocTimeout, stock 3 s). Longer keeps AR anchors when the user comes back.
-                        if(mCurrentFrame.mTimeStamp-mTimeStampLost>webConfig().relocTimeout && !bOK)
+                        // Keep map: no timeout, never a new map (the user is guided back to the mapped area).
+                        if(!webConfig().keepMap && mCurrentFrame.mTimeStamp-mTimeStampLost>webConfig().relocTimeout && !bOK)
 #else
                         if(mCurrentFrame.mTimeStamp-mTimeStampLost>3.0f && !bOK)
 #endif

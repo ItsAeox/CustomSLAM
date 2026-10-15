@@ -9,15 +9,20 @@
 //   slam.trackedPoints() -> Float32Array(3N), world coordinates of the map points seen in the last frame
 //   viewer: frameKeyPoints(), mapPoints(), keyFrames(), graphEdges(), initMatches(), mapStats() (see below)
 //   Typed arrays are views into the wasm heap: copy them (slice()) before the next call.
+//
+//   const cal = new Module.Calibrator();                        // camera calibration (web/calib.html), no SLAM needed
+//   cal.frameBuffer(w, h); cal.detect(cols, rows) -> corners; cal.addView(); cal.solve(cols, rows) -> intrinsics
 
 #include <emscripten/bind.h>
 #include <emscripten/val.h>
 
 #include <chrono>
+#include <cmath>
 #include <memory>
 #include <unordered_set>
 #include <vector>
 
+#include <opencv2/calib3d.hpp>
 #include <opencv2/imgproc.hpp>
 
 #include "Atlas.h"
@@ -27,6 +32,7 @@
 #include "Tracking.h"
 #include "System.h"
 #include "Thirdparty/DBoW2/DUtils/Random.h"
+#include "WebConfig.h"
 
 using namespace emscripten;
 
@@ -209,6 +215,9 @@ class WebSlam {
   }
 
   void reset() { if (sys_) sys_->ResetActiveMap(); }
+  // AR page: while an anchor is placed, a tracking loss keeps relocalising in the active map instead of resetting it
+  // or starting a new one (WebConfig::keepMap). Called between frames, on the thread that calls track().
+  void setKeepMap(bool on) { ORB_SLAM3::webConfig().keepMap = on ? 1 : 0; }
   void shutdown() { if (sys_) { sys_->Shutdown(); sys_.reset(); } }
 
   // End of a dataset run: stop the threads and save ORB-SLAM3's final (optimised) trajectory, exactly like
@@ -233,7 +242,92 @@ class WebSlam {
   double lastMs_ = 0;
 };
 
+// Camera calibration from chessboard views (web/calib.html): OpenCV findChessboardCorners + calibrateCamera, the
+// pinhole + radial-tangential model that ORB-SLAM3's "PinHole" camera uses (k1 k2 p1 p2; k3 fixed at 0, as in
+// ORB-SLAM3's settings files). Corners are in pixels of the processed image (the same stream size as the AR page).
+class Calibrator {
+ public:
+  uintptr_t frameBuffer(int w, int h) {
+    if (gray_.cols != w || gray_.rows != h) gray_.create(h, w, CV_8UC1);
+    return reinterpret_cast<uintptr_t>(gray_.data);
+  }
+
+  // Chessboard with cols x rows inner corners in the frame buffer: (x, y) per corner, empty if not found.
+  val detect(int cols, int rows) {
+    corners_.clear();
+    const bool found = cv::findChessboardCorners(
+        gray_, cv::Size(cols, rows), corners_,
+        cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE | cv::CALIB_CB_FAST_CHECK);
+    if (found)
+      cv::cornerSubPix(gray_, corners_, cv::Size(5, 5), cv::Size(-1, -1),
+                       cv::TermCriteria(cv::TermCriteria::EPS + cv::TermCriteria::COUNT, 30, 0.01));
+    else
+      corners_.clear();
+    out_.clear();
+    for (const cv::Point2f& p : corners_) out_.insert(out_.end(), {p.x, p.y});
+    return val(typed_memory_view(out_.size(), out_.data()));
+  }
+
+  // Keep the corners of the last successful detect() as a calibration view; returns the number of views.
+  int addView() {
+    if (!corners_.empty()) {
+      views_.push_back(corners_);
+      size_ = gray_.size();
+    }
+    return (int)views_.size();
+  }
+  void clear() { views_.clear(); }
+
+  // [rms, fx, fy, cx, cy, k1, k2, p1, p2, then the RMS reprojection error of each view] (pixels); empty if < 4 views.
+  val solve(int cols, int rows) {
+    res_.clear();
+    if (views_.size() < 4) return val(typed_memory_view(0, res_.data()));
+    std::vector<cv::Point3f> board;
+    for (int r = 0; r < rows; ++r)
+      for (int c = 0; c < cols; ++c) board.emplace_back((float)c, (float)r, 0.f);  // square size 1: intrinsics only
+    std::vector<std::vector<cv::Point3f>> obj(views_.size(), board);
+    cv::Mat K, D;
+    std::vector<cv::Mat> rvecs, tvecs;
+    const double rms = cv::calibrateCamera(obj, views_, size_, K, D, rvecs, tvecs, cv::CALIB_FIX_K3);
+    res_ = {rms, K.at<double>(0, 0), K.at<double>(1, 1), K.at<double>(0, 2), K.at<double>(1, 2),
+            D.at<double>(0), D.at<double>(1), D.at<double>(2), D.at<double>(3)};
+    for (size_t i = 0; i < views_.size(); ++i) {
+      std::vector<cv::Point2f> proj;
+      cv::projectPoints(board, rvecs[i], tvecs[i], K, D, proj);
+      double e2 = 0;
+      for (size_t j = 0; j < proj.size(); ++j) {
+        const cv::Point2f d = proj[j] - views_[i][j];
+        e2 += d.dot(d);
+      }
+      res_.push_back(std::sqrt(e2 / proj.size()));
+    }
+    return val(typed_memory_view(res_.size(), res_.data()));
+  }
+
+  // Drop view i (e.g. an outlier from solve()).
+  int removeView(int i) {
+    if (i >= 0 && i < (int)views_.size()) views_.erase(views_.begin() + i);
+    return (int)views_.size();
+  }
+
+ private:
+  cv::Mat gray_;
+  cv::Size size_;
+  std::vector<cv::Point2f> corners_;
+  std::vector<std::vector<cv::Point2f>> views_;
+  std::vector<float> out_;
+  std::vector<double> res_;
+};
+
 EMSCRIPTEN_BINDINGS(orbslam3_web) {
+  class_<Calibrator>("Calibrator")
+      .constructor<>()
+      .function("frameBuffer", &Calibrator::frameBuffer)
+      .function("detect", &Calibrator::detect)
+      .function("addView", &Calibrator::addView)
+      .function("removeView", &Calibrator::removeView)
+      .function("clear", &Calibrator::clear)
+      .function("solve", &Calibrator::solve);
   class_<WebSlam>("WebSlam")
       .constructor<>()
       .function("init", &WebSlam::init)
@@ -249,6 +343,7 @@ EMSCRIPTEN_BINDINGS(orbslam3_web) {
       .function("initMatches", &WebSlam::initMatches)
       .function("mapStats", &WebSlam::mapStats)
       .function("reset", &WebSlam::reset)
+      .function("setKeepMap", &WebSlam::setKeepMap)
       .function("shutdown", &WebSlam::shutdown)
       .function("finishAndSave", &WebSlam::finishAndSave);
 }

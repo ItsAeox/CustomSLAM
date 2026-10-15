@@ -7,7 +7,7 @@
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { createSlamWorker, cameraSettings, STATE, vocabUrl } from './slamclient.js';
+import { createSlamWorker, cameraSettings, intrinsics, loadCalibration, savedCalibrations, STATE, vocabUrl } from './slamclient.js';
 import { dot, fitPlaneRansac, normalize, rayPlane } from './plane.js';
 import { applyOptions, buildOptionsUI, describeOptions, optionsFromParams, optionsToParams } from './options.js';
 
@@ -15,9 +15,12 @@ const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 if (params.get('fov')) $('fov').value = params.get('fov');
 if (params.get('res')) $('res').value = params.get('res');
-// algorithm / settings variant (web/options.js), also in the URL. AR: relocalise for 10 s before a new map (stock 3 s)
-const opts = optionsFromParams(params, { reloc: '10' });
-buildOptionsUI($('opts'), opts, () => history.replaceState(null, '', `?${optionsToParams(opts, new URLSearchParams(location.search))}`));
+// algorithm / settings variant (web/options.js), also in the URL. AR defaults: stock ORB-SLAM3 tracking (the hybrid is
+// faster but not shown to be as robust under fast handheld motion yet), relocalise 10 s before a new map (stock 3 s),
+// and keep the map while a cactus is placed.
+const AR_DEFAULTS = { reloc: '10', tracker: 'stock' };
+const opts = optionsFromParams(params, AR_DEFAULTS, 'ar');
+buildOptionsUI($('opts'), opts, () => history.replaceState(null, '', `?${optionsToParams(opts, new URLSearchParams(location.search), AR_DEFAULTS)}`));
 
 const bg = $('bg'), bgx = bg.getContext('2d');
 const renderer = new THREE.WebGLRenderer({ canvas: $('gl'), alpha: true, antialias: true });
@@ -32,7 +35,9 @@ cam3.matrixAutoUpdate = false;
 cam3.matrixWorldAutoUpdate = false;
 const FLIP = new THREE.Matrix4().makeScale(1, -1, -1);  // OpenCV camera (x right, y down, z forward) -> three.js camera
 
-let W = 640, H = 480, F = 500;      // processed image size and focal length (pixels)
+let W = 640, H = 480;               // processed image size (pixels)
+let K = { fx: 500, fy: 500, cx: 320, cy: 240 };  // pinhole intrinsics (calib.html calibration, else from the FOV)
+let calib = null;                   // saved calibration in use, or null
 let rect = { x: 0, y: 0, w: 1, h: 1, s: 1 };
 let twc = null, state = 0, stats = [0, 0, 0, 0];
 let localPts = [];                  // local map points [[x,y,z]]
@@ -42,6 +47,7 @@ let floor = null, floorMesh = null;  // plane {n (up), d, height}
 let cactusProto = null, cactus = null;
 let downSum = [0, 0, 0], downN = 0;  // gravity direction in the SLAM world frame (sum of unit vectors)
 let accLP = null, motionEvents = 0;
+const gyroHist = [];                 // [time ms, |rotation rate| deg/s] of the last second (logged on tracking loss)
 let lastMaps = 0, lastState = 0;
 let stash = null;          // anchors of a map that went inactive (tracking lost -> new map); restored on map merge
 let resetRequested = false;  // Reset button: sent to the worker between frames (one request at a time)
@@ -53,9 +59,14 @@ function layout() {  // cover-fit the processed image into the window; the GL ca
   for (const c of [bg, $('gl')]) Object.assign(c.style, { left: `${rect.x}px`, top: `${rect.y}px`, width: `${rect.w}px`, height: `${rect.h}px` });
   bg.width = W; bg.height = H;
   renderer.setSize(rect.w, rect.h, false);
-  cam3.fov = 2 * Math.atan(H / 2 / F) * 180 / Math.PI;
-  cam3.aspect = W / H;
-  cam3.updateProjectionMatrix();
+  // projection from the intrinsics (principal point off-centre, fx != fy), OpenCV pixels -> GL clip space
+  const n = cam3.near, f = cam3.far;
+  cam3.projectionMatrix.set(
+    2 * K.fx / W, 0, 1 - 2 * K.cx / W, 0,
+    0, 2 * K.fy / H, 2 * K.cy / H - 1, 0,
+    0, 0, -(f + n) / (f - n), -2 * f * n / (f - n),
+    0, 0, -1, 0);
+  cam3.projectionMatrixInverse.copy(cam3.projectionMatrix).invert();
 }
 addEventListener('resize', layout);
 
@@ -66,7 +77,18 @@ function onMotion(e) {
   const v = [a.x, a.y, a.z];
   accLP = accLP ? accLP.map((x, i) => 0.7 * x + 0.3 * v[i]) : v;
   motionEvents++;
+  const r = e.rotationRate;
+  if (r && r.alpha != null) {
+    const now = performance.now();
+    gyroHist.push([now, Math.hypot(r.alpha, r.beta, r.gamma)]);
+    while (gyroHist.length && gyroHist[0][0] < now - 1000) gyroHist.shift();
+  }
 }
+const gyroPeak = (ms = 500) => {  // peak rotation speed over the last `ms` (deg/s), or null without a gyroscope
+  if (!gyroHist.length) return null;
+  const t = performance.now() - ms;
+  return gyroHist.reduce((m, [ti, w]) => (ti >= t ? Math.max(m, w) : m), 0);
+};
 function gravityCam() {  // unit "down" in the camera frame (x right, y down, z forward) for the rear camera
   if (!accLP) return null;
   const th = ((screen.orientation && screen.orientation.angle) ?? window.orientation ?? 0) * Math.PI / 180;
@@ -151,7 +173,7 @@ function detectFloor() {
 function placeCactus(clientX, clientY) {
   if (!twc || !tracking()) return;
   const u = (clientX - rect.x) / rect.s, v = (clientY - rect.y) / rect.s;  // image pixel
-  const dir = normalize(mulR(rotOf(twc), [(u - W / 2) / F, (v - H / 2) / F, 1]));
+  const dir = normalize(mulR(rotOf(twc), [(u - K.cx) / K.fx, (v - K.cy) / K.fy, 1]));  // (lens distortion ignored)
   const o = [twc[12], twc[13], twc[14]];
   let plane = floor, size;
   if (plane) {
@@ -164,20 +186,24 @@ function placeCactus(clientX, clientY) {
       const pc = [R[0] * d[0] + R[3] * d[1] + R[6] * d[2], R[1] * d[0] + R[4] * d[1] + R[7] * d[2],
                   R[2] * d[0] + R[5] * d[1] + R[8] * d[2]];  // camera frame: R^T (p - o)
       if (pc[2] <= 0) continue;
-      const pu = F * pc[0] / pc[2] + W / 2, pv = F * pc[1] / pc[2] + H / 2;
+      const pu = K.fx * pc[0] / pc[2] + K.cx, pv = K.fy * pc[1] / pc[2] + K.cy;
       if (Math.hypot(pu - u, pv - v) < 0.15 * W) { near.push(p); depths.push(pc[2]); }
     }
-    if (near.length < 12) { hint('Not enough map points there. Move a bit and tap again.', 2500); return; }
+    if (near.length < 12) { hint('Not enough map points there. Move a bit and tap again.', 2500); tele(`tap rejected: ${near.length} map points near the tap`); return; }
     depths.sort((a, b) => a - b);
     const zMed = depths[depths.length >> 1];
     const pl = fitPlaneRansac(near, { thresh: 0.03 * zMed, minInliers: 10 });
-    if (!pl) { hint('No flat surface found there. Tap a flat, textured area.', 2500); return; }
+    if (!pl) { hint('No flat surface found there. Tap a flat, textured area.', 2500); tele(`tap rejected: no plane in ${near.length} points`); return; }
     if (dot(pl.n, [o[0] - pl.centroid[0], o[1] - pl.centroid[1], o[2] - pl.centroid[2]]) < 0) { pl.n = pl.n.map((x) => -x); pl.d = -pl.d; }
     plane = { n: pl.n, d: pl.d };
     size = 0.15 * zMed;
     const hitTest = rayPlane(o, dir, plane);
     const depth = hitTest ? dot([hitTest[0] - o[0], hitTest[1] - o[1], hitTest[2] - o[2]], dir) : 0;
-    if (!hitTest || depth < 0.4 * zMed || depth > 2.5 * zMed) { hint('That surface is not usable. Tap a flat, textured area.', 2500); return; }
+    if (!hitTest || depth < 0.4 * zMed || depth > 2.5 * zMed) {
+      hint('That surface is not usable. Tap a flat, textured area.', 2500);
+      tele(`tap rejected: plane hit at depth ${depth.toFixed(2)} vs median point depth ${zMed.toFixed(2)}`);
+      return;
+    }
   }
   const hit = rayPlane(o, dir, plane);
   if (!hit || !cactusProto) return;
@@ -230,20 +256,28 @@ async function start() {
       settingsUrl = info.settings; clahe = info.clahe;
       const yaml = await (await fetch(settingsUrl)).text();
       settingsText = yaml;
-      F = Number((/Camera1\.fx:\s*([\d.eE+-]+)/.exec(yaml) || [])[1] || 0);
+      const num = (key) => Number((new RegExp(`Camera1\\.${key}:\\s*([\\d.eE+-]+)`).exec(yaml) || [])[1] || 0);
+      const fx = num('fx');
       let i = 0;
+      // cover=a-b: frames from a to b seconds (sequence time) are black, as if the camera were covered (loss test)
+      const cover = /^([\d.]+)-([\d.]+)$/.test(params.get('cover') || '') ? params.get('cover').split('-').map(Number) : null;
+      let blank = null;
       const t0 = performance.now();
       nextBitmap = async () => {  // real-time playback; frames that are already late are skipped
         const now = (performance.now() - t0) / 1000;
         while (i + 1 < man.frames.length && man.frames[i + 1].t <= now) i++;
         if (man.frames[i].t > now) await new Promise((res) => setTimeout(res, (man.frames[i].t - now) * 1000));
         const f = man.frames[Math.min(i++, man.frames.length - 1)];
+        if (cover && f.t - man.frames[0].t >= cover[0] && f.t - man.frames[0].t < cover[1]) {  // camera covered
+          if (!blank) { blank = new OffscreenCanvas(W, H); blank.getContext('2d').fillRect(0, 0, W, H); }
+          return { bitmap: await createImageBitmap(blank), t: f.t };
+        }
         return { bitmap: await createImageBitmap(await (await fetch(f.url)).blob()), t: f.t };
       };
       const first = await nextBitmap();
       W = first.bitmap.width; H = first.bitmap.height;
       first.bitmap.close();
-      if (!F) F = (Math.max(W, H) / 2) / Math.tan(hfov * Math.PI / 360);
+      K = fx ? { fx, fy: num('fy'), cx: num('cx'), cy: num('cy') } : intrinsics(W, H, hfov);  // original image size (ORB-SLAM3 rescales internally)
     } else {
       const [rw, rh] = $('res').value.split('x').map(Number);
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -253,9 +287,10 @@ async function start() {
       const video = Object.assign(document.createElement('video'), { srcObject: stream, muted: true, playsInline: true });
       await video.play();
       W = video.videoWidth; H = video.videoHeight;
-      F = (Math.max(W, H) / 2) / Math.tan(hfov * Math.PI / 360);  // the FOV is along the sensor long side (portrait streams too)
+      calib = params.get('calib') === '0' ? null : loadCalibration(W, H);  // calib.html, this browser, this stream size
+      K = intrinsics(W, H, hfov, calib);  // without a calibration: the FOV is along the sensor long side (portrait streams too)
       fps = stream.getVideoTracks()[0].getSettings().frameRate || 30;
-      settingsText = cameraSettings(W, H, hfov, fps, Number(params.get('features') || 1000));
+      settingsText = cameraSettings(W, H, hfov, fps, Number(params.get('features') || 1000), calib);
       const tc = performance.now();
       nextBitmap = async () => ({ bitmap: await createImageBitmap(video), t: (performance.now() - tc) / 1000 });
     }
@@ -273,9 +308,19 @@ async function start() {
       cactusProto.add(wrap);
     });
 
-    tele(`start: ${navigator.userAgent} | cores ${navigator.hardwareConcurrency} | image ${W}x${H} | f ${F.toFixed(1)} px | ` +
-         `hfov ${hfov} | options ${describeOptions(opts)} | source ${seq || 'camera'}`);
-    const slam = createSlamWorker((s) => { console.log(s); if (/Web config|ERROR|Map|map|Loading|loaded/.test(s)) tele(`slam: ${s}`); });
+    tele(`start: ${navigator.userAgent} | cores ${navigator.hardwareConcurrency} | image ${W}x${H} | ` +
+         `fx ${K.fx.toFixed(1)} fy ${K.fy.toFixed(1)} cx ${K.cx.toFixed(1)} cy ${K.cy.toFixed(1)} px | ` +
+         (calib ? `calibrated ${calib.date.slice(0, 10)} (rms ${calib.rms.toFixed(2)} px, k1 ${calib.k1.toFixed(3)} k2 ${calib.k2.toFixed(3)})` : `hfov ${hfov} (assumed)`) +
+         ` | options ${describeOptions(opts)} | source ${seq || 'camera'}`);
+    let lastSlamLine = '', slamRepeats = 0;
+    const slam = createSlamWorker((s) => {
+      console.log(s);
+      if (!/Web config|ERROR|Map|map|Loading|loaded|[Rr]eloc|[Ll]ost|[Rr]eset|[Mm]erg|[Ll]oop|Fail|Not enough|initiali/.test(s)) return;
+      if (s === lastSlamLine) { slamRepeats++; return; }  // e.g. "Lost for a short time" on every frame
+      if (slamRepeats) tele(`slam: (previous line ${slamRepeats} more times)`);
+      lastSlamLine = s; slamRepeats = 0;
+      tele(`slam: ${s}`);
+    });
     const tInit = performance.now();
     const ready = await slam.request({ type: 'init', vocabUrl: vocabUrl(opts.desc), clahe, seed: 1,
                                        settingsText: withTracker(settingsText) });
@@ -287,23 +332,39 @@ async function start() {
       resetAnchors('Map reset. Move the phone slowly sideways.');
     };
     $('btnPoints').onclick = () => { showPoints = !showPoints; };
-    $('btnClear').onclick = () => { if (cactus) { scene.remove(cactus); cactus = null; } };
+    $('btnClear').onclick = () => { if (cactus) { scene.remove(cactus); cactus = null; tele('cactus removed'); } };
     $('stage').addEventListener('pointerdown', (e) => placeCactus(e.clientX, e.clientY));
 
     const t0 = performance.now();
     const times = [], trackTimes = [];
-    let n = 0;
+    let n = 0, keepMapOn = false, prevStats = stats, prevTrackMs = 0, lostSince = 0;
     for (;;) {
       if (resetRequested) {
         resetRequested = false;
         await slam.request({ type: 'reset' });
         tele('map reset requested');
       }
+      const keep = opts.anchor === 'keep' && !!cactus;  // keep map: a loss relocalises instead of a new map (WebConfig.h)
+      if (keep !== keepMapOn) {
+        const k = await slam.request({ type: 'keepMap', on: keep });
+        keepMapOn = keep;
+        tele(k.type === 'error' ? `keep map failed: ${k.text}` : `keep map ${keep ? 'on (cactus placed)' : 'off'}`);
+      }
       const tf = performance.now();
       const { bitmap, t } = await nextBitmap();
       const r = await slam.request({ type: 'bitmap', bitmap, t, viz: true, withMap: n % 10 === 0 }, [bitmap]);
       if (r.type !== 'pose') throw new Error(r.text || 'tracking error');
       n++;
+      if (r.state !== state) {  // state transition: log what the tracker saw just before (loss diagnosis)
+        const g = gyroPeak();
+        const lost = r.state === 3 || r.state === 4;
+        if (lost && !lostSince) lostSince = performance.now();
+        tele(`state ${STATE[state]} -> ${STATE[r.state]} | before: matches ${prevStats[2]}, track ${prevTrackMs.toFixed(0)} ms | ` +
+             `now: KFs ${r.viz.stats[0]} matches ${r.viz.stats[2]} maps ${r.viz.stats[3]} | gyro peak ${g == null ? 'n/a' : g.toFixed(0) + ' deg/s'}` +
+             (!lost && lostSince ? ` | was lost ${((performance.now() - lostSince) / 1000).toFixed(1)} s` : ''));
+        if (!lost) lostSince = 0;
+      }
+      prevStats = r.viz.stats; prevTrackMs = r.trackMs;
       state = r.state; stats = r.viz.stats; kps = r.viz.kps;
       if (lastMaps && stats[3] > lastMaps) stashAnchors();              // lost -> ORB-SLAM3 started a new map
       else if (lastMaps && stats[3] < lastMaps) restoreAnchors();       // maps merged back into the old one
@@ -323,14 +384,14 @@ async function start() {
       times.push(performance.now() - tf);
       if (times.length > 30) times.shift();
       if (state === 1) hint('Move the phone slowly sideways to start tracking');
-      else if (state === 3 || state === 4) hint('Tracking lost: move back towards where you were');
+      else if (state === 3 || state === 4) hint(keepMapOn ? 'Tracking lost: point the camera back at where the cactus was' : 'Tracking lost: move back towards where you were');
       else if (tracking() && !cactus) hint(floor ? 'Tap the floor to place the cactus' : (downN ? 'Point at the floor…' : 'Tap a flat surface to place the cactus'));
       else if (tracking() && cactus && hintText) hint('');
       if (n % 5 === 0) {
         const fpsNow = 1000 / (times.reduce((a, b) => a + b, 0) / times.length);
         const mhz = motionEvents / ((performance.now() - t0) / 1000);
-        $('hud').innerHTML = `<b>${STATE[state]}</b> · ${fpsNow.toFixed(1)} fps · track ${r.trackMs.toFixed(0)} ms · ` +
-          `KFs ${stats[0]} · points ${stats[2]} · floor ${floor ? 'yes' : 'no'} · gravity ${mhz ? mhz.toFixed(0) + ' Hz' : 'n/a'} · ${W}×${H}`;
+        $('hud').innerHTML = `<b>${STATE[state]}</b> · ${opts.tracker === 'klt' ? 'hybrid' : 'stock'} · ${fpsNow.toFixed(1)} fps · track ${r.trackMs.toFixed(0)} ms · ` +
+          `KFs ${stats[0]} · points ${stats[2]} · floor ${floor ? 'yes' : 'no'} · gravity ${mhz ? mhz.toFixed(0) + ' Hz' : 'n/a'} · ${W}×${H} ${seq ? 'dataset camera' : calib ? 'calibrated' : `${hfov}° FOV (assumed)`}`;
       }
       trackTimes.push(r.trackMs);
       if (n % 30 === 0) {
@@ -349,16 +410,33 @@ async function start() {
   }
 }
 
-// Telemetry for remote testing: status lines are POSTed to the dev server every 5 s
-// (H:\Research\results\browser\ar_<start time>.log). Only when served by web/serve.py on localhost.
-const teleLines = [];
+// Session log: kept in memory (Log button: view, copy, download — for tests on GitHub Pages) and, when served by
+// web/serve.py on localhost, appended to H:\Research\results\browser\ar_<start time>.log every 5 s.
+const logLines = [], LOG_MAX = 20000;
+let teleSent = 0;  // logLines[0 .. teleSent) were sent to the dev server
 const teleName = `ar_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.log`;
-function tele(line) { teleLines.push(`${new Date().toISOString().slice(11, 19)} ${line}`); }
+function tele(line) {
+  logLines.push(`${new Date().toISOString().slice(11, 23)} ${line}`);
+  if (logLines.length > LOG_MAX) { logLines.splice(0, 1000); teleSent = Math.max(0, teleSent - 1000); }
+}
 setInterval(() => {
-  if (!teleLines.length || location.hostname !== 'localhost') return;
-  // sendBeacon: fire-and-forget, does not hold a connection (a fetch over adb reverse could stall)
-  navigator.sendBeacon(`/api/result?name=${teleName}`, teleLines.join('\n') + '\n');
+  if (teleSent >= logLines.length || location.hostname !== 'localhost') return;
+  // sendBeacon: fire-and-forget, does not hold a connection (a fetch over adb reverse could stall); only new lines
+  // (a beacon body is limited to 64 KB)
+  if (navigator.sendBeacon(`/api/result?name=${teleName}&append=1`, logLines.slice(teleSent).join('\n') + '\n')) teleSent = logLines.length;
 }, 5000);
+const logText = () => `${location.href}\n${logLines.join('\n')}\n`;
+$('btnLog').onclick = () => { $('logText').textContent = logText(); $('log').hidden = false; $('logText').scrollTop = 1e9; };
+$('logClose').onclick = () => { $('log').hidden = true; };
+$('logCopy').onclick = async () => {
+  try { await navigator.clipboard.writeText(logText()); $('logCopy').textContent = 'Copied'; } catch (e) { $('logCopy').textContent = 'Copy failed'; }
+  setTimeout(() => { $('logCopy').textContent = 'Copy'; }, 2000);
+};
+$('logSave').onclick = () => {
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([logText()], { type: 'text/plain' })), download: teleName });
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+};
 addEventListener('error', (e) => tele(`ERROR ${e.message} @ ${e.filename}:${e.lineno}`));
 addEventListener('unhandledrejection', (e) => tele(`ERROR (promise) ${e.reason && (e.reason.stack || e.reason)}`));
 
@@ -368,7 +446,13 @@ function withTracker(yaml) {  // applies the selected options (web/options.js)
 }
 
 $('go').onclick = start;
+{  // camera model shown on the start screen (the calibration is chosen by stream size once the camera runs)
+  const saved = savedCalibrations();
+  $('calibNote').innerHTML = saved.length
+    ? `Camera calibrated for ${saved.map((c) => `${c.w}×${c.h}`).join(', ')} (used when the stream has that size). <a href="./calib.html" style="color:#5bd18b">Recalibrate</a>`
+    : `Camera not calibrated: the field of view below is assumed. <a href="./calib.html" style="color:#5bd18b">Calibrate (chessboard)</a>`;
+}
 // debugging handle (console): scene graph, camera, anchors
 window.__ar = { scene, cam3, renderer, get cactus() { return cactus; }, get floor() { return floor; }, get twc() { return twc; },
-                get rect() { return rect; }, get F() { return F; } };
+                get rect() { return rect; }, get K() { return K; } };
 if (!crossOriginIsolated) $('err').textContent = 'Not cross-origin isolated: open through web/serve.py (WASM threads need COOP/COEP).';
