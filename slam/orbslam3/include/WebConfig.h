@@ -18,6 +18,8 @@ struct WebConfig
     int lbaMaxFixedKFs = 0;    // Web.LBA.MaxFixedKFs: fixed keyframes, most observations of local points first (0 = all, stock)
     int lbaIterations = 10;    // Web.LBA.Iterations: Levenberg-Marquardt iterations of local BA (stock 10)
     int mappingNeighbors = 0;  // Web.Mapping.Neighbors: covisible keyframes for triangulation / fusion (0 = stock: 30 mono)
+    int descriptor = 0;        // Web.Descriptor: 0 = ORB (rotated BRIEF, stock), 1 = TEBLID-256 (needs a TEBLID vocabulary)
+    double relocTimeout = 3.0; // Web.Track.RelocTimeout: seconds of relocalisation in the current map before a new map (stock 3)
 
     // KLT tracking frames (monocular; see Tracking::TrackKLT). Off by default = stock ORB-SLAM3 (ORB on every frame).
     int kltEnable = 0;         // Web.KLT.Enable: 1 = track some frames with pyramidal LK instead of ORB extraction
@@ -50,6 +52,7 @@ inline void loadWebConfig(const std::string& settingsFile)
     readInt("Web.LBA.MaxFixedKFs", c.lbaMaxFixedKFs);
     readInt("Web.LBA.Iterations", c.lbaIterations);
     readInt("Web.Mapping.Neighbors", c.mappingNeighbors);
+    readInt("Web.Descriptor", c.descriptor);
     readInt("Web.KLT.Enable", c.kltEnable);
     readInt("Web.KLT.MaxConsecutive", c.kltMaxConsecutive);
     readInt("Web.KLT.MinTracked", c.kltMinTracked);
@@ -57,11 +60,14 @@ inline void loadWebConfig(const std::string& settingsFile)
     readInt("Web.KLT.WinSize", c.kltWinSize);
     readInt("Web.KLT.Levels", c.kltLevels);
     readInt("Web.KLT.Iterations", c.kltIterations);
+    cv::FileNode rt = fs["Web.Track.RelocTimeout"];
+    if (!rt.empty() && (rt.isInt() || rt.isReal())) c.relocTimeout = rt.real();
     cv::FileNode fb = fs["Web.KLT.FBThreshold"];
     if (!fb.empty() && (fb.isInt() || fb.isReal())) c.kltFBThreshold = fb.real();
     std::cout << "Web config: LBA.MaxOptKFs " << c.lbaMaxOptKFs << ", LBA.MaxFixedKFs " << c.lbaMaxFixedKFs
               << ", LBA.Iterations " << c.lbaIterations << ", Mapping.Neighbors " << c.mappingNeighbors
-              << " (0 = stock); KLT " << (c.kltEnable ? "on" : "off");
+              << " (0 = stock); descriptor " << (c.descriptor == 1 ? "TEBLID-256" : "ORB") << "; reloc timeout "
+              << c.relocTimeout << " s; KLT " << (c.kltEnable ? "on" : "off");
     if (c.kltEnable)
         std::cout << " (max consecutive " << c.kltMaxConsecutive << ", min tracked " << c.kltMinTracked
                   << ", min inliers " << c.kltMinInliers << ", win " << c.kltWinSize << ", levels " << c.kltLevels

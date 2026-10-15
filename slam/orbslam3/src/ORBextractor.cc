@@ -63,6 +63,10 @@
 #include <chrono>
 
 #include "ORBextractor.h"
+#ifdef ORBSLAM3_WEB
+#include "WebConfig.h"
+#include "teblid.hpp"  // slam/port/features/teblid (vendored from opencv_contrib)
+#endif
 
 
 using namespace cv;
@@ -1166,6 +1170,29 @@ namespace ORB_SLAM3
             if(nkeypointsLevel==0)
                 continue;
 
+            Mat desc = cv::Mat(nkeypointsLevel, 32, CV_8U);
+#ifdef ORBSLAM3_WEB
+            if(webConfig().descriptor == 1)
+            {
+                // web port: TEBLID-256 instead of rotated BRIEF, on the same oriented-FAST keypoints (same 32 bytes /
+                // Hamming distance; needs a TEBLID vocabulary). Box averages on an integral image: no blur needed.
+                // Computed on this level's image with the patch size in level pixels (TEBLID scale factor 1.00 = ORB).
+#ifdef REGISTER_TIMES
+                const auto tDesc = std::chrono::steady_clock::now();
+#endif
+                static cv::Ptr<cv::xfeatures2d::TEBLID> teblid =
+                    cv::xfeatures2d::TEBLID::create(1.00f, cv::xfeatures2d::TEBLID::SIZE_256_BITS);
+                vector<KeyPoint> levelKeys = keypoints;
+                for(KeyPoint& k : levelKeys)
+                    k.size = (float)PATCH_SIZE;
+                teblid->compute(mvImagePyramid[level], levelKeys, desc);  // keeps every keypoint (borders clamped)
+#ifdef REGISTER_TIMES
+                gOrbProf.desc += orbMsSince(tDesc);
+#endif
+            }
+            else
+#endif
+            {
             // preprocess the resized image
 #ifdef REGISTER_TIMES
             const auto tBlur = std::chrono::steady_clock::now();
@@ -1179,11 +1206,11 @@ namespace ORB_SLAM3
 
             // Compute the descriptors
             //Mat desc = descriptors.rowRange(offset, offset + nkeypointsLevel);
-            Mat desc = cv::Mat(nkeypointsLevel, 32, CV_8U);
             computeDescriptors(workingMat, keypoints, desc, pattern);
 #ifdef REGISTER_TIMES
             gOrbProf.desc += orbMsSince(tDesc);
 #endif
+            }
 
             offset += nkeypointsLevel;
 

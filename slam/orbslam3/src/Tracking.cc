@@ -2033,7 +2033,13 @@ void Tracking::Track()
                         bOK = Relocalization();
                         //std::cout << "mCurrentFrame.mTimeStamp:" << to_string(mCurrentFrame.mTimeStamp) << std::endl;
                         //std::cout << "mTimeStampLost:" << to_string(mTimeStampLost) << std::endl;
+#ifdef ORBSLAM3_WEB
+                        // web port: how long to keep relocalising in the current map before starting a new one
+                        // (Web.Track.RelocTimeout, stock 3 s). Longer keeps AR anchors when the user comes back.
+                        if(mCurrentFrame.mTimeStamp-mTimeStampLost>webConfig().relocTimeout && !bOK)
+#else
                         if(mCurrentFrame.mTimeStamp-mTimeStampLost>3.0f && !bOK)
+#endif
                         {
                             mState = LOST;
                             Verbose::PrintMess("Track Lost...", Verbose::VERBOSITY_NORMAL);

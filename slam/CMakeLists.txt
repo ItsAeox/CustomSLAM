@@ -85,10 +85,11 @@ target_link_libraries(dbow2_web PUBLIC ${OpenCV_LIBS})
 # ---- ORB-SLAM3 core (Viewer.cc / MapDrawer.cc replaced by port/web/viewer_stubs.cc) ----
 file(GLOB ORB_SRCS ${ORB}/src/*.cc ${ORB}/src/*.cpp ${ORB}/src/CameraModels/*.cpp)
 list(REMOVE_ITEM ORB_SRCS ${ORB}/src/Viewer.cc ${ORB}/src/MapDrawer.cc)
-add_library(orbslam3_web STATIC ${ORB_SRCS} ${PORT}/web/viewer_stubs.cc)
+add_library(orbslam3_web STATIC ${ORB_SRCS} ${PORT}/web/viewer_stubs.cc
+  ${PORT}/features/teblid/beblid.cpp)  # TEBLID/BEBLID descriptors vendored from opencv_contrib (Web.Descriptor)
 target_include_directories(orbslam3_web PUBLIC
   ${ORB} ${ORB}/include ${ORB}/include/CameraModels ${ORB}/Thirdparty/Sophus
-  ${PORT}/stubs ${EIGEN3_INCLUDE_DIR} ${OpenCV_INCLUDE_DIRS})
+  ${PORT}/stubs ${PORT}/features/teblid ${EIGEN3_INCLUDE_DIR} ${OpenCV_INCLUDE_DIRS})
 target_include_directories(orbslam3_web SYSTEM PUBLIC ${BOOST_HEADERS_DIR})
 target_link_libraries(orbslam3_web PUBLIC g2o_web dbow2_web ${OpenCV_LIBS} Threads::Threads)
 
@@ -116,6 +117,8 @@ endif()
 if (NOT BUILD_WASM)
   add_executable(vocab_convert ${PORT}/tools/vocab_convert.cc)
   target_link_libraries(vocab_convert PRIVATE orbslam3_web)
+  add_executable(vocab_train ${PORT}/tools/vocab_train.cc)
+  target_link_libraries(vocab_train PRIVATE orbslam3_web)
 endif()
 
 # ---- browser module (WebAssembly only): Embind API, loaded inside a Web Worker ----

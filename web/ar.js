@@ -15,7 +15,8 @@ const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 if (params.get('fov')) $('fov').value = params.get('fov');
 if (params.get('res')) $('res').value = params.get('res');
-const opts = optionsFromParams(params);  // algorithm / settings variant (web/options.js), also in the URL
+// algorithm / settings variant (web/options.js), also in the URL. AR: relocalise for 10 s before a new map (stock 3 s)
+const opts = optionsFromParams(params, { reloc: '10' });
 buildOptionsUI($('opts'), opts, () => history.replaceState(null, '', `?${optionsToParams(opts, new URLSearchParams(location.search))}`));
 
 const bg = $('bg'), bgx = bg.getContext('2d');
