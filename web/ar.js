@@ -9,10 +9,14 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { createSlamWorker, cameraSettings, STATE, VOCAB_URL } from './slamclient.js';
 import { dot, fitPlaneRansac, normalize, rayPlane } from './plane.js';
+import { applyOptions, buildOptionsUI, describeOptions, optionsFromParams, optionsToParams } from './options.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 if (params.get('fov')) $('fov').value = params.get('fov');
+if (params.get('res')) $('res').value = params.get('res');
+const opts = optionsFromParams(params);  // algorithm / settings variant (web/options.js), also in the URL
+buildOptionsUI($('opts'), opts, () => history.replaceState(null, '', `?${optionsToParams(opts, new URLSearchParams(location.search))}`));
 
 const bg = $('bg'), bgx = bg.getContext('2d');
 const renderer = new THREE.WebGLRenderer({ canvas: $('gl'), alpha: true, antialias: true });
@@ -240,7 +244,7 @@ async function start() {
       first.bitmap.close();
       if (!F) F = (Math.max(W, H) / 2) / Math.tan(hfov * Math.PI / 360);
     } else {
-      const [rw, rh] = (params.get('res') || '640x480').split('x').map(Number);
+      const [rw, rh] = $('res').value.split('x').map(Number);
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: 'environment' }, width: { ideal: rw }, height: { ideal: rh }, frameRate: { ideal: 30 } },
         audio: false,
@@ -269,7 +273,7 @@ async function start() {
     });
 
     tele(`start: ${navigator.userAgent} | cores ${navigator.hardwareConcurrency} | image ${W}x${H} | f ${F.toFixed(1)} px | ` +
-         `hfov ${hfov} | tracker ${params.get('tracker') || 'klt'} | source ${seq || 'camera'}`);
+         `hfov ${hfov} | options ${describeOptions(opts)} | source ${seq || 'camera'}`);
     const slam = createSlamWorker((s) => { console.log(s); if (/Web config|ERROR|Map|map|Loading|loaded/.test(s)) tele(`slam: ${s}`); });
     const tInit = performance.now();
     const ready = await slam.request({ type: 'init', vocabUrl: VOCAB_URL, clahe, seed: 1,
@@ -358,9 +362,8 @@ addEventListener('error', (e) => tele(`ERROR ${e.message} @ ${e.filename}:${e.li
 addEventListener('unhandledrejection', (e) => tele(`ERROR (promise) ${e.reason && (e.reason.stack || e.reason)}`));
 
 // tracker=klt: ORB-SLAM3 with KLT tracking frames between ORB frames (Web.KLT.*, include/WebConfig.h)
-function withTracker(yaml) {
-  if ((params.get('tracker') || 'klt') !== 'klt') return yaml;  // default: hybrid (tracker=stock for ORB on every frame)
-  return yaml.replace(/\s*$/, '\n') + '\n# web port: KLT tracking frames\nWeb.KLT.Enable: 1\nWeb.KLT.MaxConsecutive: 2\n';
+function withTracker(yaml) {  // applies the selected options (web/options.js)
+  return applyOptions(yaml, opts);
 }
 
 $('go').onclick = start;

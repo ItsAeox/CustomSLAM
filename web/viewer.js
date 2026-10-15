@@ -9,11 +9,14 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { alignSim3, nearest, parseTum, rotationRmse } from './align.js';
+import { applyOptions, buildOptionsUI, describeOptions, optionsFromParams, optionsToParams } from './options.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const STATE = { '-1': 'SYSTEM NOT READY', 0: 'NO IMAGES YET', 1: 'NOT INITIALIZED', 2: 'OK', 3: 'RECENTLY LOST', 4: 'LOST', 5: 'OK (KLT)' };
 const logEl = $('log');
+const opts = optionsFromParams(params);  // algorithm / settings variant (web/options.js)
+buildOptionsUI($('opts'), opts, () => history.replaceState(null, '', `?${optionsToParams(opts, new URLSearchParams(location.search))}`));
 const log = (s) => { logEl.textContent += s + '\n'; logEl.scrollTop = logEl.scrollHeight; };
 
 // ------------------------------------------------------------------------------------------------ 3D view
@@ -206,7 +209,6 @@ async function loadSequences() {
   sel.onchange();
   if (params.get('seed')) $('seed').value = params.get('seed');
   if (params.get('pacing')) $('pacing').value = params.get('pacing');
-  if (params.get('tracker')) $('tracker').value = params.get('tracker');
 }
 
 function setStatus(s) { $('status').textContent = s; }
@@ -264,9 +266,8 @@ Viewer.ViewpointF: 500.0
 }
 
 // Tracker choice: the hybrid appends the Web.KLT keys (include/WebConfig.h) to the ORB-SLAM3 settings
-function withTracker(yaml) {
-  if ($('tracker').value !== 'klt') return yaml;
-  return yaml.replace(/\s*$/, '\n') + '\n# web port: KLT tracking frames\nWeb.KLT.Enable: 1\nWeb.KLT.MaxConsecutive: 2\n';
+function withTracker(yaml) {  // applies the selected options (web/options.js)
+  return applyOptions(yaml, opts);
 }
 
 // Live camera: process the newest frame whenever the tracker is free (frames arriving meanwhile are dropped).
@@ -376,7 +377,7 @@ async function start() {
 
   setStatus('loading WASM + vocabulary…');
   const settingsText = withTracker(await (await fetch(info.settings)).text());
-  log(`tracker: ${$('tracker').value === 'klt' ? 'hybrid ORB + KLT' : 'ORB-SLAM3 stock'}`);
+  log(`options: ${describeOptions(opts)}`);
   const ready = await request({ type: 'init', vocabUrl: '/vocab/ORBvoc.bin', settingsText, clahe: info.clahe, seed });
   if (ready.type === 'error') return finishUi();
   log(`init ${ready.ms.toFixed(0)} ms, ${navigator.hardwareConcurrency} hardware threads`);

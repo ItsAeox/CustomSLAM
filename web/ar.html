@@ -29,6 +29,11 @@
   #start h1 { margin: 0; font-size: 22px; }
   #start p { margin: 0; color: var(--muted); max-width: 420px; }
   #start label { color: var(--muted); }
+  #optsWrap { max-width: 420px; text-align: left; color: var(--muted); }
+  #optsWrap summary { cursor: pointer; text-align: center; }
+  #opts { display: grid; gap: 8px; padding-top: 10px; }
+  .opt { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
+  #start select { font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid #444; background: #15181d; color: #fff; }
   #start input { width: 64px; font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid #444; background: #15181d; color: #fff; }
 </style>
 <script type="importmap">
@@ -52,6 +57,9 @@
   <p>Point the rear camera at a textured floor and move the phone slowly sideways to start tracking.
      Then tap the floor to place a cactus.</p>
   <label>Camera horizontal FOV° <input id="fov" type="number" value="69" min="30" max="120"></label>
+  <label>Resolution <select id="res"><option value="640x480">640×480</option><option value="960x720">960×720</option>
+    <option value="1280x720">1280×720</option></select></label>
+  <details id="optsWrap"><summary>Algorithm options</summary><div id="opts"></div></details>
   <button id="go" class="primary">Start camera</button>
   <p id="err" style="color:#f87171"></p>
 </section>

@@ -11,11 +11,11 @@ OUT="$REPO/docs"
 W="$REPO/web"
 rm -rf "$OUT"
 mkdir -p "$OUT/build" "$OUT/assets" "$OUT/vocab"
-cp "$W/ar.html" "$W/ar.js" "$W/slamclient.js" "$W/plane.js" "$W/slam.worker.js" "$W/coi.js" "$W/coi-sw.js" \
+cp "$W/ar.html" "$W/ar.js" "$W/slamclient.js" "$W/options.js" "$W/plane.js" "$W/slam.worker.js" "$W/coi.js" "$W/coi-sw.js" \
    "$W/selftest.html" "$OUT/"
 cp "$W/build/orbslam3.js" "$W/build/orbslam3.wasm" "$W/build/orbslam3.worker.mjs" "$OUT/build/"
 cp "$W/assets/cactus.glb" "$OUT/assets/"
-gzip -6 -c "$VOCAB" > "$OUT/vocab/ORBvoc.bin.gz"
+gzip -6 -n -c "$VOCAB" > "$OUT/vocab/ORBvoc.bin.gz"
 touch "$OUT/.nojekyll"  # serve files as-is (no Jekyll processing)
 cat > "$OUT/index.html" <<'EOF'
 <!doctype html>
