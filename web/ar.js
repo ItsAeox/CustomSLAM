@@ -7,7 +7,7 @@
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { createSlamWorker, cameraSettings, STATE, VOCAB_URL } from './slamclient.js';
+import { createSlamWorker, cameraSettings, STATE, vocabUrl } from './slamclient.js';
 import { dot, fitPlaneRansac, normalize, rayPlane } from './plane.js';
 import { applyOptions, buildOptionsUI, describeOptions, optionsFromParams, optionsToParams } from './options.js';
 
@@ -277,7 +277,7 @@ async function start() {
          `hfov ${hfov} | options ${describeOptions(opts)} | source ${seq || 'camera'}`);
     const slam = createSlamWorker((s) => { console.log(s); if (/Web config|ERROR|Map|map|Loading|loaded/.test(s)) tele(`slam: ${s}`); });
     const tInit = performance.now();
-    const ready = await slam.request({ type: 'init', vocabUrl: VOCAB_URL, clahe, seed: 1,
+    const ready = await slam.request({ type: 'init', vocabUrl: vocabUrl(opts.desc), clahe, seed: 1,
                                        settingsText: withTracker(settingsText) });
     if (ready.type === 'error') throw new Error(ready.text);
     tele(`init ${(performance.now() - tInit).toFixed(0)} ms (vocabulary ${(ready.vocabBytes / 1e6).toFixed(1)} MB), wasm heap ${(ready.heap / 1048576).toFixed(0)} MiB`);

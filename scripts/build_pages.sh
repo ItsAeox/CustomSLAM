@@ -17,6 +17,8 @@ cp "$W/build/orbslam3.js" "$W/build/orbslam3.wasm" "$W/build/orbslam3.worker.mjs
 cp "$W/assets/cactus.glb" "$OUT/assets/"
 cp "$W/models/xfeat_640x480.onnx" "$W/models/xfeat_480x640.onnx" "$OUT/models/"  # scripts/xfeat_export.py
 gzip -6 -n -c "$VOCAB" > "$OUT/vocab/ORBvoc.bin.gz"
+TEBLID_VOCAB="$(dirname "$VOCAB")/TEBLIDvoc_own_k10L6.bin"  # optional: descriptor option 'TEBLID' (vocab_train)
+if [ -f "$TEBLID_VOCAB" ]; then gzip -6 -n -c "$TEBLID_VOCAB" > "$OUT/vocab/TEBLIDvoc_own_k10L6.bin.gz"; fi
 touch "$OUT/.nojekyll"  # serve files as-is (no Jekyll processing)
 cat > "$OUT/index.html" <<'EOF'
 <!doctype html>

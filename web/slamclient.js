@@ -55,7 +55,14 @@ Viewer.ViewpointF: 500.0
 
 // Vocabulary URL: the dev server (web/serve.py) serves /vocab/ORBvoc.bin; the static (GitHub Pages) build ships a
 // gzipped copy next to the pages (decompressed by the worker).
-export const VOCAB_URL = location.pathname.startsWith('/web/')
-  ? '/vocab/ORBvoc.bin' : new URL('./vocab/ORBvoc.bin.gz', location.href).href;
+const DEV_SERVER = location.pathname.startsWith('/web/');
+export const VOCAB_URL = DEV_SERVER ? '/vocab/ORBvoc.bin' : new URL('./vocab/ORBvoc.bin.gz', location.href).href;
+
+// Vocabulary for a descriptor: 'orb' -> ORB-SLAM3's ORBvoc; 'teblid' -> our TEBLID vocabulary (scripts: vocab_train,
+// trained on KITTI + TUM-VIE images that are not used for evaluation).
+export function vocabUrl(desc = 'orb') {
+  if (desc !== 'teblid') return VOCAB_URL;
+  return DEV_SERVER ? '/vocab/TEBLIDvoc_own_k10L6.bin' : new URL('./vocab/TEBLIDvoc_own_k10L6.bin.gz', location.href).href;
+}
 
 export const STATE = { '-1': 'not ready', 0: 'no images', 1: 'initialising', 2: 'tracking', 3: 'recently lost', 4: 'lost', 5: 'tracking (KLT)' };
