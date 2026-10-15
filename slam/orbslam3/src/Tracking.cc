@@ -32,6 +32,9 @@
 
 #include <opencv2/video/tracking.hpp>
 
+#include <algorithm>
+#include <cmath>
+
 #include <iostream>
 
 #include <mutex>
@@ -1631,6 +1634,7 @@ Sophus::SE3f Tracking::GrabImageMonocular(const cv::Mat &im, const double &times
             mnWebConsecutiveKLT = 0;
             mbWebForceORB = false;
             mnWebORBFrames++;
+            mnWebLastORBInliers = mnMatchesInliers;
         }
         std::swap(mvWebPrevPyr, mvWebCurPyr);  // this image's LK pyramid is the previous one for the next frame
     }
@@ -2799,6 +2803,18 @@ bool Tracking::TrackKLT(const cv::Mat& im, double timestamp)
         mnWebKLTFallbacks++;
         return false;
     }
+    if(cfg.kltMaxFlow > 0)  // motion gate: fast motion (large predicted image displacement) -> ORB frame
+    {
+        vector<float> vFlow(vIdx.size());
+        for(size_t j = 0; j < vIdx.size(); j++)
+            vFlow[j] = std::hypot(vCur[j].x - vPrev[j].x, vCur[j].y - vPrev[j].y);
+        std::nth_element(vFlow.begin(), vFlow.begin() + vFlow.size() / 2, vFlow.end());
+        if(vFlow[vFlow.size() / 2] > cfg.kltMaxFlow)
+        {
+            mnWebKLTFallbacks++;
+            return false;
+        }
+    }
 
     const cv::TermCriteria crit(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, cfg.kltIterations, 0.01);
     vector<uchar> vStatus;
@@ -2875,7 +2891,8 @@ bool Tracking::TrackKLT(const cv::Mat& im, double timestamp)
         else if(pMP->Observations() > 0)
             nInliers++;
     }
-    if(nInliers < cfg.kltMinInliers)
+    if(nInliers < cfg.kltMinInliers ||
+       (cfg.kltMinInlierFrac > 0 && nInliers < cfg.kltMinInlierFrac * mnWebLastORBInliers))  // quality gate
     {
         mnWebKLTFallbacks++;
         return false;

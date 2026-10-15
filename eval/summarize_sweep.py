@@ -17,7 +17,8 @@ def track_times(runs):
     for r in runs:
         f = r / "track_times.txt"
         if f.exists():
-            out += [float(l.split()[1]) for l in f.read_text().splitlines() if l.strip() and not l.startswith("#")]
+            out += [float(l.split()[1]) for l in f.read_text().splitlines()
+                    if len(l.split()) >= 2 and not l.startswith("#")]  # tolerate a truncated last line
     return np.array(out)
 
 

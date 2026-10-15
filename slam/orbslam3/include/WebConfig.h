@@ -30,6 +30,9 @@ struct WebConfig
     int kltLevels = 2;         // Web.KLT.Levels: LK pyramid levels above full resolution (flow is predicted, so 2 suffice)
     double kltFBThreshold = 1.0;  // Web.KLT.FBThreshold: max forward-backward error (pixels); <= 0: no backward pass
     int kltIterations = 30;    // Web.KLT.Iterations: max LK iterations per pyramid level
+    double kltMaxFlow = 0;     // Web.KLT.MaxFlow: use ORB when the predicted median image motion exceeds this (px; 0 = off)
+    double kltMinInlierFrac = 0;  // Web.KLT.MinInlierFrac: KLT pose inliers must reach this fraction of the last ORB
+                               // frame's inliers, else the frame is re-tracked with ORB (0 = off)
 };
 
 inline WebConfig& webConfig()
@@ -62,6 +65,10 @@ inline void loadWebConfig(const std::string& settingsFile)
     readInt("Web.KLT.Iterations", c.kltIterations);
     cv::FileNode rt = fs["Web.Track.RelocTimeout"];
     if (!rt.empty() && (rt.isInt() || rt.isReal())) c.relocTimeout = rt.real();
+    cv::FileNode mf = fs["Web.KLT.MaxFlow"];
+    if (!mf.empty() && (mf.isInt() || mf.isReal())) c.kltMaxFlow = mf.real();
+    cv::FileNode mi = fs["Web.KLT.MinInlierFrac"];
+    if (!mi.empty() && (mi.isInt() || mi.isReal())) c.kltMinInlierFrac = mi.real();
     cv::FileNode fb = fs["Web.KLT.FBThreshold"];
     if (!fb.empty() && (fb.isInt() || fb.isReal())) c.kltFBThreshold = fb.real();
     std::cout << "Web config: LBA.MaxOptKFs " << c.lbaMaxOptKFs << ", LBA.MaxFixedKFs " << c.lbaMaxFixedKFs
@@ -71,7 +78,8 @@ inline void loadWebConfig(const std::string& settingsFile)
     if (c.kltEnable)
         std::cout << " (max consecutive " << c.kltMaxConsecutive << ", min tracked " << c.kltMinTracked
                   << ", min inliers " << c.kltMinInliers << ", win " << c.kltWinSize << ", levels " << c.kltLevels
-                  << ", FB " << c.kltFBThreshold << " px, iterations " << c.kltIterations << ")";
+                  << ", FB " << c.kltFBThreshold << " px, iterations " << c.kltIterations << ", max flow " << c.kltMaxFlow
+                  << " px, min inlier frac " << c.kltMinInlierFrac << ")";
     std::cout << std::endl;
 }
 

@@ -221,6 +221,7 @@ protected:
     std::vector<cv::Mat> mvWebPrevPyr, mvWebCurPyr;  // LK pyramids of the previous / current image
     bool mbWebForceORB = false;        // a keyframe was needed on a KLT frame: the next frame must be an ORB frame
     int mnWebConsecutiveKLT = 0;
+    int mnWebLastORBInliers = 0;      // map-point inliers of the last ORB-tracked frame (quality gate)
 #endif
     bool TrackReferenceKeyFrame();
     void UpdateLastFrame();

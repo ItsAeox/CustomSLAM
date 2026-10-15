@@ -11,6 +11,8 @@ export const OPTIONS = [
   { key: 'kltmax', label: 'KLT frames between ORB', values: [['1', '1'], ['2', '2'], ['3', '3'], ['4', '4']], def: '2', when: (o) => o.tracker === 'klt' },
   { key: 'kltwin', label: 'KLT window', values: [['11', '11 px'], ['15', '15 px'], ['21', '21 px']], def: '15', when: (o) => o.tracker === 'klt' },
   { key: 'kltlev', label: 'KLT pyramid levels', values: [['1', '1'], ['2', '2'], ['3', '3']], def: '2', when: (o) => o.tracker === 'klt' },
+  { key: 'kltflow', label: 'KLT motion gate (max predicted flow)', values: [['0', 'off'], ['10', '10 px'], ['20', '20 px'], ['30', '30 px']], def: '0', when: (o) => o.tracker === 'klt' },
+  { key: 'kltfrac', label: 'KLT quality gate (inliers vs last ORB frame)', values: [['0', 'off'], ['0.5', '50%'], ['0.7', '70%']], def: '0', when: (o) => o.tracker === 'klt' },
   { key: 'kltfb', label: 'KLT forward-backward check', values: [['1', 'on'], ['0', 'off']], def: '1', when: (o) => o.tracker === 'klt' },
 ];
 
@@ -38,7 +40,8 @@ export function applyOptions(yaml, o) {
   const extra = [];
   if (o.tracker === 'klt') {
     extra.push('Web.KLT.Enable: 1', `Web.KLT.MaxConsecutive: ${Number(o.kltmax)}`, `Web.KLT.WinSize: ${Number(o.kltwin)}`,
-               `Web.KLT.Levels: ${Number(o.kltlev)}`, `Web.KLT.FBThreshold: ${o.kltfb === '0' ? 0 : 1.0}`);
+               `Web.KLT.Levels: ${Number(o.kltlev)}`, `Web.KLT.FBThreshold: ${o.kltfb === '0' ? 0 : 1.0}`,
+               `Web.KLT.MaxFlow: ${Number(o.kltflow)}`, `Web.KLT.MinInlierFrac: ${Number(o.kltfrac)}`);
   }
   if (Number(o.reloc) !== 3) extra.push(`Web.Track.RelocTimeout: ${Number(o.reloc)}`);
   if (o.map === 'light') extra.push('Web.LBA.MaxOptKFs: 20', 'Web.LBA.MaxFixedKFs: 20', 'Web.Mapping.Neighbors: 15');
