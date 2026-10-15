@@ -82,6 +82,7 @@ function setCameraPose(m) {
 function upDir() { return downN ? normalize(downSum.map((x) => -x)) : null; }
 
 function resetAnchors(reason) {
+  tele(`anchors reset: ${reason || 'manual'}`);
   floor = null;
   if (floorMesh) { scene.remove(floorMesh); floorMesh = null; }
   if (cactus) { scene.remove(cactus); cactus = null; }
@@ -154,6 +155,7 @@ function placeCactus(clientX, clientY) {
   cactus.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(...plane.n));
   cactus.scale.setScalar(size);  // cactusProto is normalised to height 1 with its base at the origin
   scene.add(cactus);
+  tele(`cactus placed: ${floor ? 'floor plane' : 'tap plane'}, distance ${Math.hypot(hit[0] - o[0], hit[1] - o[1], hit[2] - o[2]).toFixed(2)}, size ${size.toFixed(3)} (map units)`);
   hint('');
 }
 
@@ -208,7 +210,7 @@ async function start() {
       const first = await nextBitmap();
       W = first.bitmap.width; H = first.bitmap.height;
       first.bitmap.close();
-      if (!F) F = (W / 2) / Math.tan(hfov * Math.PI / 360);
+      if (!F) F = (Math.max(W, H) / 2) / Math.tan(hfov * Math.PI / 360);
     } else {
       const [rw, rh] = (params.get('res') || '640x480').split('x').map(Number);
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -218,7 +220,7 @@ async function start() {
       const video = Object.assign(document.createElement('video'), { srcObject: stream, muted: true, playsInline: true });
       await video.play();
       W = video.videoWidth; H = video.videoHeight;
-      F = (W / 2) / Math.tan(hfov * Math.PI / 360);
+      F = (Math.max(W, H) / 2) / Math.tan(hfov * Math.PI / 360);  // the FOV is along the sensor long side (portrait streams too)
       fps = stream.getVideoTracks()[0].getSettings().frameRate || 30;
       settingsText = cameraSettings(W, H, hfov, fps, Number(params.get('features') || 1000));
       const tc = performance.now();
@@ -238,17 +240,21 @@ async function start() {
       cactusProto.add(wrap);
     });
 
-    const slam = createSlamWorker((s) => console.log(s));
+    tele(`start: ${navigator.userAgent} | cores ${navigator.hardwareConcurrency} | image ${W}x${H} | f ${F.toFixed(1)} px | ` +
+         `hfov ${hfov} | tracker ${params.get('tracker') || 'klt'} | source ${seq || 'camera'}`);
+    const slam = createSlamWorker((s) => { console.log(s); if (/Web config|ERROR|Map|map|Loading|loaded/.test(s)) tele(`slam: ${s}`); });
+    const tInit = performance.now();
     const ready = await slam.request({ type: 'init', vocabUrl: '/vocab/ORBvoc.bin', clahe, seed: 1,
                                        settingsText: withTracker(settingsText) });
     if (ready.type === 'error') throw new Error(ready.text);
+    tele(`init ${(performance.now() - tInit).toFixed(0)} ms (vocabulary ${(ready.vocabBytes / 1e6).toFixed(1)} MB), wasm heap ${(ready.heap / 1048576).toFixed(0)} MiB`);
     $('btnReset').onclick = () => { slam.request({ type: 'reset' }); resetAnchors('Map reset. Move the phone slowly sideways.'); };
     $('btnPoints').onclick = () => { showPoints = !showPoints; };
     $('btnClear').onclick = () => { if (cactus) { scene.remove(cactus); cactus = null; } };
     $('stage').addEventListener('pointerdown', (e) => placeCactus(e.clientX, e.clientY));
 
     const t0 = performance.now();
-    const times = [];
+    const times = [], trackTimes = [];
     let n = 0;
     for (;;) {
       const tf = performance.now();
@@ -282,12 +288,35 @@ async function start() {
         $('hud').innerHTML = `<b>${STATE[state]}</b> · ${fpsNow.toFixed(1)} fps · track ${r.trackMs.toFixed(0)} ms · ` +
           `KFs ${stats[0]} · points ${stats[2]} · floor ${floor ? 'yes' : 'no'} · gravity ${mhz ? mhz.toFixed(0) + ' Hz' : 'n/a'} · ${W}×${H}`;
       }
+      trackTimes.push(r.trackMs);
+      if (n % 30 === 0) {
+        const s = [...trackTimes].sort((a, b) => a - b);
+        const fpsNow = 1000 / (times.reduce((a, b) => a + b, 0) / times.length);
+        tele(`frame ${n}: ${STATE[state]} | ${fpsNow.toFixed(1)} fps | track ms med ${s[s.length >> 1].toFixed(1)} p95 ${s[Math.floor(s.length * 0.95)].toFixed(1)} | ` +
+             `KFs ${stats[0]} MPs ${stats[1]} matches ${stats[2]} maps ${stats[3]} | floor ${floor ? `yes (cam height ${floor.height.toFixed(2)}, ${floor.inliers} inl)` : 'no'} | ` +
+             `gravity ${(motionEvents / ((performance.now() - t0) / 1000)).toFixed(0)} Hz | cactus ${cactus ? 'placed' : 'no'}`);
+        trackTimes.length = 0;
+      }
     }
   } catch (e) {
     $('start').hidden = false; $('go').disabled = false;
     $('err').textContent = String(e.message || e);
+    tele(`ERROR ${e.stack || e}`);
   }
 }
+
+// Telemetry for remote testing: status lines are POSTed to the dev server every 5 s
+// (H:\Research\results\browser\ar_<start time>.log). Only when served by web/serve.py on localhost.
+const teleLines = [];
+const teleName = `ar_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.log`;
+function tele(line) { teleLines.push(`${new Date().toISOString().slice(11, 19)} ${line}`); }
+setInterval(() => {
+  if (!teleLines.length || location.hostname !== 'localhost') return;
+  // sendBeacon: fire-and-forget, does not hold a connection (a fetch over adb reverse could stall)
+  navigator.sendBeacon(`/api/result?name=${teleName}`, teleLines.join('\n') + '\n');
+}, 5000);
+addEventListener('error', (e) => tele(`ERROR ${e.message} @ ${e.filename}:${e.lineno}`));
+addEventListener('unhandledrejection', (e) => tele(`ERROR (promise) ${e.reason && (e.reason.stack || e.reason)}`));
 
 // tracker=klt: ORB-SLAM3 with KLT tracking frames between ORB frames (Web.KLT.*, include/WebConfig.h)
 function withTracker(yaml) {

@@ -229,7 +229,7 @@ async function upload(name, text) {
 
 // ORB-SLAM3 settings for an uncalibrated camera stream: pinhole from the horizontal FOV, no distortion.
 function cameraSettings(w, h, hfovDeg, fps) {
-  const f = (w / 2) / Math.tan(hfovDeg * Math.PI / 360);
+  const f = (Math.max(w, h) / 2) / Math.tan(hfovDeg * Math.PI / 360);  // FOV along the sensor long side (portrait streams too)
   return `%YAML:1.0
 File.version: "1.0"
 Camera.type: "PinHole"
