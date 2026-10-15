@@ -59,11 +59,25 @@ self.onmessage = async (e) => {
     if (msg.type === 'init') {
       const t0 = performance.now();
       M = await createOrbSlam3({ print: log, printErr: log });
+      // download progress: bytes received (compressed, for .gz) vs Content-Length, posted ~10x per second
+      const counted = (r) => {
+        const total = Number(r.headers.get('Content-Length')) || 0;
+        let loaded = 0, last = 0;
+        const body = r.body.pipeThrough(new TransformStream({
+          transform(chunk, ctl) {
+            loaded += chunk.byteLength;
+            const now = performance.now();
+            if (now - last > 100) { last = now; postMessage({ type: 'progress', stage: 'download', loaded, total }); }
+            ctl.enqueue(chunk);
+          },
+        }));
+        return msg.vocabUrl.endsWith('.gz') ? body.pipeThrough(new DecompressionStream('gzip')) : body;
+      };
       const [voc, settings] = await Promise.all([
-        fetch(msg.vocabUrl).then((r) => (msg.vocabUrl.endsWith('.gz')  // static hosting ships ORBvoc.bin.gz
-          ? new Response(r.body.pipeThrough(new DecompressionStream('gzip'))) : r).arrayBuffer()),
+        fetch(msg.vocabUrl).then((r) => new Response(counted(r)).arrayBuffer()),  // Pages ships ORBvoc.bin.gz
         msg.settingsText ?? fetch(msg.settingsUrl).then((r) => r.text()),  // settingsText: generated (live camera)
       ]);
+      postMessage({ type: 'progress', stage: 'build', loaded: voc.byteLength, total: voc.byteLength });
       M.FS.writeFile('/ORBvoc.bin', new Uint8Array(voc));
       M.FS.writeFile('/settings.yaml', settings);
       slam = new M.WebSlam();

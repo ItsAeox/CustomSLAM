@@ -34,6 +34,10 @@
   #opts { display: grid; gap: 8px; padding-top: 10px; }
   .opt { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
   #start select { font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid #444; background: #15181d; color: #fff; }
+  #sizeRow { position: fixed; left: 16px; right: 16px; top: max(46px, calc(env(safe-area-inset-top) + 36px));
+             display: flex; gap: 10px; align-items: center; justify-content: center; font-weight: 600;
+             text-shadow: 0 1px 3px #000; }
+  #sizeRow input { width: min(60vw, 320px); accent-color: var(--accent); }
   #log { position: fixed; inset: 0; display: flex; flex-direction: column; gap: 10px; padding: max(12px, env(safe-area-inset-top)) 16px
          max(14px, env(safe-area-inset-bottom)); background: rgba(8,10,13,.94); touch-action: pan-y; z-index: 5; }
   #log pre { flex: 1; margin: 0; overflow: auto; font: 11px/1.35 ui-monospace, monospace; color: #cbd5e1; white-space: pre-wrap;
@@ -55,9 +59,10 @@
 <div id="bar" hidden>
   <button id="btnPoints">Points</button>
   <button id="btnReset">Reset map</button>
-  <button id="btnClear">Remove cactus</button>
+  <button id="btnClear">Remove tree</button>
   <button id="btnLog">Log</button>
 </div>
+<div id="sizeRow" hidden><label>Size <input id="size" type="range" min="-2" max="2" step="0.05" value="0"></label> <span id="sizeVal">1.00×</span></div>
 <section id="log" hidden>
   <pre id="logText"></pre>
   <div><button id="logCopy">Copy</button><button id="logSave">Download</button><button id="logClose" class="primary">Close</button></div>
@@ -65,7 +70,7 @@
 <section id="start">
   <h1>Markerless AR</h1>
   <p>Point the rear camera at a textured floor and move the phone slowly sideways to start tracking.
-     Then tap the floor to place a cactus.</p>
+     Then tap the floor to place a tree (resize it with the slider).</p>
   <label>Camera horizontal FOV° <input id="fov" type="number" value="69" min="30" max="120"></label>
   <label>Resolution <select id="res"><option value="640x480">640×480</option><option value="960x720">960×720</option>
     <option value="1280x720">1280×720</option></select></label>

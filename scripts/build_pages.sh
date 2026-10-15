@@ -14,7 +14,7 @@ mkdir -p "$OUT/build" "$OUT/assets" "$OUT/vocab" "$OUT/models"
 cp "$W/ar.html" "$W/ar.js" "$W/calib.html" "$W/calib.js" "$W/slamclient.js" "$W/options.js" "$W/plane.js" "$W/slam.worker.js" "$W/coi.js" "$W/coi-sw.js" \
    "$W/selftest.html" "$W/xfeat.html" "$OUT/"
 cp "$W/build/orbslam3.js" "$W/build/orbslam3.wasm" "$W/build/orbslam3.worker.mjs" "$OUT/build/"
-cp "$W/assets/cactus.glb" "$OUT/assets/"
+cp "$W/assets/tree.glb" "$W/assets/cactus.glb" "$OUT/assets/"  # tree.glb: the user's free_tree.blend, base trimmed
 cp "$W/models/xfeat_640x480.onnx" "$W/models/xfeat_480x640.onnx" "$OUT/models/"  # scripts/xfeat_export.py
 gzip -6 -n -c "$VOCAB" > "$OUT/vocab/ORBvoc.bin.gz"
 TEBLID_VOCAB="$(dirname "$VOCAB")/TEBLIDvoc_own_k10L6.bin"  # optional: descriptor option 'TEBLID' (vocab_train)
@@ -37,7 +37,7 @@ cat > "$OUT/index.html" <<'EOF'
 <h1>Markerless SLAM in the browser</h1>
 <p>ORB-SLAM3 (monocular) compiled to WebAssembly. Everything runs on this device.</p>
 <ul>
-  <li><a href="./ar.html"><b>AR: place a cactus on the floor</b></a> (rear camera, stock ORB-SLAM3 tracking: ORB on every frame)</li>
+  <li><a href="./ar.html"><b>AR: place a tree on the floor</b></a> (rear camera, stock ORB-SLAM3 tracking; resize the tree with the slider)</li>
   <li><a href="./ar.html?tracker=klt">AR with the hybrid ORB+KLT tracker</a> (faster; compare how often it loses track)</li>
   <li><a href="./calib.html">Camera calibration</a>: film a chessboard (shown on a laptop / monitor with the same page) so the AR page uses this phone's real focal length and lens distortion instead of an assumed 69° field of view</li>
   <li><a href="./selftest.html">Self-test</a>: threads, SIMD, vocabulary download (33 MB) and SLAM start-up</li>

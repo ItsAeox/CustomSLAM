@@ -1,12 +1,13 @@
 // Shared helpers for pages that run the WASM ORB-SLAM3 worker (viewer, AR).
 
 // Request/response wrapper around slam.worker.js (one outstanding request at a time; worker logs go to onLog).
-export function createSlamWorker(onLog = () => {}) {
+export function createSlamWorker(onLog = () => {}, onProgress = () => {}) {
   const worker = new Worker(new URL('./slam.worker.js', import.meta.url), { type: 'module' });
   let pending = null;
   worker.onmessage = (e) => {
     const m = e.data;
     if (m.type === 'log') { if (!/^\s*$/.test(m.text)) onLog(m.text); return; }
+    if (m.type === 'progress') { onProgress(m); return; }  // init: vocabulary download / build
     if (m.type === 'error') onLog('ERROR ' + m.text);
     if (pending) { const p = pending; pending = null; p(m); }
   };

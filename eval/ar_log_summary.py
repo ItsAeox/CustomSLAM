@@ -36,7 +36,7 @@ def summarise(path: Path) -> None:
             floors.append((m.group(1), float(m.group(2)), int(m.group(3)), int(m.group(4)), float(m.group(5))))
         if not re.search(r" frame \d+: ", l) and re.search(
                 r"Relocalized|Creation of new map|Reseting|Merge detected|anchors (stashed|restored|reset)|"
-                r"keep map|cactus (placed|removed)|tap rejected|map reset requested|ERROR", l):
+                r"keep map|(cactus|tree) (placed|removed)|tap rejected|map reset requested|ERROR", l):
             events.append(l[:200])
     cam = [re.search(r"camera (\d+) frames, (\d+)% dropped", l) for l in lines]
     cam = [m for m in cam if m]

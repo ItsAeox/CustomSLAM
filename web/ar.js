@@ -44,7 +44,9 @@ let localPts = [];                  // local map points [[x,y,z]]
 let kps = null;
 let showPoints = true;
 let floor = null, floorMesh = null;  // plane {n (up), d, height}
-let cactusProto = null, cactus = null;
+let cactusProto = null, cactus = null;  // the placed object (now a tree: assets/tree.glb)
+let objBase = 1;                     // placement size (map units); the Size slider scales it
+const sizeFactor = () => 2 ** Number($('size').value);
 let downSum = [0, 0, 0], downN = 0;  // gravity direction in the SLAM world frame (sum of unit vectors)
 let accLP = null, motionEvents = 0;
 let camFrames = 0, camDropped = 0, frameClock = 'dataset';  // live camera: frames presented / replaced before tracking
@@ -131,7 +133,7 @@ function stashAnchors() {
   if (floorMesh) floorMesh.visible = false;
   cactus = null; floor = null; floorMesh = null; downSum = [0, 0, 0]; downN = 0;
   tele('anchors stashed (new map after tracking loss)');
-  hint('Tracking lost: new map started. Go back to where the cactus was to recover it.', 4000);
+  hint('Tracking lost: new map started. Go back to where the tree was to recover it.', 4000);
 }
 function restoreAnchors() {
   if (!stash) return;
@@ -141,7 +143,7 @@ function restoreAnchors() {
   stash = null;
   if (cactus) cactus.visible = true;
   tele('anchors restored (maps merged)');
-  hint('Map recovered: cactus restored', 3000);
+  hint('Map recovered: tree restored', 3000);
 }
 
 function detectFloor() {
@@ -182,7 +184,7 @@ function placeCactus(clientX, clientY) {
   const o = [twc[12], twc[13], twc[14]];
   let plane = floor, size;
   if (plane) {
-    size = 0.25 * plane.height;  // ~25% of the camera height above the floor
+    size = 0.6 * plane.height;  // tree ~60% of the camera height above the floor (then the Size slider)
   } else {  // no gravity: fit a plane to the local map points that project near the tap
     const R = rotOf(twc);
     const near = [], depths = [];
@@ -201,7 +203,7 @@ function placeCactus(clientX, clientY) {
     if (!pl) { hint('No flat surface found there. Tap a flat, textured area.', 2500); tele(`tap rejected: no plane in ${near.length} points`); return; }
     if (dot(pl.n, [o[0] - pl.centroid[0], o[1] - pl.centroid[1], o[2] - pl.centroid[2]]) < 0) { pl.n = pl.n.map((x) => -x); pl.d = -pl.d; }
     plane = { n: pl.n, d: pl.d };
-    size = 0.15 * zMed;
+    size = 0.35 * zMed;
     const hitTest = rayPlane(o, dir, plane);
     const depth = hitTest ? dot([hitTest[0] - o[0], hitTest[1] - o[1], hitTest[2] - o[2]], dir) : 0;
     if (!hitTest || depth < 0.4 * zMed || depth > 2.5 * zMed) {
@@ -217,9 +219,11 @@ function placeCactus(clientX, clientY) {
   cactus = cactusProto.clone();
   cactus.position.set(...hit);
   cactus.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(...plane.n));
-  cactus.scale.setScalar(size);  // cactusProto is normalised to height 1 with its base at the origin
+  objBase = size;
+  cactus.scale.setScalar(size * sizeFactor());  // cactusProto is normalised to height 1, base at the origin
   scene.add(cactus);
-  tele(`cactus placed: ${floor ? 'floor plane' : 'tap plane'}, distance ${Math.hypot(hit[0] - o[0], hit[1] - o[1], hit[2] - o[2]).toFixed(2)}, size ${size.toFixed(3)} (map units)`);
+  $('sizeRow').hidden = false;
+  tele(`tree placed: ${floor ? 'floor plane' : 'tap plane'}, distance ${Math.hypot(hit[0] - o[0], hit[1] - o[1], hit[2] - o[2]).toFixed(2)}, size ${size.toFixed(3)} x ${sizeFactor().toFixed(2)} (map units)`);
   hint('');
 }
 
@@ -358,7 +362,7 @@ async function start() {
     layout();
     $('start').hidden = true; $('hud').hidden = $('bar').hidden = false;
     hint('Loading SLAM…');
-    new GLTFLoader().load('./assets/cactus.glb', (g) => {  // normalise: height 1, base centre at the origin
+    new GLTFLoader().load('./assets/tree.glb', (g) => {  // normalise: height 1, base centre at the origin
       const box = new THREE.Box3().setFromObject(g.scene);
       const size = box.getSize(new THREE.Vector3()), centre = box.getCenter(new THREE.Vector3());
       g.scene.position.set(-centre.x, -box.min.y, -centre.z);
@@ -374,6 +378,24 @@ async function start() {
          (seq ? 'dataset intrinsics' : calib ? `calibrated ${calib.date.slice(0, 10)} (rms ${calib.rms.toFixed(2)} px, k1 ${calib.k1.toFixed(3)} k2 ${calib.k2.toFixed(3)})` : `hfov ${hfov} (assumed)`) +
          ` | options ${describeOptions(opts)} | source ${seq || 'camera'} | frame clock ${frameClock}`);
     let lastSlamLine = '', slamRepeats = 0;
+    // loading progress: vocabulary download %, then building; a stall (no data for 15 s) is reported
+    let lastProgress = performance.now(), loadingDone = false;
+    const onProgress = (p) => {
+      lastProgress = performance.now();
+      if (p.stage === 'download') {
+        const mb = (x) => (x / 1048576).toFixed(1);
+        hint(p.total ? `Loading SLAM… ${Math.min(99, Math.floor(100 * p.loaded / p.total))}% (${mb(p.loaded)} / ${mb(p.total)} MB)` : `Loading SLAM… ${mb(p.loaded)} MB`);
+      } else {
+        hint('Loading SLAM… building the vocabulary (a few seconds)');
+      }
+    };
+    const stallTimer = setInterval(() => {
+      if (!loadingDone && performance.now() - lastProgress > 15000) {
+        hint('Loading seems stalled: no data for 15 s. Check the connection, then reload the page.');
+        tele('loading stalled (no vocabulary data for 15 s)');
+        lastProgress = performance.now();
+      }
+    }, 3000);
     const slam = createSlamWorker((s) => {
       console.log(s);
       if (!/Web config|ERROR|Map|map|Loading|loaded|[Rr]eloc|[Ll]ost|[Rr]eset|[Mm]erg|[Ll]oop|Fail|Not enough|initiali/.test(s)) return;
@@ -381,10 +403,11 @@ async function start() {
       if (slamRepeats) tele(`slam: (previous line ${slamRepeats} more times)`);
       lastSlamLine = s; slamRepeats = 0;
       tele(`slam: ${s}`);
-    });
+    }, onProgress);
     const tInit = performance.now();
     const ready = await slam.request({ type: 'init', vocabUrl: vocabUrl(opts.desc), clahe, seed: 1,
                                        settingsText: withTracker(settingsText) });
+    loadingDone = true; clearInterval(stallTimer);
     if (ready.type === 'error') throw new Error(ready.text);
     tele(`init ${(performance.now() - tInit).toFixed(0)} ms (vocabulary ${(ready.vocabBytes / 1e6).toFixed(1)} MB), wasm heap ${(ready.heap / 1048576).toFixed(0)} MiB`);
     $('btnReset').onclick = () => {  // applied between frames: the worker handles one request at a time
@@ -393,7 +416,13 @@ async function start() {
       resetAnchors('Map reset. Move the phone slowly sideways.');
     };
     $('btnPoints').onclick = () => { showPoints = !showPoints; };
-    $('btnClear').onclick = () => { if (cactus) { scene.remove(cactus); cactus = null; tele('cactus removed'); } };
+    $('btnClear').onclick = () => { if (cactus) { scene.remove(cactus); cactus = null; $('sizeRow').hidden = true; tele('tree removed'); } };
+    let sizeLog = 0;
+    $('size').oninput = () => {  // resize the placed tree (2^value: 0.25x .. 4x of the placement size)
+      $('sizeVal').textContent = `${sizeFactor().toFixed(2)}×`;
+      if (cactus) cactus.scale.setScalar(objBase * sizeFactor());
+      clearTimeout(sizeLog); sizeLog = setTimeout(() => tele(`tree size x${sizeFactor().toFixed(2)}`), 800);
+    };
     $('stage').addEventListener('pointerdown', (e) => placeCactus(e.clientX, e.clientY));
 
     const t0 = performance.now();
@@ -409,7 +438,7 @@ async function start() {
       if (keep !== keepMapOn) {
         const k = await slam.request({ type: 'keepMap', on: keep });
         keepMapOn = keep;
-        tele(k.type === 'error' ? `keep map failed: ${k.text}` : `keep map ${keep ? 'on (cactus placed)' : 'off'}`);
+        tele(k.type === 'error' ? `keep map failed: ${k.text}` : `keep map ${keep ? 'on (tree placed)' : 'off'}`);
       }
       const tf = performance.now();
       const { bitmap, t, down } = await nextBitmap();  // down: dataset IMU gravity (camera frame), test mode only
@@ -446,8 +475,8 @@ async function start() {
       times.push(performance.now() - tf);
       if (times.length > 30) times.shift();
       if (state === 1) hint('Move the phone slowly sideways to start tracking');
-      else if (state === 3 || state === 4) hint(keepMapOn ? 'Tracking lost: point the camera back at where the cactus was' : 'Tracking lost: move back towards where you were');
-      else if (tracking() && !cactus) hint(floor ? 'Tap the floor to place the cactus' : (downN ? 'Point at the floor…' : 'Tap a flat surface to place the cactus'));
+      else if (state === 3 || state === 4) hint(keepMapOn ? 'Tracking lost: point the camera back at where the tree was' : 'Tracking lost: move back towards where you were');
+      else if (tracking() && !cactus) hint(floor ? 'Tap the floor to place the tree' : (downN ? 'Point at the floor…' : 'Tap a flat surface to place the tree'));
       else if (tracking() && cactus && hintText) hint('');
       if (n % 5 === 0) {
         const fpsNow = 1000 / (times.reduce((a, b) => a + b, 0) / times.length);
@@ -461,7 +490,7 @@ async function start() {
         const fpsNow = 1000 / (times.reduce((a, b) => a + b, 0) / times.length);
         tele(`frame ${n}: ${STATE[state]} | ${fpsNow.toFixed(1)} fps | track ms med ${s[s.length >> 1].toFixed(1)} p95 ${s[Math.floor(s.length * 0.95)].toFixed(1)} | ` +
              `KFs ${stats[0]} MPs ${stats[1]} matches ${stats[2]} maps ${stats[3]} | floor ${floor ? `yes (cam height ${floor.height.toFixed(2)}, ${floor.inliers} inl)` : 'no'} | ` +
-             `gravity ${(motionEvents / ((performance.now() - t0) / 1000)).toFixed(0)} Hz | cactus ${cactus ? 'placed' : 'no'}` +
+             `gravity ${(motionEvents / ((performance.now() - t0) / 1000)).toFixed(0)} Hz | tree ${cactus ? 'placed' : 'no'}` +
              (camFrames ? ` | camera ${camFrames} frames, ${(100 * camDropped / camFrames).toFixed(0)}% dropped` : ''));
         trackTimes.length = 0;
       }
