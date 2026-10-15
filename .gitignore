@@ -11,3 +11,4 @@ build_opencv_wasm/
 __pycache__/
 *.pyc
 web/build/
+web/build-prof/
