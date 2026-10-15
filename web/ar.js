@@ -546,7 +546,7 @@ async function start() {
       if (n % 5 === 0) {
         const fpsNow = 1000 / (times.reduce((a, b) => a + b, 0) / times.length);
         const mhz = motionEvents / ((performance.now() - t0) / 1000);
-        $('hud').innerHTML = `<b>${STATE[state]}</b> · ${opts.tracker === 'klt' ? 'hybrid' : 'stock'} · ${fpsNow.toFixed(1)} fps · track ${r.trackMs.toFixed(0)} ms · ` +
+        $('hud').innerHTML = `<b>${STATE[state]}</b> · ${(opts.tracker === "klt" && !inertial) ? "hybrid" : "stock"} · ${fpsNow.toFixed(1)} fps · track ${r.trackMs.toFixed(0)} ms · ` +
           `KFs ${stats[0]} · points ${stats[2]} · floor ${floor ? 'yes' : 'no'} · gravity ${mhz ? mhz.toFixed(0) + ' Hz' : 'n/a'} · ${W}×${H} ${seq ? 'dataset camera' : calib ? 'calibrated' : `${hfov}° FOV (assumed)`}`;
       }
       trackTimes.push(r.trackMs);
@@ -619,6 +619,12 @@ addEventListener('unhandledrejection', (e) => tele(`ERROR (promise) ${e.reason &
 
 // tracker=klt: ORB-SLAM3 with KLT tracking frames between ORB frames (Web.KLT.*, include/WebConfig.h)
 function withTracker(yaml) {  // applies the selected options (web/options.js)
+  // IMU on: stock tracking. KLT frames do not carry IMU preintegration yet; with them, mono-inertial never gets past the
+  // early resets (EuRoC MH01 in the dataset test mode), while stock tracking initialises and refines the IMU.
+  if (inertial && opts.tracker === 'klt') {
+    tele('IMU on: hybrid tracker disabled (KLT frames are not IMU-aware yet), stock ORB-SLAM3 tracking');
+    return applyOptions(yaml, { ...opts, tracker: 'stock' });
+  }
   return applyOptions(yaml, opts);
 }
 
