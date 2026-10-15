@@ -6,12 +6,16 @@
 //                {type:'frame', idx, t, url[, viz, withMap]}  (worker fetches + decodes the image; viz: viewer data
 //                                                              + the decoded ImageBitmap in the reply)
 //                {type:'finish'}
+//                {type:'keepMap', on}                          (AR: relocalise instead of a new map while anchored)
+//                {type:'calibInit'} {type:'calibFrame', bitmap, cols, rows} {type:'calibAdd'}
+//                {type:'calibRemove', index} {type:'calibClear'} {type:'calibSolve', cols, rows}   (calib.html)
 // Messages out:  {type:'log', text} {type:'ready', ms} {type:'pose', idx, t, state, twc, trackMs, decodeMs}
 //                {type:'finished', frames, keyframes}  (ORB-SLAM3 final trajectories, EuRoC format)
 import createOrbSlam3 from './build/orbslam3.js';
 
 let M = null;
 let slam = null;
+let cal = null;  // camera calibration (calib.html)
 let canvas = null;
 let ctx = null;
 
@@ -112,6 +116,35 @@ self.onmessage = async (e) => {
     } else if (msg.type === 'reset') {  // ORB-SLAM3 ResetActiveMap (applied on the next frame)
       slam.reset();
       postMessage({ type: 'reset' });
+    } else if (msg.type === 'calibInit') {  // camera calibration (calib.html): the module without SLAM / vocabulary
+      M = M || await createOrbSlam3({ print: log, printErr: log });
+      cal = new M.Calibrator();
+      postMessage({ type: 'calibReady' });
+    } else if (msg.type === 'calibFrame') {  // {bitmap, cols, rows}: chessboard corners (x, y)*; the bitmap is sent back
+      const bmp = msg.bitmap;
+      if (!canvas || canvas.width !== bmp.width || canvas.height !== bmp.height) {
+        canvas = new OffscreenCanvas(bmp.width, bmp.height);
+        ctx = canvas.getContext('2d', { willReadFrequently: true });
+      }
+      ctx.drawImage(bmp, 0, 0);
+      const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const ptr = cal.frameBuffer(img.width, img.height);
+      toGray(img.data, M.HEAPU8.subarray(ptr, ptr + img.width * img.height));
+      const t0 = performance.now();
+      const corners = cal.detect(msg.cols, msg.rows).slice();
+      postMessage({ type: 'corners', corners, ms: performance.now() - t0, bmp }, [bmp, corners.buffer]);
+    } else if (msg.type === 'calibAdd') {
+      postMessage({ type: 'views', n: cal.addView() });
+    } else if (msg.type === 'calibRemove') {
+      postMessage({ type: 'views', n: cal.removeView(msg.index) });
+    } else if (msg.type === 'calibClear') {
+      cal.clear();
+      postMessage({ type: 'views', n: 0 });
+    } else if (msg.type === 'calibSolve') {  // -> [rms, fx, fy, cx, cy, k1, k2, p1, p2, per-view rms...]
+      postMessage({ type: 'calib', r: Array.from(cal.solve(msg.cols, msg.rows)) });
+    } else if (msg.type === 'keepMap') {  // AR anchor placed/removed: relocalise in the map instead of replacing it
+      slam.setKeepMap(!!msg.on);
+      postMessage({ type: 'keepMap', on: !!msg.on });
     } else if (msg.type === 'finish') {
       slam.finishAndSave('/f.txt', '/kf.txt');
       const stats = {};

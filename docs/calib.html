@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Camera Calibration</title>
+<script src="./coi.js"></script>
+<style>
+  :root { --bg: #000; --text: #fff; --muted: rgba(255,255,255,.75); --accent: #22c55e; --panel: rgba(0,0,0,.6); --warn: #fbbf24; }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); overflow: hidden;
+               font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #view { position: fixed; left: 0; top: 0; }
+  #hud { position: fixed; left: 0; right: 0; top: 0; padding: max(10px, env(safe-area-inset-top)) 16px 10px;
+         background: linear-gradient(var(--panel), transparent); font-size: 13px; color: var(--muted);
+         font-variant-numeric: tabular-nums; pointer-events: none; }
+  #hud b { color: var(--text); }
+  #bar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;
+         padding: 12px 16px max(14px, env(safe-area-inset-bottom)); background: linear-gradient(transparent, var(--panel)); }
+  button, a.btn { background: rgba(255,255,255,.15); color: var(--text); border: 1px solid rgba(255,255,255,.35);
+           border-radius: 999px; padding: 10px 16px; font: inherit; font-weight: 600; text-decoration: none; }
+  button.primary, a.btn.primary { background: var(--accent); border-color: var(--accent); color: #04130a; }
+  button:disabled { opacity: .45; }
+  .screen { position: fixed; inset: 0; display: flex; flex-direction: column; gap: 14px; align-items: center;
+            justify-content: center; text-align: center; padding: 24px; background: #0b0d10; overflow: auto; }
+  .screen h1 { margin: 0; font-size: 22px; }
+  .screen p { margin: 0; color: var(--muted); max-width: 440px; }
+  .screen label { color: var(--muted); }
+  .screen select, .screen input { font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid #444;
+                                   background: #15181d; color: #fff; }
+  .screen input { width: 56px; }
+  table { border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  td { padding: 3px 10px; text-align: right; } td:first-child { text-align: left; color: var(--muted); }
+  #board { position: fixed; inset: 0; background: #fff; }
+  .warn { color: var(--warn); }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+<div id="hud" hidden></div>
+<div id="bar" hidden>
+  <button id="btnSolve" disabled>Calibrate now</button>
+  <button id="btnRestart">Start over</button>
+</div>
+
+<section id="start" class="screen">
+  <h1>Camera calibration</h1>
+  <p>Measures the camera's focal length, image centre and lens distortion for the AR page, which otherwise assumes a
+     69° field of view.</p>
+  <p>You need a chessboard. Open <b>this page on a laptop or monitor</b> and press <i>Show chessboard</i>, or print one.
+     Then film it with the phone from different angles and distances. Cover the whole picture, corners included.
+     Views are captured automatically when the board is held still.</p>
+  <label>Resolution <select id="res"><option value="640x480">640×480</option><option value="960x720">960×720</option>
+    <option value="1280x720">1280×720</option></select></label>
+  <label>Chessboard inner corners <input id="cols" type="number" value="9" min="3" max="20"> ×
+    <input id="rows" type="number" value="6" min="3" max="20"></label>
+  <button id="go" class="primary">Start camera</button>
+  <button id="showBoard">Show chessboard (on the laptop / monitor)</button>
+  <p id="saved"></p>
+  <p id="err" style="color:#f87171"></p>
+</section>
+
+<section id="result" class="screen" hidden>
+  <h1>Calibration result</h1>
+  <table id="resTable"></table>
+  <p id="resNote"></p>
+  <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:center">
+    <a id="toAr" class="btn primary" href="./ar.html">Open AR (uses it)</a>
+    <button id="btnCopy">Copy</button>
+    <button id="btnAgain">Recalibrate</button>
+  </div>
+</section>
+
+<canvas id="board" hidden></canvas>
+<script type="module" src="./calib.js"></script>
+</body>
+</html>

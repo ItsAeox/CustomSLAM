@@ -12,13 +12,16 @@
 </head>
 <body>
 <h1>Markerless SLAM in the browser</h1>
-<p>ORB-SLAM3 (monocular) compiled to WebAssembly, with an ORB+KLT hybrid tracker. Everything runs on this device.</p>
+<p>ORB-SLAM3 (monocular) compiled to WebAssembly. Everything runs on this device.</p>
 <ul>
-  <li><a href="./ar.html"><b>AR: place a cactus on the floor</b></a> (rear camera, hybrid ORB+KLT tracker)</li>
-  <li><a href="./ar.html?tracker=stock">AR with stock ORB-SLAM3 tracking</a> (ORB on every frame, for comparison)</li>
+  <li><a href="./ar.html"><b>AR: place a cactus on the floor</b></a> (rear camera, stock ORB-SLAM3 tracking: ORB on every frame)</li>
+  <li><a href="./ar.html?tracker=klt">AR with the hybrid ORB+KLT tracker</a> (faster; compare how often it loses track)</li>
+  <li><a href="./calib.html">Camera calibration</a>: film a chessboard (shown on a laptop / monitor with the same page) so the AR page uses this phone's real focal length and lens distortion instead of an assumed 69° field of view</li>
   <li><a href="./selftest.html">Self-test</a>: threads, SIMD, vocabulary download (33 MB) and SLAM start-up</li>
   <li><a href="./xfeat.html">XFeat benchmark</a>: learned features (CVPR 2024) on this device, WebGPU vs WebAssembly</li>
 </ul>
+<p>In the AR page, <b>Log</b> shows the session log (tracking losses, relocalisation, map events). Copy or download it
+   to report a test. <b>Algorithm options</b> on the start screen select the tracker, descriptor and other settings.</p>
 <p><code>The first visit installs a small service worker and reloads once (WebAssembly threads need it on static hosting).</code></p>
 </body>
 </html>
