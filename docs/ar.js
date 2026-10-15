@@ -50,7 +50,11 @@ const sizeFactor = () => 2 ** Number($('size').value);
 let downSum = [0, 0, 0], downN = 0;  // gravity direction in the SLAM world frame (sum of unit vectors)
 let accLP = null, motionEvents = 0;
 let camFrames = 0, camDropped = 0, frameClock = 'dataset';
-let camLast = [0, 0];  // camera counters at the previous status line (per-interval drop rate)  // live camera: frames presented / replaced before tracking
+let camLast = [0, 0];  // camera counters at the previous status line (per-interval drop rate)
+let camMode = 'bitmap';               // 'webcodecs': the worker reads VideoFrames itself (see slam.worker.js)
+let camStream = null, camTrack = null; // MediaStreamTrackProcessor.readable (on a clone of the camera track)
+let stopRvfc = () => {};
+const decodeTimes = [];               // per frame: gray image preparation in the worker (ms)  // live camera: frames presented / replaced before tracking
 const gyroHist = [];                 // [time ms, |rotation rate| deg/s] of the last second (logged on tracking loss)
 let lastMaps = 0, lastState = 0;
 let stash = null;          // anchors of a map that went inactive (tracking lost -> new map); restored on map merge
@@ -318,6 +322,10 @@ async function start() {
       fps = stream.getVideoTracks()[0].getSettings().frameRate || 30;
       settingsText = cameraSettings(W, H, hfov, fps, Number(params.get('features') || 1000), calib);
       const tc = performance.now();
+      if ('MediaStreamTrackProcessor' in window && params.get('webcodecs') !== '0') {
+        camTrack = stream.getVideoTracks()[0].clone();  // its own track: the <video> element keeps the original
+        camStream = new MediaStreamTrackProcessor({ track: camTrack }).readable;
+      }
       const grab = async () => ({ bitmap: await createImageBitmap(video), t: (performance.now() - tc) / 1000 });
       nextBitmap = grab;
       frameClock = 'grab time (performance.now)';
@@ -342,6 +350,7 @@ async function start() {
           video.requestVideoFrameCallback(onFrame);
         };
         video.requestVideoFrameCallback(onFrame);
+        stopRvfc = () => { active = false; if (latest) { latest.bitmap.close(); latest = null; } };
         frameClock = 'camera (requestVideoFrameCallback)';
         nextBitmap = async () => {
           if (!active) return grab();
@@ -413,6 +422,19 @@ async function start() {
     const ready = await slam.request({ type: 'init', vocabUrl: vocabUrl(opts.desc), clahe, seed: 1,
                                        settingsText: withTracker(settingsText) });
     loadingDone = true; clearInterval(stallTimer);
+    if (camStream) {  // WebCodecs: frames go straight to the worker; use it only if they match the stream we calibrated for
+      const c = await slam.request({ type: 'camera', readable: camStream }, [camStream]);
+      const why = !c.ok ? 'no frames' : (c.rotation ? `rotated ${c.rotation} deg` : (c.visibleW !== W || c.visibleH !== H ? `size ${c.visibleW}x${c.visibleH} vs ${W}x${H}` : ''));
+      if (!why) {
+        camMode = 'webcodecs'; stopRvfc();
+        frameClock = 'camera (WebCodecs VideoFrame timestamps)';
+        tele(`camera: WebCodecs ${c.format} ${c.visibleW}x${c.visibleH} (coded ${c.codedW}x${c.codedH})`);
+      } else {
+        await slam.request({ type: 'cameraStop' });
+        if (camTrack) camTrack.stop();
+        tele(`camera: WebCodecs not used (${why}, format ${c.format}); frames via ${frameClock}`);
+      }
+    }
     if (ready.type === 'error') throw new Error(ready.text);
     tele(`init ${(performance.now() - tInit).toFixed(0)} ms (vocabulary ${(ready.vocabBytes / 1e6).toFixed(1)} MB), wasm heap ${(ready.heap / 1048576).toFixed(0)} MiB`);
     $('btnReset').onclick = () => {  // applied between frames: the worker handles one request at a time
@@ -447,9 +469,17 @@ async function start() {
         tele(k.type === 'error' ? `keep map failed: ${k.text}` : `keep map ${keep ? 'on (tree placed)' : 'off'}`);
       }
       const tf = performance.now();
-      const { bitmap, t, down } = await nextBitmap();  // down: dataset IMU gravity (camera frame), test mode only
-      if (down) motionEvents++;
-      const r = await slam.request({ type: 'bitmap', bitmap, t, viz: true, withMap: n % 10 === 0 }, [bitmap]);
+      let r, down = null;
+      if (camMode === 'webcodecs') {
+        r = await slam.request({ type: 'trackCamera', viz: true, withMap: n % 10 === 0 });
+        if (r.cam) { camFrames = r.cam[0]; camDropped = r.cam[1]; }
+      } else {
+        const f = await nextBitmap();  // f.down: dataset IMU gravity (camera frame), test mode only
+        down = f.down;
+        if (down) motionEvents++;
+        r = await slam.request({ type: 'bitmap', bitmap: f.bitmap, t: f.t, viz: true, withMap: n % 10 === 0 }, [f.bitmap]);
+      }
+      if (r.decodeMs != null) { decodeTimes.push(r.decodeMs); if (decodeTimes.length > 30) decodeTimes.shift(); }
       if (r.type !== 'pose') throw new Error(r.text || 'tracking error');
       n++;
       if (r.state !== state) {  // state transition: log what the tracker saw just before (loss diagnosis)
@@ -495,6 +525,7 @@ async function start() {
         const s = [...trackTimes].sort((a, b) => a - b);
         const fpsNow = 1000 / (times.reduce((a, b) => a + b, 0) / times.length);
         tele(`frame ${n}: ${STATE[state]} | ${fpsNow.toFixed(1)} fps | track ms med ${s[s.length >> 1].toFixed(1)} p95 ${s[Math.floor(s.length * 0.95)].toFixed(1)} | ` +
+             `gray ms ${decodeTimes.length ? [...decodeTimes].sort((x, y) => x - y)[decodeTimes.length >> 1].toFixed(1) : '-'} (${camMode}) | ` +
              `KFs ${stats[0]} MPs ${stats[1]} matches ${stats[2]} maps ${stats[3]} | floor ${floor ? `yes (cam height ${floor.height.toFixed(2)}, ${floor.inliers} inl)` : 'no'} | ` +
              `gravity ${(motionEvents / ((performance.now() - t0) / 1000)).toFixed(0)} Hz | tree ${cactus ? 'placed' : 'no'}` +
              (camFrames ? ` | camera ${camFrames} frames, ${(100 * (camDropped - camLast[1]) / Math.max(1, camFrames - camLast[0])).toFixed(0)}% dropped (last 30 frames)` : ''));

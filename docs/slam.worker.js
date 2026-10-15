@@ -16,6 +16,49 @@ import createOrbSlam3 from './build/orbslam3.js';
 let M = null;
 let slam = null;
 let cal = null;  // camera calibration (calib.html)
+
+// WebCodecs camera (AR page): the page hands over the camera's frame stream (MediaStreamTrackProcessor.readable). A reader
+// keeps only the newest VideoFrame (older ones are closed and counted as dropped). For tracking, the luma (Y) plane of
+// NV12 / I420 frames is the grayscale image: it is copied into the wasm frame buffer directly (no canvas, no RGBA).
+let camReader = null, camLatest = null, camWaiter = null, camFrames = 0, camDropped = 0, camScratch = null;
+async function camLoop() {
+  for (;;) {
+    let r;
+    try { r = await camReader.read(); } catch { return; }
+    if (r.done) return;
+    camFrames++;
+    if (camLatest) { camLatest.close(); camDropped++; }
+    camLatest = r.value;
+    if (camWaiter) { const w = camWaiter; camWaiter = null; w(); }
+  }
+}
+const nextCamFrame = () => (camLatest ? Promise.resolve() : new Promise((res) => { camWaiter = res; }));
+const LUMA_FIRST = new Set(['NV12', 'I420', 'I420A', 'I422', 'I444', 'NV12A']);
+
+// gray image of a VideoFrame into the wasm frame buffer; returns { w, h }
+async function frameToGray(f) {
+  const w = f.visibleRect.width, h = f.visibleRect.height;
+  const size = f.allocationSize();
+  if (!camScratch || camScratch.length < size) camScratch = new Uint8Array(size);
+  const layout = await f.copyTo(camScratch);
+  const ptr = slam.frameBuffer(w, h);
+  const dst = M.HEAPU8.subarray(ptr, ptr + w * h);
+  if (LUMA_FIRST.has(f.format)) {
+    const { offset, stride } = layout[0];
+    if (stride === w) dst.set(camScratch.subarray(offset, offset + w * h));
+    else for (let y = 0; y < h; y++) dst.set(camScratch.subarray(offset + y * stride, offset + y * stride + w), y * w);
+  } else {  // RGBA / RGBX / BGRA / BGRX
+    const bgr = f.format.startsWith('BGR');
+    const { offset, stride } = layout[0];
+    for (let y = 0, j = 0; y < h; y++) {
+      for (let x = 0, i = offset + y * stride; x < w; x++, i += 4, j++) {
+        const r = camScratch[bgr ? i + 2 : i], g = camScratch[i + 1], b = camScratch[bgr ? i : i + 2];
+        dst[j] = (r * 4899 + g * 9617 + b * 1868 + 8192) >> 14;
+      }
+    }
+  }
+  return { w, h };
+}
 let canvas = null;
 let ctx = null;
 
@@ -121,6 +164,35 @@ self.onmessage = async (e) => {
       const out = { type: 'pose', t: msg.t, state, twc: Array.from(slam.poseTwc()), trackMs: slam.lastTrackMs(),
                     decodeMs, heap: M.HEAPU8.length, bmp };
       const transfer = [bmp];
+      if (msg.viz) {
+        out.viz = vizData(!!msg.withMap);
+        transfer.push(out.viz.kps.buffer, out.viz.ini.buffer);
+        if (out.viz.mps) transfer.push(out.viz.mps.buffer, out.viz.kfs.buffer, out.viz.edges.buffer);
+      }
+      postMessage(out, transfer);
+    } else if (msg.type === 'camera') {  // {readable}: WebCodecs camera frames; replies with the first frame's properties
+      camReader = msg.readable.getReader();
+      camLoop();
+      const first = await Promise.race([nextCamFrame().then(() => true), new Promise((res) => setTimeout(() => res(false), 3000))]);
+      const f = camLatest;
+      postMessage({ type: 'camera', ok: first && !!f, format: f && f.format, codedW: f && f.codedWidth, codedH: f && f.codedHeight,
+                    displayW: f && f.displayWidth, displayH: f && f.displayHeight, visibleW: f && f.visibleRect.width,
+                    visibleH: f && f.visibleRect.height, rotation: f && 'rotation' in f ? f.rotation : null });
+    } else if (msg.type === 'cameraStop') {
+      if (camReader) { camReader.cancel().catch(() => {}); camReader = null; }
+      if (camLatest) { camLatest.close(); camLatest = null; }
+      postMessage({ type: 'cameraStop' });
+    } else if (msg.type === 'trackCamera') {  // {viz, withMap}: track the newest camera frame; the frame is sent back
+      await nextCamFrame();
+      const f = camLatest; camLatest = null;
+      const td = performance.now();
+      await frameToGray(f);
+      const decodeMs = performance.now() - td;
+      const t = f.timestamp / 1e6;  // capture timestamp (microseconds) -> seconds
+      const state = slam.track(t);
+      const out = { type: 'pose', t, state, twc: Array.from(slam.poseTwc()), trackMs: slam.lastTrackMs(), decodeMs,
+                    heap: M.HEAPU8.length, bmp: f, cam: [camFrames, camDropped] };
+      const transfer = [f];
       if (msg.viz) {
         out.viz = vizData(!!msg.withMap);
         transfer.push(out.viz.kps.buffer, out.viz.ini.buffer);
