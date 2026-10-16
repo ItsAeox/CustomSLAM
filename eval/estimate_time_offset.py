@@ -4,7 +4,7 @@
 The camera's angular velocity, differentiated from the tracked poses (visual-only SLAM is enough: rotation needs no
 scale), is compared with the gyro rate rotated into the camera frame, over a range of time shifts. The offset is the
 shift that minimises the squared difference (and maximises the correlation of the rate magnitudes, reported as a
-cross-check). Convention as scripts/degrade_imu.py: reported IMU time = camera time + offset (> 0: IMU stamps late),
+cross-check; Huber cost, and pose pairs across a map change are skipped). Convention as scripts/degrade_imu.py: reported IMU time = camera time + offset (> 0: IMU stamps late),
 i.e. the value for Web.Gyro.TimeOffset.
 
 Inputs:
@@ -24,6 +24,9 @@ from pathlib import Path
 
 import numpy as np
 from scipy.spatial.transform import Rotation
+
+
+HUBER = 0.5  # rad/s: rate differences beyond this count linearly (handheld rates are a few rad/s)
 
 
 def load_rbc(arg):
@@ -48,8 +51,8 @@ def load_ar_log(path):
     poses, imu = [], []
     for line in Path(path).read_text(errors="replace").splitlines():
         p = line.split()
-        if len(p) == 10 and p[1] == "pose":
-            poses.append([float(v) for v in p[2:]])
+        if len(p) in (10, 11) and p[1] == "pose":  # 11th: map count (a new map or a merge changes the frame)
+            poses.append([float(v) for v in p[2:]] + ([] if len(p) == 11 else [0.0]))
         elif len(p) == 6 and p[1] == "imu":
             imu.append([float(v) for v in p[2:]])
     poses, imu = np.array(poses), np.array(imu)
@@ -65,6 +68,8 @@ def camera_rates(traj):
     R = Rotation.from_quat(traj[:, 4:8])  # Twc rotation
     dt = np.diff(t)
     keep = (dt > 1e-3) & (dt < 0.2)  # skip gaps (lost tracking, new maps)
+    if traj.shape[1] > 8:  # AR logs: map count; a pair across a new map / merge has a meaningless relative rotation
+        keep &= np.diff(traj[:, 8]) == 0
     rel = R[:-1].inv() * R[1:]       # R_c(k) -> c(k+1), in camera k
     w = rel.as_rotvec() / dt[:, None]
     tm = 0.5 * (t[:-1] + t[1:])
@@ -106,14 +111,15 @@ def main():
             continue
         il, ih = np.searchsorted(ti, lo[ok]), np.searchsorted(ti, hi[ok])
         wg = (cs[ih] - cs[il]) / (ti[np.minimum(ih, ti.size - 1)] - ti[il] + 1e-9)[:, None]
-        err = np.mean(np.sum((wg - wc[ok]) ** 2, axis=1))
+        r = np.linalg.norm(wg - wc[ok], axis=1)  # Huber cost: a few bad pose pairs (jumps) must not decide
+        err = np.mean(np.where(r <= HUBER, 0.5 * r ** 2, HUBER * (r - 0.5 * HUBER)))
         corr = np.corrcoef(np.linalg.norm(wg, axis=1), np.linalg.norm(wc[ok], axis=1))[0, 1]
         rows.append((lag, err, corr))
         if best is None or err < best[1]:
             best = (lag, err, corr)
     rows = np.array(rows)
     c_best = rows[np.nanargmax(rows[:, 2])]
-    print(f"{name}: offset {best[0] * 1000:+.0f} ms (rate error {best[1]:.4f} rad²/s², "
+    print(f"{name}: offset {best[0] * 1000:+.0f} ms (Huber cost {best[1]:.4f}, "
           f"magnitude correlation {best[2]:.3f}); correlation peak at {c_best[0] * 1000:+.0f} ms; "
           f"camera rates {tc.size}, frame period {period * 1000:.1f} ms")
 

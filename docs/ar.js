@@ -578,7 +578,7 @@ async function start() {
         if (rec) {  // diagnostic: camera pose (Twc, TUM order) per tracked frame -> eval/estimate_time_offset.py --ar-log
           const q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().fromArray(twc));
           tele(`pose ${r.t.toFixed(4)} ${twc[12].toFixed(4)} ${twc[13].toFixed(4)} ${twc[14].toFixed(4)} ` +
-               `${q.x.toFixed(6)} ${q.y.toFixed(6)} ${q.z.toFixed(6)} ${q.w.toFixed(6)}`);
+               `${q.x.toFixed(6)} ${q.y.toFixed(6)} ${q.z.toFixed(6)} ${q.w.toFixed(6)} ${stats[3]}`);  // + map count
         }
         const g = down || gravityCam();
         if (g) { const gw = mulR(rotOf(twc), g); downSum = downSum.map((x, i) => x + gw[i]); downN++; }
