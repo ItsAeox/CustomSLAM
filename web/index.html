@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Web SLAM</title>
+  <title>WebVIO</title>
 <script src="./coi.js"></script>
   <style>
     :root { --bg: #0f1115; --fg: #e6e6e6; --muted: #9aa0a6; --accent: #5bd18b; }
@@ -13,11 +13,11 @@
   </style>
 </head>
 <body>
-  <h1>Markerless SLAM in the browser</h1>
-  <p>ORB-SLAM3 (monocular) compiled to WebAssembly with threads.</p>
+  <h1>WebVIO</h1>
+  <p>Markerless SLAM in the web browser (development pages).</p>
   <ul>
     <li><a href="viewer.html"><b>SLAM viewer</b></a> — pick a sequence (EuRoC, TUM-VI, TUM-VIE) or the device camera and watch
-      ORB-SLAM3 live: 3D map, current frame, tracking time and live accuracy vs ground truth</li>
+      SLAM live: 3D map, current frame, tracking time and live accuracy vs ground truth</li>
     <li><a href="player.html?seq=mocap-desk2">Dataset player</a> — runs a dataset sequence and uploads trajectories for evaluation
       <br><code>player.html?seq=&lt;sequence&gt;&amp;settings=&lt;file.yaml&gt;&amp;tag=&lt;run&gt;</code></li>
     <li>AR demo (camera, plane, cactus) — coming next</li>

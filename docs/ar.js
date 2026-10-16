@@ -675,7 +675,7 @@ function withTracker(yaml) {  // applies the selected options (web/options.js)
   // IMU on: stock tracking. KLT frames do not carry IMU preintegration yet; with them, mono-inertial never gets past the
   // early resets (EuRoC MH01 in the dataset test mode), while stock tracking initialises and refines the IMU.
   if (inertial && opts.tracker === 'klt') {
-    tele('IMU on: hybrid tracker disabled (KLT frames are not IMU-aware yet), stock ORB-SLAM3 tracking');
+    tele('IMU on: hybrid tracker disabled (KLT frames are not IMU-aware yet), ORB on every frame');
     return applyOptions(yaml, { ...opts, tracker: 'stock' });
   }
   return applyOptions(yaml, opts);

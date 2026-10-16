@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SLAM Self-test</title>
+<title>WebVIO Self-test</title>
 <script src="./coi.js"></script>
 <style>
   :root { --bg: #0f1115; --fg: #e6e6e6; --muted: #9aa0a6; --ok: #4ade80; --bad: #f87171; }
@@ -15,7 +15,7 @@
 </style>
 </head>
 <body>
-<h1>SLAM self-test</h1>
+<h1>WebVIO self-test</h1>
 <p>Checks that this device/browser can run the WebAssembly SLAM: cross-origin isolation (threads), WASM SIMD,
 vocabulary download, SLAM start-up and a few synthetic frames. Then go to <a href="./ar.html">the AR page</a>.</p>
 <ul id="out"></ul>
@@ -46,7 +46,7 @@ if (crossOriginIsolated) {
       ms.push(r.trackMs);
     }
     ms.sort((a, b) => a - b);
-    line(true, `ORB-SLAM3 processed 10 frames: median ${ms[5].toFixed(1)} ms per frame (synthetic image, 480×640)`);
+    line(true, `SLAM processed 10 frames: median ${ms[5].toFixed(1)} ms per frame (synthetic image, 480×640)`);
   }
   slam.terminate();
 } else {

@@ -473,7 +473,7 @@ async function start() {
     }
   }
 
-  setStatus('finishing (ORB-SLAM3 final optimisation + save)…');
+  setStatus('finishing (final optimisation + save)…');
   const fin = await request({ type: 'finish' });
   if (fin.type === 'finished') {
     const finalTum = euRocToTum(fin.frames, manifest.tBase);

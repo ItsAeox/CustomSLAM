@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SLAM Viewer</title>
+<title>WebVIO Viewer</title>
 <script src="./coi.js"></script>
 <style>
   :root {
@@ -82,7 +82,7 @@
 </head>
 <body>
 <header>
-  <h1>SLAM Viewer</h1>
+  <h1>WebVIO viewer</h1>
   <label>Sequence <select id="seq"></select></label>
   <label id="fovLabel" hidden title="Horizontal field of view of the camera stream, used for the pinhole intrinsics (no calibration yet)">
     hFOV° <input id="fov" type="number" value="69" min="30" max="120"></label>
@@ -98,7 +98,7 @@
       <option value="fast">As fast as possible</option>
     </select>
   </label>
-  <label title="Upload ORB-SLAM3's final trajectory + timings to results/browser when the run ends">
+  <label title="Upload the final trajectory + timings to results/browser when the run ends">
     <input id="save" type="checkbox"> Save results</label>
   <button id="run">Run</button>
   <button id="pause" class="secondary" disabled>Pause</button>
@@ -149,7 +149,7 @@
         <dt>Live rotation error RMSE</dt><dd id="aRot">—</dd>
         <dt>Scale (est → GT)</dt><dd id="aScale">—</dd>
         <dt>Poses used</dt><dd id="aN">—</dd>
-        <dt>Final (ORB-SLAM3 optimised) ATE</dt><dd id="aFinal">—</dd>
+        <dt>Final (after global optimisation) ATE</dt><dd id="aFinal">—</dd>
       </dl>
       <div class="chartlabel"><span>live Sim(3) ATE over time</span><span id="ateMax"></span></div>
       <canvas id="chartAte" class="chart" width="400" height="70"></canvas>

@@ -3,7 +3,7 @@
 // slam/orbslam3/include/WebConfig.h. Defaults = the hybrid tracker with otherwise stock ORB-SLAM3 settings.
 
 export const OPTIONS = [
-  { key: 'tracker', label: 'Tracker', values: [['klt', 'Hybrid ORB + KLT'], ['stock', 'ORB-SLAM3 (ORB every frame)']], def: 'klt' },
+  { key: 'tracker', label: 'Tracker', values: [['klt', 'Hybrid ORB + KLT'], ['stock', 'ORB on every frame (baseline)']], def: 'klt' },
   { key: 'desc', label: 'Descriptor', values: [['orb', 'ORB (rotated BRIEF)'], ['teblid', 'TEBLID-256 (own vocabulary)']], def: 'orb' },
   { key: 'features', label: 'ORB features', values: [['0', 'settings default'], ['500', '500'], ['600', '600'], ['800', '800'], ['1000', '1000'], ['1500', '1500']], def: '0' },
   { key: 'levels', label: 'Pyramid levels', values: [['0', 'settings default (8)'], ['4', '4'], ['5', '5'], ['6', '6'], ['8', '8']], def: '0' },
@@ -31,16 +31,16 @@ export const OPTIONS = [
 // Named presets (AR page): each sets every option; keys it does not list take the page default. Phone test plans
 // (claude/PHONE.md) refer to them by name, and the session log records which one was active.
 export const PRESETS = [
-  { key: 'stock', label: 'ORB-SLAM3 stock', set: { tracker: 'stock', reloc: '3', anchor: 'stock' },
-    note: 'ORB features on every frame, upstream behaviour (a new map after 3 s lost). The reference.' },
+  { key: 'stock', label: 'Baseline (ORB every frame)', set: { tracker: 'stock', reloc: '3', anchor: 'stock' },
+    note: 'ORB features on every frame and the original ORB-SLAM3 behaviour (a new map after 3 s lost): the reference the other presets are compared with.' },
   { key: 'hybrid', label: 'Hybrid ORB + KLT (default)', set: {},
     note: 'Cheap KLT optical-flow frames between ORB frames (about 2× faster tracking); keeps the map when lost.' },
   { key: 'fast', label: 'Hybrid, fastest', set: { kltmax: '4', motion: 'time', map: 'light' },
     note: 'Up to 4 KLT frames, motion prediction scaled to the frame interval, lighter local mapping (best phone fps so far).' },
-  { key: 'light', label: 'Stock, light ORB', set: { tracker: 'stock', features: '600', levels: '6' },
+  { key: 'light', label: 'Light ORB', set: { tracker: 'stock', features: '600', levels: '6' },
     note: 'ORB on every frame with 600 features and 6 pyramid levels (23% less tracking time, same accuracy on EuRoC).' },
   { key: 'imu', label: 'IMU (visual-inertial)', set: { imu: 'on', tracker: 'stock' },
-    note: 'ORB-SLAM3 with the phone IMU: real-world scale and gravity. Experimental; stock tracking.' },
+    note: 'Visual-inertial mode with the phone IMU: real-world scale and gravity. Experimental; ORB on every frame. Needs a calibrated camera and the IMU time offset.' },
   { key: 'imufast', label: 'IMU, tuned for speed', set: { imu: 'on', tracker: 'stock', motion: 'time', features: '600', levels: '6', map: 'light' },
     note: 'IMU plus time-scaled motion, light ORB and lighter local mapping (tests whether speed is what breaks IMU mode).' },
 ];
