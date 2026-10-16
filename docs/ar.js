@@ -477,6 +477,15 @@ async function start() {
     const times = [], trackTimes = [];
     let n = 0, keepMapOn = false, prevStats = stats, prevTrackMs = 0, lostSince = 0;
     camLast = [camFrames, camDropped];  // frames that arrived while SLAM was loading do not count as dropped
+    // Watchdog: the background is the frame SLAM returned, so a stuck worker looks like a frozen camera. Say so.
+    // Known case: IMU on, the mapping thread hangs in the IMU initialisation and a map reset waits for it (ISSUES G13).
+    let lastReply = performance.now(), stuck = false;
+    setInterval(() => {
+      if (stuck || performance.now() - lastReply < 4000) return;
+      stuck = true;
+      hint('SLAM stopped responding (known IMU bug): the picture is frozen, not the camera. Press Back or Options to restart.', 1e9);
+      tele(`watchdog: no reply from SLAM for 4 s (worker stuck${inertial ? ', IMU on' : ''}), state ${STATE[state]}, KFs ${stats[0]}`);
+    }, 1000);
     for (;;) {
       if (resetRequested) {
         resetRequested = false;
@@ -506,6 +515,8 @@ async function start() {
       if (r.decodeMs != null) { decodeTimes.push(r.decodeMs); if (decodeTimes.length > 30) decodeTimes.shift(); }
       if (r.type !== 'pose') throw new Error(r.text || 'tracking error');
       n++;
+      lastReply = performance.now();
+      if (stuck) { stuck = false; hintHold = 0; hint(''); tele('watchdog: SLAM responding again'); }
       if (r.state !== state) {  // state transition: log what the tracker saw just before (loss diagnosis)
         const g = gyroPeak();
         const lost = r.state === 3 || r.state === 4;
