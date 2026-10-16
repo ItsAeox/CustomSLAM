@@ -7,6 +7,7 @@
 #include <iostream>
 #include <string>
 
+#include <opencv2/core.hpp>
 #include <opencv2/core/persistence.hpp>
 
 namespace ORB_SLAM3
@@ -38,6 +39,12 @@ struct WebConfig
     double kltMaxFlow = 0;     // Web.KLT.MaxFlow: use ORB when the predicted median image motion exceeds this (px; 0 = off)
     double kltMinInlierFrac = 0;  // Web.KLT.MinInlierFrac: KLT pose inliers must reach this fraction of the last ORB
                                // frame's inliers, else the frame is re-tracked with ORB (0 = off)
+
+    // Gyro-aided prediction (visual-only modes; see Tracking::WebMotionPrediction). Off by default = stock.
+    int gyroPrior = 0;         // Web.Gyro.Prior: 1 = the rotation of the frame-to-frame prediction (motion model and
+                               // KLT initial flow) comes from the gyroscope integrated between the two frames
+    double gyroTimeOffset = 0; // Web.Gyro.TimeOffset: seconds added to frame times to get IMU times (> 0: IMU stamps late)
+    float gyroRbc[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};  // camera -> IMU body rotation, row-major (from IMU.T_b_c1)
 };
 
 inline WebConfig& webConfig()
@@ -78,10 +85,27 @@ inline void loadWebConfig(const std::string& settingsFile)
     if (!mi.empty() && (mi.isInt() || mi.isReal())) c.kltMinInlierFrac = mi.real();
     cv::FileNode fb = fs["Web.KLT.FBThreshold"];
     if (!fb.empty() && (fb.isInt() || fb.isReal())) c.kltFBThreshold = fb.real();
+    readInt("Web.Gyro.Prior", c.gyroPrior);
+    cv::FileNode go = fs["Web.Gyro.TimeOffset"];
+    if (!go.empty() && (go.isInt() || go.isReal())) c.gyroTimeOffset = go.real();
+    if (c.gyroPrior) {  // camera -> body rotation from the IMU extrinsics (same key as ORB-SLAM3's inertial settings)
+        cv::Mat Tbc;
+        fs["IMU.T_b_c1"] >> Tbc;
+        if (Tbc.rows >= 3 && Tbc.cols >= 3) {
+            Tbc.convertTo(Tbc, CV_32F);
+            for (int r = 0; r < 3; r++)
+                for (int k = 0; k < 3; k++) c.gyroRbc[3 * r + k] = Tbc.at<float>(r, k);
+        } else {
+            std::cout << "Web config: Web.Gyro.Prior needs IMU.T_b_c1 (camera -> IMU extrinsics); gyro prior off" << std::endl;
+            c.gyroPrior = 0;
+        }
+    }
     std::cout << "Web config: LBA.MaxOptKFs " << c.lbaMaxOptKFs << ", LBA.MaxFixedKFs " << c.lbaMaxFixedKFs
               << ", LBA.Iterations " << c.lbaIterations << ", Mapping.Neighbors " << c.mappingNeighbors
               << " (0 = stock); descriptor " << (c.descriptor == 1 ? "TEBLID-256" : "ORB") << "; reloc timeout "
-              << c.relocTimeout << " s" << (c.keepMap ? " (keep map)" : "") << (c.timeScaledMotion ? "; time-scaled motion" : "") << "; KLT " << (c.kltEnable ? "on" : "off");
+              << c.relocTimeout << " s" << (c.keepMap ? " (keep map)" : "") << (c.timeScaledMotion ? "; time-scaled motion" : "")
+              << (c.gyroPrior ? "; gyro prior (IMU time offset " + std::to_string(c.gyroTimeOffset * 1000) + " ms)" : std::string())
+              << "; KLT " << (c.kltEnable ? "on" : "off");
     if (c.kltEnable)
         std::cout << " (max consecutive " << c.kltMaxConsecutive << ", min tracked " << c.kltMinTracked
                   << ", min inliers " << c.kltMinInliers << ", win " << c.kltWinSize << ", levels " << c.kltLevels

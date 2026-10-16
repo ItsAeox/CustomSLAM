@@ -350,7 +350,13 @@ protected:
     Sophus::SE3f mVelocity;
 #ifdef ORBSLAM3_WEB
     double mWebVelocityDt = 0;  // interval (s) of the two frames that define mVelocity
-    Sophus::SE3f WebMotionPrediction(double tNow) const;  // mVelocity, rescaled to tNow (Web.Track.TimeScaledMotion)
+    // mVelocity, rescaled to tNow (Web.Track.TimeScaledMotion), its rotation from the gyro (Web.Gyro.Prior)
+    Sophus::SE3f WebMotionPrediction(double tNow) const;
+    std::vector<IMU::Point> mvWebGyro;  // gyro samples for Web.Gyro.Prior (IMU clock, oldest first)
+    bool WebGyroRotation(double t0, double t1, Eigen::Matrix3f& dR) const;  // body rotation t0 -> t1 from mvWebGyro
+public:
+    void WebGrabGyro(const std::vector<IMU::Point>& v);  // visual-only modes: IMU samples for the gyro prior
+protected:
 #endif
 
     //Color order (true RGB, false BGR, ignored if grayscale)

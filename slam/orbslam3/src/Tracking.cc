@@ -2790,15 +2790,74 @@ void Tracking::CreateMapInAtlas()
 // which assumes a fixed frame interval. A live camera in a browser delivers the newest frame, so frames are dropped
 // whenever tracking is slower than the camera, and intervals vary. Web.Track.TimeScaledMotion rescales the motion
 // on SE(3), exp(r log V) with r = dt_now / dt_last, clamped to [0, 4] (a long stall is not extrapolated further).
+//
+// Web.Gyro.Prior (visual-only modes): the rotation of the prediction comes from the gyroscope, integrated from the
+// last frame to tNow (IMU clock = frame clock + Web.Gyro.TimeOffset), mapped into the camera with IMU.T_b_c1. The
+// camera centre keeps the constant-velocity displacement. Fast rotations are where handheld tracking is lost (phone
+// logs: losses at gyro peaks > 90 deg/s), and there the per-frame velocity model is most wrong. Without gyro samples
+// covering the interval the model prediction is used.
 Sophus::SE3f Tracking::WebMotionPrediction(double tNow) const
 {
-    if(!webConfig().timeScaledMotion || mWebVelocityDt <= 0)
-        return mVelocity;
-    double r = (tNow - mLastFrame.mTimeStamp) / mWebVelocityDt;
-    if(!(r > 0) || std::abs(r - 1.0) < 1e-3)
-        return mVelocity;
-    r = std::min(r, 4.0);
-    return Sophus::SE3f::exp(static_cast<float>(r) * mVelocity.log());
+    Sophus::SE3f V = mVelocity;
+    if(webConfig().timeScaledMotion && mWebVelocityDt > 0)
+    {
+        double r = (tNow - mLastFrame.mTimeStamp) / mWebVelocityDt;
+        if(r > 0 && std::abs(r - 1.0) >= 1e-3)
+            V = Sophus::SE3f::exp(static_cast<float>(std::min(r, 4.0)) * mVelocity.log());
+    }
+    Eigen::Matrix3f dRb;
+    const double d = webConfig().gyroTimeOffset;
+    if(webConfig().gyroPrior && WebGyroRotation(mLastFrame.mTimeStamp + d, tNow + d, dRb))
+    {
+        const Sophus::SO3f Rbc = Sophus::SO3f::fitToSO3(Eigen::Map<const Eigen::Matrix<float, 3, 3, Eigen::RowMajor>>(webConfig().gyroRbc));
+        // rotation of the current camera in the last camera's frame; V maps last-camera to current-camera coordinates
+        const Sophus::SO3f dRc = Rbc.inverse() * Sophus::SO3f::fitToSO3(dRb) * Rbc;
+        const Eigen::Vector3f c = -(V.so3().inverse() * V.translation());  // camera displacement (last camera frame)
+        const Sophus::SO3f R = dRc.inverse();
+        V = Sophus::SE3f(R, -(R * c));
+    }
+    return V;
+}
+
+// Gyro rotation of the IMU body from t0 to t1 (IMU clock): the rate is linear between samples, integrated on each
+// sub-interval (knots at t0, t1 and every sample in between) with its mean rate. Up to 50 ms beyond the newest sample
+// is extrapolated with the last rate (a browser delivers motion events late). False without coverage.
+bool Tracking::WebGyroRotation(double t0, double t1, Eigen::Matrix3f& dR) const
+{
+    const std::vector<IMU::Point>& g = mvWebGyro;
+    if(g.size() < 2 || !(t1 > t0) || g.front().t > t0 || g.back().t < t1 - 0.05)
+        return false;
+    auto rate = [&g](double t) -> Eigen::Vector3f {
+        if(t <= g.front().t) return g.front().w;
+        if(t >= g.back().t) return g.back().w;
+        const auto it = std::lower_bound(g.begin(), g.end(), t, [](const IMU::Point& p, double x) { return p.t < x; });
+        const IMU::Point& b = *it;
+        const IMU::Point& a = *(it - 1);
+        const float u = static_cast<float>((t - a.t) / (b.t - a.t));
+        return (1.f - u) * a.w + u * b.w;
+    };
+    std::vector<double> ts{t0};
+    for(const IMU::Point& p : g)
+        if(p.t > t0 && p.t < t1) ts.push_back(p.t);
+    ts.push_back(t1);
+    Sophus::SO3f R;
+    for(size_t i = 0; i + 1 < ts.size(); i++)
+        R = R * Sophus::SO3f::exp(0.5f * (rate(ts[i]) + rate(ts[i + 1])) * static_cast<float>(ts[i + 1] - ts[i]));
+    dR = R.matrix();
+    return true;
+}
+
+void Tracking::WebGrabGyro(const std::vector<IMU::Point>& v)
+{
+    mvWebGyro.insert(mvWebGyro.end(), v.begin(), v.end());
+    if(mvWebGyro.empty())
+        return;
+    const double tKeep = mvWebGyro.back().t - 2.0;  // a prediction spans one frame interval; keep 2 s
+    size_t k = 0;
+    while(k < mvWebGyro.size() && mvWebGyro[k].t < tKeep)
+        k++;
+    if(k)
+        mvWebGyro.erase(mvWebGyro.begin(), mvWebGyro.begin() + k);
 }
 
 // web port: KLT tracking frame (monocular). The last frame's map-point observations are carried into the current

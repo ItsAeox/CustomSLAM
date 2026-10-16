@@ -470,6 +470,10 @@ Sophus::SE3f System::TrackMonocular(const cv::Mat &im, const double &timestamp, 
     if (mSensor == System::IMU_MONOCULAR)
         for(size_t i_imu = 0; i_imu < vImuMeas.size(); i_imu++)
             mpTracker->GrabImuData(vImuMeas[i_imu]);
+#ifdef ORBSLAM3_WEB
+    else if (webConfig().gyroPrior)  // visual-only: IMU samples only feed the gyro rotation prior (Web.Gyro.Prior)
+        mpTracker->WebGrabGyro(vImuMeas);
+#endif
 
     Sophus::SE3f Tcw = mpTracker->GrabImageMonocular(imToFeed,timestamp,filename);
 
