@@ -48,6 +48,8 @@ let objBase = 1;                     // placement size (map units); the Size sli
 const sizeFactor = () => 2 ** Number($('size').value);
 let downSum = [0, 0, 0], downN = 0;  // gravity direction in the SLAM world frame (sum of unit vectors)
 let accLP = null, motionEvents = 0;
+let imuN = 0, imuT0 = 0, imuT1 = 0;  // DeviceMotion events with a rotation rate: count, first/last timeStamp (ms)
+const imuRateHz = () => (imuN >= 10 && imuT1 > imuT0 ? (imuN - 1) * 1000 / (imuT1 - imuT0) : 60);  // Chrome: ~60 Hz
 let camFrames = 0, camDropped = 0, frameClock = 'dataset';
 let camLast = [0, 0];  // camera counters at the previous status line (per-interval drop rate)
 let camMode = 'bitmap';               // 'webcodecs': the worker reads VideoFrames itself (see slam.worker.js)
@@ -93,6 +95,8 @@ function onMotion(e) {
     imuPending.push((performance.timeOrigin + e.timeStamp) / 1000, a.x, a.y, a.z, r.beta * d, r.gamma * d, r.alpha * d);
   }
   if (r && r.alpha != null) {
+    if (!imuN) imuT0 = e.timeStamp;
+    imuN++; imuT1 = e.timeStamp;
     const now = performance.now();
     gyroHist.push([now, Math.hypot(r.alpha, r.beta, r.gamma)]);
     while (gyroHist.length && gyroHist[0][0] < now - 1000) gyroHist.shift();
@@ -341,7 +345,7 @@ async function start() {
       calib = params.get('calib') === '0' ? null : loadCalibration(W, H);  // calib.html, this browser, this stream size
       K = intrinsics(W, H, hfov, calib);  // without a calibration: the FOV is along the sensor long side (portrait streams too)
       fps = stream.getVideoTracks()[0].getSettings().frameRate || 30;
-      settingsText = cameraSettings(W, H, hfov, fps, Number(params.get('features') || 1000), calib) + (inertial ? phoneImuSettings(100) : '');
+      settingsText = cameraSettings(W, H, hfov, fps, Number(params.get('features') || 1000), calib);  // + IMU block at init
       const tc = performance.now();
       if ('MediaStreamTrackProcessor' in window && params.get('webcodecs') !== '0') {
         camTrack = stream.getVideoTracks()[0].clone();  // its own track: the <video> element keeps the original
@@ -440,6 +444,11 @@ async function start() {
       lastSlamLine = s; slamRepeats = 0;
       tele(`slam: ${s}`);
     }, onProgress);
+    if (inertial && !seq) {  // phone IMU block with the measured DeviceMotion rate (ORB-SLAM3 discretises the noise with it)
+      const hz = imuRateHz();
+      settingsText += phoneImuSettings(hz);
+      tele(`IMU: DeviceMotion ${hz.toFixed(1)} Hz` + (imuN >= 10 ? ` (measured over ${imuN} events)` : ' (assumed: too few events yet)'));
+    }
     const tInit = performance.now();
     const ready = await slam.request({ type: 'init', vocabUrl: vocabUrl(opts.desc), clahe, seed: 1, prof: params.get('prof') === '1', inertial,
                                        settingsText: withTracker(settingsText) });
