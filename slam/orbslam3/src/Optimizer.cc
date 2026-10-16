@@ -3189,7 +3189,12 @@ void Optimizer::InertialOptimization(Map *pMap, Eigen::Matrix3d &Rwg, double &sc
             if(pKFi->isBad() || pKFi->mPrevKF->mnId>maxKFid)
                 continue;
             if(!pKFi->mpImuPreintegrated)
+            {
                 std::cout << "Not preintegrated measurement" << std::endl;
+#ifdef ORBSLAM3_WEB
+                continue;  // upstream dereferences it next (segfault; a hang in WASM): skip the edge (ISSUES G13)
+#endif
+            }
 
             pKFi->mpImuPreintegrated->SetNewBias(pKFi->mPrevKF->GetImuBias());
             g2o::HyperGraph::Vertex* VP1 = optimizer.vertex(pKFi->mPrevKF->mnId);

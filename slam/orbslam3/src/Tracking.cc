@@ -1660,13 +1660,29 @@ void Tracking::PreintegrateIMU()
         return;
     }
 
+#ifdef ORBSLAM3_WEB
+    // Phone IMU (DeviceMotion ~60 Hz for a 30 fps camera, ~2 samples per frame, bursty) can give a frame one IMU
+    // sample or none. Upstream then leaves the frame without preintegration (mpImuPreintegrated NULL: "Empty IMU
+    // measurements vector" returns, an empty queue returns), and a keyframe made from such a frame is dereferenced by
+    // InertialOptimization at IMU initialisation: native segfault, WASM (no null trap) hang (claude/ISSUES.md G13).
+    // Here such frames hold the last measurement over the frame interval (zero-order hold, as upstream does when the
+    // interval has two samples). Datasets (200 Hz IMU, ~10 samples per frame) never take this path.
+    vector<IMU::Point> vWebHold;
+    if(!mvImuFromLastFrame.empty())
+        vWebHold.push_back(mvImuFromLastFrame.back());
+#endif
     mvImuFromLastFrame.clear();
     mvImuFromLastFrame.reserve(mlQueueImuData.size());
     if(mlQueueImuData.size() == 0)
     {
+#ifdef ORBSLAM3_WEB
+        if(vWebHold.empty())
+#endif
+        {
         Verbose::PrintMess("Not IMU data in mlQueueImuData!!", Verbose::VERBOSITY_NORMAL);
         mCurrentFrame.setIntegrated();
         return;
+        }
     }
 
     while(true)
@@ -1703,6 +1719,12 @@ void Tracking::PreintegrateIMU()
             usleep(500);
     }
 
+#ifdef ORBSLAM3_WEB
+    if(mvImuFromLastFrame.empty() && !vWebHold.empty())  // no sample for this frame: hold the previous one
+        mvImuFromLastFrame.push_back(vWebHold.front());
+    if(mvImuFromLastFrame.size() == 1)  // one sample: n = 1 below, integrated over the whole frame interval
+        mvImuFromLastFrame.push_back(mvImuFromLastFrame.front());
+#endif
     const int n = mvImuFromLastFrame.size()-1;
     if(n==0){
         cout << "Empty IMU measurements vector!!!\n";
