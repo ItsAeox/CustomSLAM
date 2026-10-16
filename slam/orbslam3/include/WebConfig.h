@@ -40,6 +40,13 @@ struct WebConfig
     double kltMinInlierFrac = 0;  // Web.KLT.MinInlierFrac: KLT pose inliers must reach this fraction of the last ORB
                                // frame's inliers, else the frame is re-tracked with ORB (0 = off)
 
+    // Keyframe policy (monocular, visual-only). 0 = stock. Fewer keyframes -> less mapping work and memory (G12, G14).
+    double kfRefRatio = 0;     // Web.KF.RefRatio: insert a keyframe when tracked map points < ratio x the reference
+                               // keyframe's (Tracking::NeedNewKeyFrame; stock mono 0.9: lower = fewer keyframes)
+    double cullRedundancy = 0; // Web.Mapping.CullRedundancy: cull a keyframe whose points are seen by >= 3 other
+                               // keyframes for more than this fraction (LocalMapping::KeyFrameCulling; stock 0.9: lower
+                               // = more culling)
+
     // Gyro-aided prediction (visual-only modes; see Tracking::WebMotionPrediction). Off by default = stock.
     int gyroPrior = 0;         // Web.Gyro.Prior: 1 = the rotation of the frame-to-frame prediction (motion model and
                                // KLT initial flow) comes from the gyroscope integrated between the two frames
@@ -85,6 +92,10 @@ inline void loadWebConfig(const std::string& settingsFile)
     if (!mi.empty() && (mi.isInt() || mi.isReal())) c.kltMinInlierFrac = mi.real();
     cv::FileNode fb = fs["Web.KLT.FBThreshold"];
     if (!fb.empty() && (fb.isInt() || fb.isReal())) c.kltFBThreshold = fb.real();
+    cv::FileNode kr = fs["Web.KF.RefRatio"];
+    if (!kr.empty() && (kr.isInt() || kr.isReal())) c.kfRefRatio = kr.real();
+    cv::FileNode cr = fs["Web.Mapping.CullRedundancy"];
+    if (!cr.empty() && (cr.isInt() || cr.isReal())) c.cullRedundancy = cr.real();
     readInt("Web.Gyro.Prior", c.gyroPrior);
     cv::FileNode go = fs["Web.Gyro.TimeOffset"];
     if (!go.empty() && (go.isInt() || go.isReal())) c.gyroTimeOffset = go.real();
@@ -105,6 +116,8 @@ inline void loadWebConfig(const std::string& settingsFile)
               << " (0 = stock); descriptor " << (c.descriptor == 1 ? "TEBLID-256" : "ORB") << "; reloc timeout "
               << c.relocTimeout << " s" << (c.keepMap ? " (keep map)" : "") << (c.timeScaledMotion ? "; time-scaled motion" : "")
               << (c.gyroPrior ? "; gyro prior (IMU time offset " + std::to_string(c.gyroTimeOffset * 1000) + " ms)" : std::string())
+              << (c.kfRefRatio > 0 ? "; KF ref ratio " + std::to_string(c.kfRefRatio) : std::string())
+              << (c.cullRedundancy > 0 ? "; KF cull redundancy " + std::to_string(c.cullRedundancy) : std::string())
               << "; KLT " << (c.kltEnable ? "on" : "off");
     if (c.kltEnable)
         std::cout << " (max consecutive " << c.kltMaxConsecutive << ", min tracked " << c.kltMinTracked

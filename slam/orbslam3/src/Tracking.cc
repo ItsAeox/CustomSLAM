@@ -3463,6 +3463,10 @@ bool Tracking::NeedNewKeyFrame()
 
     if(mSensor==System::MONOCULAR)
         thRefRatio = 0.9f;
+#ifdef ORBSLAM3_WEB
+    if(mSensor==System::MONOCULAR && webConfig().kfRefRatio > 0)
+        thRefRatio = static_cast<float>(webConfig().kfRefRatio);  // Web.KF.RefRatio (keyframe policy study)
+#endif
 
     if(mpCamera2) thRefRatio = 0.75f;
 

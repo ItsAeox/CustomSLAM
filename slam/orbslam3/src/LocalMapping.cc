@@ -932,6 +932,10 @@ void LocalMapping::KeyFrameCulling()
         redundant_th = 0.9;
     else
         redundant_th = 0.5;
+#ifdef ORBSLAM3_WEB
+    if(!mbInertial && webConfig().cullRedundancy > 0)
+        redundant_th = static_cast<float>(webConfig().cullRedundancy);  // Web.Mapping.CullRedundancy
+#endif
 
     const bool bInitImu = mpAtlas->isImuInitialized();
     int count=0;

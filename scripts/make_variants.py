@@ -10,6 +10,8 @@ Variants (applied to baselines/orbslam3/settings/{EuRoC,TUM-VI}_mono.yaml):
   klt-orb    klt + light-orb
   lba5       Web.LBA.Iterations 5 (local BA Levenberg-Marquardt iterations, stock 10)
   tsm        Web.Track.TimeScaledMotion 1 (motion prediction rescaled to the frame interval; for --live runs)
+  kf080/kf070      Web.KF.RefRatio 0.8 / 0.7 (keyframe insertion threshold; stock mono 0.9 -> fewer keyframes)
+  cull080/cull070  Web.Mapping.CullRedundancy 0.8 / 0.7 (keyframe culling; stock 0.9 -> more culling)
   preset-*   the AR page presets (web/options.js PRESETS), visual-only part:
                preset-stock   stock
                preset-hybrid  klt + Web.Track.RelocTimeout 10
@@ -68,6 +70,11 @@ def gyro(text, name):
 
 RELOC10 = "Web.Track.RelocTimeout: 10"
 VARIANTS.update({
+    # keyframe policy study (include/WebConfig.h: Web.KF.RefRatio, Web.Mapping.CullRedundancy; stock mono 0.9 / 0.9)
+    "kf080": lambda t: add(t, "Web.KF.RefRatio: 0.8"),
+    "kf070": lambda t: add(t, "Web.KF.RefRatio: 0.7"),
+    "cull080": lambda t: add(t, "Web.Mapping.CullRedundancy: 0.8"),
+    "cull070": lambda t: add(t, "Web.Mapping.CullRedundancy: 0.7"),
     "preset-stock": lambda t: t,
     "preset-hybrid": lambda t: add(klt(t), RELOC10),
     "preset-fast": lambda t: add(tsm(light_map(klt(t))), "Web.KLT.MaxConsecutive: 4", RELOC10),
