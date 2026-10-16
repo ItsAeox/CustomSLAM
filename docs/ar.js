@@ -75,6 +75,9 @@ let stopRvfc = () => {};
 const decodeTimes = [];               // per frame: gray image preparation in the worker (ms)  // live camera: frames presented / replaced before tracking
 const gyroHist = [];                 // [time ms, |rotation rate| deg/s] of the last second (logged on tracking loss)
 let inertial = opts.imu === 'on';  // ORB-SLAM3 mono-inertial (experimental); re-read from the options at start()
+let rec = false;                   // record gyro + poses for the time-offset estimate (option 'rec'); set at start()
+let gyroOn = false;               // gyro rotation prior (option 'gyro', visual-only); set at start()
+const absClock = () => inertial || rec || gyroOn;  // frame times on the IMU's clock (page timeOrigin + ms) instead of camera time
 let imuPending = [];
 let imuFlags = [0, 0];               // last logged IMU initialisation flags (map stats [4], [5])                 // live IMU samples not yet sent: [t abs s, ax, ay, az (m/s^2), gx, gy, gz (rad/s)] flat
 let lastMaps = 0, lastState = 0;
@@ -107,9 +110,14 @@ function onMotion(e) {
   accLP = accLP ? accLP.map((x, i) => 0.7 * x + 0.3 * v[i]) : v;
   motionEvents++;
   const r = e.rotationRate;
-  if (inertial && r && r.alpha != null && a.x != null) {  // device axes = IMU body; rotationRate alpha/beta/gamma = z/x/y (deg/s)
+  if ((inertial || gyroOn) && r && r.alpha != null && a.x != null) {  // device axes = IMU body; rotationRate alpha/beta/gamma = z/x/y (deg/s)
     const d = Math.PI / 180;
-    imuPending.push((performance.timeOrigin + e.timeStamp) / 1000, a.x, a.y, a.z, r.beta * d, r.gamma * d, r.alpha * d);
+    // IMU time = reported time - the measured offset (option imudt; reported = true + offset, see estimate_time_offset.py)
+    imuPending.push((performance.timeOrigin + e.timeStamp) / 1000 - Number(opts.imudt) / 1000, a.x, a.y, a.z, r.beta * d, r.gamma * d, r.alpha * d);
+  }
+  if (rec && r && r.alpha != null) {  // diagnostic: raw gyro (rad/s, device axes) on the frames' absolute clock
+    const d = Math.PI / 180;
+    tele(`imu ${((performance.timeOrigin + e.timeStamp) / 1000).toFixed(4)} ${(r.beta * d).toFixed(5)} ${(r.gamma * d).toFixed(5)} ${(r.alpha * d).toFixed(5)}`);
   }
   if (r && r.alpha != null) {
     if (!imuN) imuT0 = e.timeStamp;
@@ -288,6 +296,8 @@ function drawFrame(bmp) {
 async function start() {
   $('go').disabled = true;
   inertial = opts.imu === 'on';  // the options may have changed since the page loaded
+  rec = opts.rec === 'on';
+  gyroOn = opts.gyro === 'on' && !inertial && !params.get('seq');  // dataset mode: no phone gyro
   try {
     if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
       await DeviceMotionEvent.requestPermission().catch(() => {});  // iOS
@@ -370,7 +380,7 @@ async function start() {
         camStream = new MediaStreamTrackProcessor({ track: camTrack }).readable;
       }
       const grab = async () => ({ bitmap: await createImageBitmap(video),
-                                  t: inertial ? (performance.timeOrigin + performance.now()) / 1000 : (performance.now() - tc) / 1000 });
+                                  t: absClock() ? (performance.timeOrigin + performance.now()) / 1000 : (performance.now() - tc) / 1000 });
       nextBitmap = grab;
       frameClock = 'grab time (performance.now)';
       if ('requestVideoFrameCallback' in HTMLVideoElement.prototype && params.get('rvfc') !== '0') {
@@ -388,7 +398,7 @@ async function start() {
           createImageBitmap(video).then((bmp) => {
             if (!active) { bmp.close(); return; }
             if (latest) { latest.bitmap.close(); camDropped++; }  // replaced before the tracker took it
-            latest = { bitmap: bmp, t: inertial ? (performance.timeOrigin + now) / 1000 : meta.mediaTime };
+            latest = { bitmap: bmp, t: absClock() ? (performance.timeOrigin + now) / 1000 : meta.mediaTime };
             if (waiter) { const w = waiter; waiter = null; w(); }
           });
           video.requestVideoFrameCallback(onFrame);
@@ -462,7 +472,7 @@ async function start() {
       lastSlamLine = s; slamRepeats = 0;
       tele(`slam: ${s}`);
     }, onProgress);
-    if (inertial && !seq) {  // phone IMU block with the measured DeviceMotion rate (ORB-SLAM3 discretises the noise with it)
+    if ((inertial || gyroOn) && !seq) {  // phone IMU block (+ T_b_c1 for the gyro prior) with the measured DeviceMotion rate
       const hz = imuRateHz();
       settingsText += phoneImuSettings(hz);
       tele(`IMU: DeviceMotion ${hz.toFixed(1)} Hz` + (imuN >= 10 ? ` (measured over ${imuN} events)` : ' (assumed: too few events yet)'));
@@ -528,15 +538,15 @@ async function start() {
       const tf = performance.now();
       let r, down = null;
       if (camMode === 'webcodecs') {
-        const imu = inertial ? new Float64Array(imuPending) : null; imuPending = [];
-        r = await slam.request({ type: 'trackCamera', viz: true, withMap: n % 10 === 0, absClock: inertial, imu });
+        const imu = (inertial || gyroOn) ? new Float64Array(imuPending) : null; imuPending = [];
+        r = await slam.request({ type: 'trackCamera', viz: true, withMap: n % 10 === 0, absClock: absClock(), imu });
         if (r.cam) { camFrames = r.cam[0]; camDropped = r.cam[1]; }
       } else {
         const f = await nextBitmap();  // f.down: dataset IMU gravity (camera frame), test mode only
         down = f.down;
         if (down) motionEvents++;
         let imu = null;
-        if (inertial) { imu = new Float64Array(f.imu || imuPending); if (!f.imu) imuPending = []; }
+        if (inertial || gyroOn) { imu = new Float64Array(f.imu || imuPending); if (!f.imu) imuPending = []; }
         r = await slam.request({ type: 'bitmap', bitmap: f.bitmap, t: f.t, viz: true, withMap: n % 10 === 0, imu }, [f.bitmap]);
       }
       if (r.decodeMs != null) { decodeTimes.push(r.decodeMs); if (decodeTimes.length > 30) decodeTimes.shift(); }
@@ -565,6 +575,11 @@ async function start() {
       lastState = state; lastMaps = stats[3];
       if (tracking()) {
         twc = r.twc;
+        if (rec) {  // diagnostic: camera pose (Twc, TUM order) per tracked frame -> eval/estimate_time_offset.py --ar-log
+          const q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().fromArray(twc));
+          tele(`pose ${r.t.toFixed(4)} ${twc[12].toFixed(4)} ${twc[13].toFixed(4)} ${twc[14].toFixed(4)} ` +
+               `${q.x.toFixed(6)} ${q.y.toFixed(6)} ${q.z.toFixed(6)} ${q.w.toFixed(6)}`);
+        }
         const g = down || gravityCam();
         if (g) { const gw = mulR(rotOf(twc), g); downSum = downSum.map((x, i) => x + gw[i]); downN++; }
       }
