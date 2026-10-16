@@ -12,6 +12,7 @@
 //   traj_tum.txt      all tracked frames of the largest map, TUM format, absolute dataset time (s)
 //                     pose = Twc of camera (mono) or Twb of IMU body (mono_inertial; see ORB-SLAM3 SaveTrajectoryEuRoC)
 //   kf_traj_tum.txt   keyframes only
+//   traj_map<id>_tum.txt  all tracked frames of each map with keyframes (multi-map runs; eval/evaluate_multimap.py)
 //   track_times.txt   per-frame TrackMonocular wall time (ms)
 //   run_info.txt      includes frames processed / dropped and the effective playback rate (sequence time / wall time)
 //
@@ -315,6 +316,7 @@ int main(int argc, char** argv) {
   bool rtWall = false;    // every frame on a wall-clock schedule, next frame loaded in the background (honest real time)
   int maxFrames = 0;      // 0 = all frames
   bool syncMapping = false; // web port diagnostic: wait for local mapping to go idle after every frame
+  bool gyro = false;        // mono: also pass the dataset IMU (only the gyro prior uses it: Web.Gyro.Prior in the settings)
   bool trace = false;       // diagnostic: per-frame trace (state, tracked points, live Twc) -> trace.txt
   int seed = -1;  // -1: ORB-SLAM3 default (TwoViewReconstruction seeds with 0)
   for (int i = 1; i < argc; ++i) {
@@ -334,6 +336,7 @@ int main(int argc, char** argv) {
     else if (a == "--rate-scale") rateScale = std::stod(next());
     else if (a == "--max-frames") maxFrames = std::stoi(next());
     else if (a == "--sync-mapping") syncMapping = true;
+    else if (a == "--gyro") gyro = true;
     else if (a == "--trace") trace = true;
     else { std::cerr << "unknown arg " << a << "\n"; return 2; }
   }
@@ -364,7 +367,7 @@ int main(int argc, char** argv) {
 
   // First IMU sample considered: the last one at or before the first frame (as in mono_inertial_tum_vi.cc)
   size_t imuIdx = 0;
-  if (inertial) {
+  if (inertial || gyro) {
     while (imuIdx < d.imu.size() && d.imu[imuIdx].t <= d.t[0]) ++imuIdx;
     if (imuIdx > 0) --imuIdx;
   }
@@ -403,7 +406,7 @@ int main(int argc, char** argv) {
     if (im.empty()) { std::cerr << "failed to read " << d.images[i] << "\n"; return 1; }
 
     meas.clear();
-    if (inertial && i > 0) {
+    if ((inertial || gyro) && i > 0) {
       while (imuIdx < d.imu.size() && d.imu[imuIdx].t <= d.t[i]) {
         const auto& m = d.imu[imuIdx++];
         meas.emplace_back(m.ax, m.ay, m.az, m.gx, m.gy, m.gz, m.t);
@@ -449,15 +452,27 @@ int main(int argc, char** argv) {
   SLAM.SaveKeyFrameTrajectoryEuRoC(rawKF.string());
   euRoCToTum(rawF, fs::path(out) / "traj_tum.txt", d.tBase);
   euRoCToTum(rawKF, fs::path(out) / "kf_traj_tum.txt", d.tBase);
+  // Every map's trajectory (claude/ISSUES.md H3): SaveTrajectoryEuRoC keeps only the largest map, so a multi-map run
+  // (outdoors, Magistrale) loses the maps that overlap the start/end ground truth. traj_map<id>_tum.txt per map with
+  // keyframes (an empty map would crash the save, G4); eval/evaluate_multimap.py scores them.
+  int savedMaps = 0;
+  for (ORB_SLAM3::Map* m : SLAM.WebAtlas()->GetAllMaps()) {
+    if (m->GetAllKeyFrames().empty()) continue;
+    const std::string id = std::to_string(m->GetId());
+    const fs::path rawM = fs::path(out) / ("map" + id + "_euroc_ns.txt");
+    SLAM.SaveTrajectoryEuRoC(rawM.string(), m);
+    euRoCToTum(rawM, fs::path(out) / ("traj_map" + id + "_tum.txt"), d.tBase);
+    ++savedMaps;
+  }
 
   std::ofstream info(fs::path(out) / "run_info.txt");
   info << std::setprecision(17) << "dataset " << dataset << "\nmode " << mode << "\nseq " << seq
        << "\nsettings " << settings << "\nclahe " << clahe << "\nseed " << seed << "\nrealtime " << realtime
        << "\nrate_scale " << rateScale << "\nlive " << live << "\nrt_wall " << rtWall << "\nsync_mapping " << syncMapping
-       << "\nframes " << N << "\nprocessed " << processed << "\ndropped " << dropped
+       << "\ngyro " << gyro << "\nframes " << N << "\nprocessed " << processed << "\ndropped " << dropped
        << "\nwall_s " << wallS << "\nseq_s " << seqS
        << "\neffective_rate " << (wallS > 0 ? seqS / wallS : 0.0)  // 1 = real time (x 1/rate_scale when scaled)
-       << "\nmap_points " << msEnd[0] << "\nkeyframes " << msEnd[1] << "\nmaps " << msEnd[2]
+       << "\nmap_points " << msEnd[0] << "\nkeyframes " << msEnd[1] << "\nmaps " << msEnd[2] << "\nsaved_maps " << savedMaps
        << "\nmem_mb " << memoryMB()  // WASM heap size or native peak RSS
        << "\nt_base " << d.tBase << "\n";
   return 0;
