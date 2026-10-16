@@ -18,7 +18,7 @@ if (NOT CMAKE_BUILD_TYPE)
 endif()
 # -DNDEBUG as in upstream ORB-SLAM3's Release build (CMake's default Release flags): assertions (ORB-SLAM3, g2o) and
 # Eigen's runtime checks compiled out. Until 2026-10-16 this was "-O3" only, so every build had them enabled
-# (claude/ISSUES.md C4). Upstream also adds -march=native for native builds: not done (open decision, C4).
+# (claude/ISSUES.md C8). Upstream also adds -march=native for native builds: not done (open decision, C8).
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG")
 
