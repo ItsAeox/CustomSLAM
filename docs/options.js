@@ -21,6 +21,36 @@ export const OPTIONS = [
   { key: 'kltfb', label: 'KLT forward-backward check', values: [['1', 'on'], ['0', 'off']], def: '1', when: (o) => o.tracker === 'klt' },
 ];
 
+// Named presets (AR page): each sets every option; keys it does not list take the page default. Phone test plans
+// (claude/PHONE.md) refer to them by name, and the session log records which one was active.
+export const PRESETS = [
+  { key: 'stock', label: 'ORB-SLAM3 stock', set: { tracker: 'stock', reloc: '3', anchor: 'stock' },
+    note: 'ORB features on every frame, upstream behaviour (a new map after 3 s lost). The reference.' },
+  { key: 'hybrid', label: 'Hybrid ORB + KLT (default)', set: {},
+    note: 'Cheap KLT optical-flow frames between ORB frames (about 2× faster tracking); keeps the map when lost.' },
+  { key: 'fast', label: 'Hybrid, fastest', set: { kltmax: '4', motion: 'time', map: 'light' },
+    note: 'Up to 4 KLT frames, motion prediction scaled to the frame interval, lighter local mapping (best phone fps so far).' },
+  { key: 'light', label: 'Stock, light ORB', set: { tracker: 'stock', features: '600', levels: '6' },
+    note: 'ORB on every frame with 600 features and 6 pyramid levels (23% less tracking time, same accuracy on EuRoC).' },
+  { key: 'imu', label: 'IMU (visual-inertial)', set: { imu: 'on', tracker: 'stock' },
+    note: 'ORB-SLAM3 with the phone IMU: real-world scale and gravity. Experimental; stock tracking.' },
+  { key: 'imufast', label: 'IMU, tuned for speed', set: { imu: 'on', tracker: 'stock', motion: 'time', features: '600', levels: '6', map: 'light' },
+    note: 'IMU plus time-scaled motion, light ORB and lighter local mapping (tests whether speed is what breaks IMU mode).' },
+];
+
+// Sets every option of `page` from a preset (unlisted keys: page default, then option default)
+export function applyPreset(o, preset, pageDefaults = {}, page = '') {
+  for (const d of OPTIONS) if (!d.page || d.page === page) o[d.key] = preset.set[d.key] ?? pageDefaults[d.key] ?? d.def;
+  return o;
+}
+
+// Key of the preset the options equal (options hidden by `when`, e.g. KLT knobs with stock tracking, are ignored), or 'custom'
+export function matchPreset(o, pageDefaults = {}, page = '') {
+  const p = PRESETS.find((pr) => OPTIONS.every((d) => (d.page && d.page !== page) || !(d.key in o) || (d.when && !d.when(o)) ||
+                                                      o[d.key] === (pr.set[d.key] ?? pageDefaults[d.key] ?? d.def)));
+  return p ? p.key : 'custom';
+}
+
 // pageDefaults: per-page defaults (e.g. the AR page relocalises longer); URL parameters override them.
 // page: options marked with a page (e.g. 'ar') exist only there; the returned object holds the page's options.
 export function optionsFromParams(params, pageDefaults = {}, page = '') {

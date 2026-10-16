@@ -9,7 +9,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { createSlamWorker, cameraSettings, intrinsics, loadCalibration, phoneImuSettings, savedCalibrations, STATE, vocabUrl } from './slamclient.js';
 import { dot, fitPlaneRansac, normalize, rayPlane } from './plane.js';
-import { applyOptions, buildOptionsUI, describeOptions, optionsFromParams, optionsToParams } from './options.js';
+import { applyOptions, applyPreset, buildOptionsUI, describeOptions, matchPreset, optionsFromParams, optionsToParams, PRESETS } from './options.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -20,7 +20,24 @@ if (params.get('res')) $('res').value = params.get('res');
 // results/hard10_rt), relocalise 10 s before a new map (stock 3 s), and keep the map while the tree is placed.
 const AR_DEFAULTS = { reloc: '10', tracker: 'klt' };
 const opts = optionsFromParams(params, AR_DEFAULTS, 'ar');
-buildOptionsUI($('opts'), opts, () => history.replaceState(null, '', `?${optionsToParams(opts, new URLSearchParams(location.search), AR_DEFAULTS)}`));
+// Presets (web/options.js PRESETS) set every option at once; changing a single option shows "custom"
+const saveOptsToUrl = () => history.replaceState(null, '', `?${optionsToParams(opts, new URLSearchParams(location.search), AR_DEFAULTS)}`);
+const presetKey = () => matchPreset(opts, AR_DEFAULTS, 'ar');
+const syncPreset = () => {
+  const k = presetKey(), p = PRESETS.find((x) => x.key === k);
+  $('preset').value = k;
+  $('presetNote').textContent = p ? p.note : 'Your own combination (see Algorithm options).';
+};
+const renderOpts = () => buildOptionsUI($('opts'), opts, () => { saveOptsToUrl(); syncPreset(); });
+for (const p of PRESETS) $('preset').append(new Option(p.label, p.key));
+$('preset').append(Object.assign(new Option('custom', 'custom'), { disabled: true }));
+$('preset').onchange = () => {
+  const p = PRESETS.find((x) => x.key === $('preset').value);
+  if (!p) return;
+  applyPreset(opts, p, AR_DEFAULTS, 'ar');
+  renderOpts(); saveOptsToUrl(); syncPreset();
+};
+renderOpts(); syncPreset();
 
 const bg = $('bg'), bgx = bg.getContext('2d');
 const renderer = new THREE.WebGLRenderer({ canvas: $('gl'), alpha: true, antialias: true });
@@ -57,7 +74,7 @@ let camStream = null, camTrack = null; // MediaStreamTrackProcessor.readable (on
 let stopRvfc = () => {};
 const decodeTimes = [];               // per frame: gray image preparation in the worker (ms)  // live camera: frames presented / replaced before tracking
 const gyroHist = [];                 // [time ms, |rotation rate| deg/s] of the last second (logged on tracking loss)
-const inertial = opts.imu === 'on';  // ORB-SLAM3 mono-inertial (experimental)
+let inertial = opts.imu === 'on';  // ORB-SLAM3 mono-inertial (experimental); re-read from the options at start()
 let imuPending = [];
 let imuFlags = [0, 0];               // last logged IMU initialisation flags (map stats [4], [5])                 // live IMU samples not yet sent: [t abs s, ax, ay, az (m/s^2), gx, gy, gz (rad/s)] flat
 let lastMaps = 0, lastState = 0;
@@ -270,6 +287,7 @@ function drawFrame(bmp) {
 // ---------------------------------------------------------------- main loop
 async function start() {
   $('go').disabled = true;
+  inertial = opts.imu === 'on';  // the options may have changed since the page loaded
   try {
     if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
       await DeviceMotionEvent.requestPermission().catch(() => {});  // iOS
@@ -416,7 +434,7 @@ async function start() {
     tele(`start: ${navigator.userAgent} | cores ${navigator.hardwareConcurrency} | image ${W}x${H} | ` +
          `fx ${K.fx.toFixed(1)} fy ${K.fy.toFixed(1)} cx ${K.cx.toFixed(1)} cy ${K.cy.toFixed(1)} px | ` +
          (seq ? 'dataset intrinsics' : calib ? `calibrated ${calib.date.slice(0, 10)} (rms ${calib.rms.toFixed(2)} px, k1 ${calib.k1.toFixed(3)} k2 ${calib.k2.toFixed(3)})` : `hfov ${hfov} (assumed)`) +
-         ` | options ${describeOptions(opts)} | source ${seq || 'camera'} | frame clock ${frameClock}`);
+         ` | preset ${presetKey()} | options ${describeOptions(opts)} | source ${seq || 'camera'} | frame clock ${frameClock}`);
     let lastSlamLine = '', slamRepeats = 0;
     // loading progress: vocabulary download %, then building; a stall (no data for 15 s) is reported
     let lastProgress = performance.now(), loadingDone = false;
