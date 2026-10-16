@@ -40,6 +40,10 @@ struct WebConfig
     double kltMinInlierFrac = 0;  // Web.KLT.MinInlierFrac: KLT pose inliers must reach this fraction of the last ORB
                                // frame's inliers, else the frame is re-tracked with ORB (0 = off)
 
+    int bowLevelsUp = 4;       // Web.BoW.LevelsUp: tree levels above the leaves for the BoW direct index (FeatureVector)
+                               // used by SearchByBoW (Frame/KeyFrame::ComputeBoW; stock 4, made for L = 6 trees). A smaller
+                               // vocabulary needs L - 2 to index at the same depth (100 nodes for k = 10).
+
     // Keyframe policy (monocular, visual-only). 0 = stock. Fewer keyframes -> less mapping work and memory (G12, G14).
     double kfRefRatio = 0;     // Web.KF.RefRatio: insert a keyframe when tracked map points < ratio x the reference
                                // keyframe's (Tracking::NeedNewKeyFrame; stock mono 0.9: lower = fewer keyframes)
@@ -92,6 +96,7 @@ inline void loadWebConfig(const std::string& settingsFile)
     if (!mi.empty() && (mi.isInt() || mi.isReal())) c.kltMinInlierFrac = mi.real();
     cv::FileNode fb = fs["Web.KLT.FBThreshold"];
     if (!fb.empty() && (fb.isInt() || fb.isReal())) c.kltFBThreshold = fb.real();
+    readInt("Web.BoW.LevelsUp", c.bowLevelsUp);
     cv::FileNode kr = fs["Web.KF.RefRatio"];
     if (!kr.empty() && (kr.isInt() || kr.isReal())) c.kfRefRatio = kr.real();
     cv::FileNode cr = fs["Web.Mapping.CullRedundancy"];
@@ -116,6 +121,7 @@ inline void loadWebConfig(const std::string& settingsFile)
               << " (0 = stock); descriptor " << (c.descriptor == 1 ? "TEBLID-256" : "ORB") << "; reloc timeout "
               << c.relocTimeout << " s" << (c.keepMap ? " (keep map)" : "") << (c.timeScaledMotion ? "; time-scaled motion" : "")
               << (c.gyroPrior ? "; gyro prior (IMU time offset " + std::to_string(c.gyroTimeOffset * 1000) + " ms)" : std::string())
+              << (c.bowLevelsUp != 4 ? "; BoW levels up " + std::to_string(c.bowLevelsUp) : std::string())
               << (c.kfRefRatio > 0 ? "; KF ref ratio " + std::to_string(c.kfRefRatio) : std::string())
               << (c.cullRedundancy > 0 ? "; KF cull redundancy " + std::to_string(c.cullRedundancy) : std::string())
               << "; KLT " << (c.kltEnable ? "on" : "off");

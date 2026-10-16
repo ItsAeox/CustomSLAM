@@ -10,6 +10,7 @@ Variants (applied to baselines/orbslam3/settings/{EuRoC,TUM-VI}_mono.yaml):
   klt-orb    klt + light-orb
   lba5       Web.LBA.Iterations 5 (local BA Levenberg-Marquardt iterations, stock 10)
   tsm        Web.Track.TimeScaledMotion 1 (motion prediction rescaled to the frame interval; for --live runs)
+  bow-lu3/bow-lu2  Web.BoW.LevelsUp 3 / 2 (for L5 / L4 vocabularies: BoW direct index at the same depth as stock L6)
   kf080/kf070      Web.KF.RefRatio 0.8 / 0.7 (keyframe insertion threshold; stock mono 0.9 -> fewer keyframes)
   cull080/cull070  Web.Mapping.CullRedundancy 0.8 / 0.7 (keyframe culling; stock 0.9 -> more culling)
   preset-*   the AR page presets (web/options.js PRESETS), visual-only part:
@@ -71,6 +72,9 @@ def gyro(text, name):
 RELOC10 = "Web.Track.RelocTimeout: 10"
 VARIANTS.update({
     # keyframe policy study (include/WebConfig.h: Web.KF.RefRatio, Web.Mapping.CullRedundancy; stock mono 0.9 / 0.9)
+    # smaller vocabularies index BoW at the same depth (include/WebConfig.h Web.BoW.LevelsUp; stock 4 for L = 6)
+    "bow-lu3": lambda t: add(t, "Web.BoW.LevelsUp: 3"),
+    "bow-lu2": lambda t: add(t, "Web.BoW.LevelsUp: 2"),
     "kf080": lambda t: add(t, "Web.KF.RefRatio: 0.8"),
     "kf070": lambda t: add(t, "Web.KF.RefRatio: 0.7"),
     "cull080": lambda t: add(t, "Web.Mapping.CullRedundancy: 0.8"),

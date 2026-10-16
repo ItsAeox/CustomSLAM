@@ -29,6 +29,7 @@
 #include <thread>
 #include <include/CameraModels/Pinhole.h>
 #include <include/CameraModels/KannalaBrandt8.h>
+#include "WebConfig.h"
 
 namespace ORB_SLAM3
 {
@@ -742,7 +743,11 @@ void Frame::ComputeBoW()
     if(mBowVec.empty())
     {
         vector<cv::Mat> vCurrentDesc = Converter::toDescriptorVector(mDescriptors);
+#ifdef ORBSLAM3_WEB
+        mpORBvocabulary->transform(vCurrentDesc,mBowVec,mFeatVec,webConfig().bowLevelsUp);  // stock 4 (Web.BoW.LevelsUp)
+#else
         mpORBvocabulary->transform(vCurrentDesc,mBowVec,mFeatVec,4);
+#endif
     }
 }
 

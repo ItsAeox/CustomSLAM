@@ -19,6 +19,7 @@
 #include "KeyFrame.h"
 #include "Converter.h"
 #include "ImuTypes.h"
+#include "WebConfig.h"
 #include<mutex>
 
 namespace ORB_SLAM3
@@ -102,7 +103,11 @@ void KeyFrame::ComputeBoW()
         vector<cv::Mat> vCurrentDesc = Converter::toDescriptorVector(mDescriptors);
         // Feature vector associate features with nodes in the 4th level (from leaves up)
         // We assume the vocabulary tree has 6 levels, change the 4 otherwise
+#ifdef ORBSLAM3_WEB
+        mpORBvocabulary->transform(vCurrentDesc,mBowVec,mFeatVec,webConfig().bowLevelsUp);  // Web.BoW.LevelsUp
+#else
         mpORBvocabulary->transform(vCurrentDesc,mBowVec,mFeatVec,4);
+#endif
     }
 }
 
