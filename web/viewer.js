@@ -295,6 +295,10 @@ async function startCamera() {
   worker.onmessage = (e) => {
     const m = e.data;
     if (m.type === 'log') { if (!/^\s*$/.test(m.text)) log(m.text); return; }
+    if (m.type === 'progress') {  // vocabulary download / build (slam.worker.js): status only, not the init reply
+      setStatus(m.stage === 'download' && m.total ? `loading vocabulary ${Math.round(100 * m.loaded / m.total)} %` : 'building vocabulary…');
+      return;
+    }
     if (m.type === 'error') { log('ERROR ' + m.text); setStatus('error (see log)'); }
     if (pending) { const p = pending; pending = null; p(m); }
   };
@@ -371,6 +375,10 @@ async function start() {
   worker.onmessage = (e) => {
     const m = e.data;
     if (m.type === 'log') { if (!/^\s*$/.test(m.text)) log(m.text); return; }
+    if (m.type === 'progress') {  // vocabulary download / build (slam.worker.js): status only, not the init reply
+      setStatus(m.stage === 'download' && m.total ? `loading vocabulary ${Math.round(100 * m.loaded / m.total)} %` : 'building vocabulary…');
+      return;
+    }
     if (m.type === 'error') { log('ERROR ' + m.text); setStatus('error (see log)'); }
     if (pending) { const p = pending; pending = null; p(m); }
   };
