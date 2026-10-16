@@ -554,7 +554,7 @@ async function start() {
         const avg = times.reduce((a, b) => a + b, 0) / Math.max(1, times.length);
         const js = performance.memory ? performance.memory.usedJSHeapSize / 1048576 : null;
         const trk = trackTimes.length ? trackTimes.reduce((a, b) => a + b, 0) / trackTimes.length : r.trackMs;
-        $('res').innerHTML = `WASM ${(r.heap / 1048576).toFixed(0)} MB` + (js != null ? ` · JS ${js.toFixed(0)} MB` : '') +
+        $('usage').innerHTML = `WASM ${(r.heap / 1048576).toFixed(0)} MB` + (js != null ? ` · JS ${js.toFixed(0)} MB` : '') +
           `<br>map ${stats[1]} pts · ${stats[0]} KFs · ${stats[3]} map${stats[3] === 1 ? '' : 's'}` +
           `<br>tracking ${Math.min(100, 100 * trk / Math.max(avg, 1)).toFixed(0)}% busy · ${navigator.hardwareConcurrency || '?'} cores, SLAM threads 3`;
       }
