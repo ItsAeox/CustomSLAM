@@ -334,7 +334,7 @@ async function start() {
   inertial = opts.imu === 'on';  // the options may have changed since the page loaded
   rec = opts.rec === 'on';
   gyroOn = (opts.gyro === 'on' || opts.init === 'gyro') && !inertial && !params.get('seq');  // dataset mode: no phone gyro
-  holdOn = opts.hold === 'gyro' && !params.get('seq');
+  holdOn = opts.hold === 'gyro' && (!params.get('seq') || params.get('holdtest') === '1');  // holdtest: run the code on a dataset (no gyro: held = last pose)
   try {
     if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
       await DeviceMotionEvent.requestPermission().catch(() => {});  // iOS

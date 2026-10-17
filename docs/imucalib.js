@@ -64,9 +64,9 @@ export function estimateImuCalib(poses, gyro, { Rcb = [1, 0, 0, 0, -1, 0, 0, 0, 
     return [g, v];
   };
   let best = null;
-  for (let ms = -maxMs; ms <= maxMs + 1e-9; ms += stepMs) {
+  const tryLag = (ms) => {
     const [g, v] = gyroAt(ms / 1000);
-    if (g.length < 50) continue;
+    if (g.length < 50) return;
     let err = 0;
     for (let k = 0; k < g.length; k++) {
       const r = Math.hypot(g[k][0] - v[k][0], g[k][1] - v[k][1], g[k][2] - v[k][2]);
@@ -74,8 +74,12 @@ export function estimateImuCalib(poses, gyro, { Rcb = [1, 0, 0, 0, -1, 0, 0, 0, 
     }
     err /= g.length;
     if (!best || err < best.cost) best = { offsetMs: ms, cost: err, samples: g.length };
-  }
+  };
+  // coarse (5 steps) then fine around the best: ~4x less work than every step (it runs on the page's main thread)
+  for (let ms = -maxMs; ms <= maxMs + 1e-9; ms += 5 * stepMs) tryLag(ms);
   if (!best) return null;
+  const c = best.offsetMs;
+  for (let ms = c - 4 * stepMs; ms <= c + 4 * stepMs + 1e-9; ms += stepMs) if (ms >= -maxMs && ms <= maxMs) tryLag(ms);
   const [g, v] = gyroAt(best.offsetMs / 1000);
   const ratio = (gs, vs) => {  // least squares, |rate| > 0.2 rad/s, refit without the 10 % largest residuals
     const m = gs.map((x, i) => [x, vs[i]]).filter(([x]) => Math.abs(x) > 0.2);

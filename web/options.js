@@ -51,8 +51,6 @@ export const PRESETS = [
     note: 'Hybrid fastest with the pose solved without a g2o graph: the same result in less time (1.5-2.4x faster pose step).' },
   { key: 'fastqp', label: 'Fastest + quick solver + parallel ORB', set: { kltmax: '4', motion: 'time', map: 'light', pose: 'fast', orbpar: 'parallel' },
     note: 'As quick solver, plus the ORB pyramid levels extracted on 4 threads (may be slower if the phone puts them on its small cores).' },
-  { key: 'fastmax', label: 'Fastest, maximum speed', set: { kltmax: '4', motion: 'time', map: 'light', pose: 'fast', orbpar: 'parallel', kltfb: '0' },
-    note: 'Quick solver + parallel ORB + optical flow without the backward check (half the flow cost; robustness unchanged on datasets).' },
   { key: 'gstart', label: 'Fastest + gyro start', set: { kltmax: '4', motion: 'time', map: 'light', gyro: 'on', init: 'gyro' },
     note: 'The map starts from two frames with the rotation measured by the gyro (2-point method), so less "move sideways" at the start. Includes the gyro rotation prior.' },
   { key: 'grecover', label: 'Fastest + gyro recovery', set: { kltmax: '4', motion: 'time', map: 'light', gyro: 'on', recover: 'coast', hold: 'gyro' },
