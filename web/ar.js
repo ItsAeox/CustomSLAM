@@ -10,7 +10,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { createSlamWorker, cameraSettings, intrinsics, loadCalibration, phoneImuSettings, savedCalibrations, STATE, vocabUrl } from './slamclient.js';
 import { estimateImuCalib } from './imucalib.js';
 import { dot, fitPlaneRansac, normalize, rayPlane } from './plane.js';
-import { applyOptions, applyPreset, buildOptionsUI, describeOptions, matchPreset, optionsFromParams, optionsToParams, PRESETS } from './options.js';
+import { applyOptions, applyPreset, buildOptionsUI, describeOptions, matchPreset, OPTIONS, optionsFromParams, optionsToParams, PRESETS } from './options.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -21,6 +21,15 @@ if (params.get('res')) $('res').value = params.get('res');
 // results/hard10_rt), relocalise 10 s before a new map (stock 3 s), and keep the map while the tree is placed.
 const AR_DEFAULTS = { reloc: '10', tracker: 'klt' };
 const opts = optionsFromParams(params, AR_DEFAULTS, 'ar');
+function ensureImuOffsetValue(v) {  // a measured offset (imucalib.js) need not be one of the listed 20 ms steps
+  const d = OPTIONS.find((x) => x.key === 'imudt');
+  if (d && !d.values.some(([k]) => k === String(v))) d.values.push([String(v), `${v >= 0 ? '+' : ''}${v} (measured)`]);
+}
+ensureImuOffsetValue(opts.imudt);
+// Metric scale prior (claude/RESEARCH.md "Metric scale"): monocular maps have no scale, but the camera height above the
+// detected floor is measured in map units; a phone held at ~1.4 m gives metres per map unit. Shown in the log only.
+const PHONE_HEIGHT_M = 1.4;
+const metresPerUnit = () => (floor && floor.height > 0 ? PHONE_HEIGHT_M / floor.height : null);
 // Presets (web/options.js PRESETS) set every option at once; changing a single option shows "custom"
 const saveOptsToUrl = () => history.replaceState(null, '', `?${optionsToParams(opts, new URLSearchParams(location.search), AR_DEFAULTS)}`);
 const presetKey = () => matchPreset(opts, AR_DEFAULTS, 'ar');
@@ -242,7 +251,8 @@ function detectFloor() {
   if (floor && pl.inliers.length < 0.8 * floor.inliers) return;  // keep a better earlier estimate
   if (!floor || Math.abs(height - floor.height) > 0.2 * floor.height) {  // log new / clearly changed floor estimates
     const tilt = Math.acos(Math.min(1, Math.abs(dot(pl.n, up)))) * 180 / Math.PI;
-    tele(`floor ${floor ? 'updated' : 'found'}: camera height ${height.toFixed(3)} (map units), ${pl.inliers.length} of ${below.length} points below the camera, tilt to gravity ${tilt.toFixed(1)} deg`);
+    tele(`floor ${floor ? 'updated' : 'found'}: camera height ${height.toFixed(3)} (map units), ${pl.inliers.length} of ${below.length} points below the camera, tilt to gravity ${tilt.toFixed(1)} deg` +
+         ` | scale prior: 1 map unit ~ ${(PHONE_HEIGHT_M / height).toFixed(3)} m if the phone is ${PHONE_HEIGHT_M} m above the floor`);
   }
   floor = { n: pl.n, d: pl.d, height, inliers: pl.inliers.length, centroid: pl.centroid };
   placeFloorMesh();
@@ -361,7 +371,8 @@ function placeCactus(clientX, clientY) {
   scene.add(cactus);
   $('sizeRow').style.visibility = 'visible';
   tele(`tree placed: ${floor ? 'floor plane' : 'tap plane'}, distance ${Math.hypot(hit[0] - o[0], hit[1] - o[1], hit[2] - o[2]).toFixed(2)}, size ${size.toFixed(3)} x ${sizeFactor().toFixed(2)} (map units)` +
-       ` | at ${hit.map((x) => x.toFixed(4)).join(' ')} | camera ${o.map((x) => x.toFixed(4)).join(' ')}${floor ? ` | floor height ${floor.height.toFixed(4)}` : ''} | map ${stats[3]}`);
+       ` | at ${hit.map((x) => x.toFixed(4)).join(' ')} | camera ${o.map((x) => x.toFixed(4)).join(' ')}${floor ? ` | floor height ${floor.height.toFixed(4)}` : ''} | map ${stats[3]}` +
+       (metresPerUnit() ? ` | tree ~ ${(size * sizeFactor() * metresPerUnit()).toFixed(2)} m tall (phone at ${PHONE_HEIGHT_M} m)` : ''));
   hint('');
 }
 
@@ -388,8 +399,10 @@ function drawFrame(bmp) {
 }
 
 // ---------------------------------------------------------------- main loop
+let resChoice = '';  // the start screen's resolution choice (key of the stored IMU calibration)
 async function start() {
   $('go').disabled = true;
+  resChoice = $('res').value;
   inertial = opts.imu === 'on';  // the options may have changed since the page loaded
   rec = opts.rec === 'on';
   replay = !!params.get('seq');
@@ -747,6 +760,12 @@ async function start() {
               const f = Number.isFinite(c.focalRatio) ? `focal x ${c.focalRatio.toFixed(3)} (roll ${c.rollRatio.toFixed(3)}, ${c.focalSamples} samples)` +
                 (calib ? '' : ` -> FOV ${fovFit.toFixed(1)}° instead of ${fovNow}°`) : 'focal: rotate more';
               tele(`imu calib (last ${(r.t - recPoses[0][0]).toFixed(0)} s): offset ${c.offsetMs >= 0 ? '+' : ''}${c.offsetMs} ms (cost ${c.cost.toFixed(4)}, ${c.samples} rates), ${f}`);
+              if (!replay) {  // kept for the start screen's "Apply" (per resolution choice)
+                try {
+                  localStorage.setItem(`imucalib:${resChoice}`, JSON.stringify({ offsetMs: c.offsetMs, focalRatio: c.focalRatio,
+                    fovNow, fovFit: Number.isFinite(c.focalRatio) && !calib ? fovFit : null, date: new Date().toISOString(), samples: c.samples }));
+                } catch { /* storage blocked */ }
+              }
               hint(`IMU time offset ${c.offsetMs >= 0 ? '+' : ''}${c.offsetMs} ms · ${f}`, 4000);
             }
           }
@@ -859,6 +878,23 @@ function withTracker(yaml) {  // applies the selected options (web/options.js)
 }
 
 $('go').onclick = start;
+function showImuCalib() {  // start screen: the last IMU offset / focal measured with "Record gyro + poses" at this resolution
+  let c = null;
+  try { c = JSON.parse(localStorage.getItem(`imucalib:${$('res').value}`) || 'null'); } catch { /* storage blocked */ }
+  if (!c) { $('imuNote').textContent = ''; return; }
+  $('imuNote').innerHTML = `Measured ${c.date.slice(0, 16).replace('T', ' ')} (Record gyro + poses): IMU offset ${c.offsetMs >= 0 ? '+' : ''}${c.offsetMs} ms` +
+    (c.fovFit ? `, FOV ${c.fovFit.toFixed(1)}° (was ${c.fovNow}°)` : '') + ' <button id="imuApply">Apply</button>';
+  $('imuApply').onclick = () => {
+    ensureImuOffsetValue(c.offsetMs);
+    opts.imudt = String(c.offsetMs);
+    if (c.fovFit) $('fov').value = c.fovFit.toFixed(1);
+    renderOpts(); saveOptsToUrl(); syncPreset();
+    $('imuNote').textContent = `Applied: IMU offset ${c.offsetMs >= 0 ? '+' : ''}${c.offsetMs} ms` + (c.fovFit ? `, FOV ${c.fovFit.toFixed(1)}°` : '') +
+      ' (offset: IMU and gyro presets; FOV: when the camera is not calibrated)';
+  };
+}
+$('res').addEventListener('change', showImuCalib);
+showImuCalib();
 roomGet().then((room) => {  // start screen: offer the saved room
   if (!room) { $('roomNote').textContent = 'No saved room yet: use "Save room" while tracking.'; return; }
   const o = document.createElement('option');
