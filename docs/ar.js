@@ -9,6 +9,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { createSlamWorker, cameraSettings, intrinsics, loadCalibration, phoneImuSettings, savedCalibrations, STATE, vocabUrl } from './slamclient.js';
 import { estimateImuCalib } from './imucalib.js';
+import { estimateScale } from './imuscale.js';
 import { dot, fitPlaneRansac, normalize, rayPlane } from './plane.js';
 import { applyOptions, applyPreset, buildOptionsUI, describeOptions, matchPreset, OPTIONS, optionsFromParams, optionsToParams, PRESETS } from './options.js';
 
@@ -29,7 +30,8 @@ ensureImuOffsetValue(opts.imudt);
 // Metric scale prior (claude/RESEARCH.md "Metric scale"): monocular maps have no scale, but the camera height above the
 // detected floor is measured in map units; a phone held at ~1.4 m gives metres per map unit. Shown in the log only.
 const PHONE_HEIGHT_M = 1.4;
-const metresPerUnit = () => (floor && floor.height > 0 ? PHONE_HEIGHT_M / floor.height : null);
+const metresPerUnit = () => imuScaleM ?? (floor && floor.height > 0 ? PHONE_HEIGHT_M / floor.height : null);
+const scaleSource = () => (imuScaleM ? 'accelerometer scale' : `phone at ${PHONE_HEIGHT_M} m`);
 // Presets (web/options.js PRESETS) set every option at once; changing a single option shows "custom"
 const saveOptsToUrl = () => history.replaceState(null, '', `?${optionsToParams(opts, new URLSearchParams(location.search), AR_DEFAULTS)}`);
 const presetKey = () => matchPreset(opts, AR_DEFAULTS, 'ar');
@@ -86,7 +88,9 @@ const decodeTimes = [];               // per frame: gray image preparation in th
 const gyroHist = [];                 // [time ms, |rotation rate| deg/s] of the last second (logged on tracking loss)
 let inertial = opts.imu === 'on';  // ORB-SLAM3 mono-inertial (experimental); re-read from the options at start()
 let rec = false;                   // record gyro + poses for the time-offset estimate (option 'rec'); set at start()
-const recPoses = [], recGyro = [];  // with rec: [t, qx, qy, qz, qw, maps] / [t, wx, wy, wz] (last 90 s) for imucalib.js
+const recPoses = [], recGyro = [];  // with rec: [t, qx, qy, qz, qw, maps, x, y, z] / [t, wx, wy, wz] (last 90 s) for imucalib.js
+const recAcc = [];                  // with rec: [t, ax, ay, az] (specific force, device axes; time offset applied) for imuscale.js
+let imuScaleM = null;               // metres per map unit from the accelerometer (imuscale.js), when measured
 let recCalibAt = 0;
 let gyroOn = false;               // gyro rotation prior (option 'gyro', visual-only; or gyro init); set at start()
 let holdOn = false;               // option 'hold': show the tree through brief losses with the gyro-rotated last pose
@@ -141,6 +145,8 @@ function onMotion(e) {
     tele(`imu ${((performance.timeOrigin + e.timeStamp) / 1000).toFixed(4)} ${(r.beta * d).toFixed(5)} ${(r.gamma * d).toFixed(5)} ${(r.alpha * d).toFixed(5)}`);
     recGyro.push([(performance.timeOrigin + e.timeStamp) / 1000, r.beta * d, r.gamma * d, r.alpha * d]);
     while (recGyro.length && recGyro[0][0] < recGyro[recGyro.length - 1][0] - 90) recGyro.shift();
+    recAcc.push([(performance.timeOrigin + e.timeStamp) / 1000 - Number(opts.imudt) / 1000, a.x, a.y, a.z]);
+    while (recAcc.length && recAcc[0][0] < recAcc[recAcc.length - 1][0] - 90) recAcc.shift();
   }
   if (holdOn && r && r.alpha != null) {  // attitude for the hold: q <- q * exp(w dt), w in device axes (rad/s)
     if (qDevT != null) {
@@ -374,7 +380,7 @@ function placeCactus(clientX, clientY) {
   $('sizeRow').style.visibility = 'visible';
   tele(`tree placed: ${floor ? 'floor plane' : 'tap plane'}, distance ${Math.hypot(hit[0] - o[0], hit[1] - o[1], hit[2] - o[2]).toFixed(2)}, size ${size.toFixed(3)} x ${sizeFactor().toFixed(2)} (map units)` +
        ` | at ${hit.map((x) => x.toFixed(4)).join(' ')} | camera ${o.map((x) => x.toFixed(4)).join(' ')}${floor ? ` | floor height ${floor.height.toFixed(4)}` : ''} | map ${stats[3]}` +
-       (metresPerUnit() ? ` | tree ~ ${(size * sizeFactor() * metresPerUnit()).toFixed(2)} m tall (phone at ${PHONE_HEIGHT_M} m)` : ''));
+       (metresPerUnit() ? ` | tree ~ ${(size * sizeFactor() * metresPerUnit()).toFixed(2)} m tall (${scaleSource()})` : ''));
   hint('');
 }
 
@@ -755,7 +761,7 @@ async function start() {
           const q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().fromArray(twc));
           tele(`pose ${r.t.toFixed(4)} ${twc[12].toFixed(4)} ${twc[13].toFixed(4)} ${twc[14].toFixed(4)} ` +
                `${q.x.toFixed(6)} ${q.y.toFixed(6)} ${q.z.toFixed(6)} ${q.w.toFixed(6)} ${stats[3]}`);  // + map count
-          recPoses.push([r.t, q.x, q.y, q.z, q.w, stats[3]]);
+          recPoses.push([r.t, q.x, q.y, q.z, q.w, stats[3], twc[12], twc[13], twc[14]]);
           while (recPoses.length && recPoses[0][0] < r.t - 90) recPoses.shift();
           if (performance.now() - recCalibAt > 10000 && recPoses.length > 50 && r.t - recPoses[0][0] > 20) {
             recCalibAt = performance.now();
@@ -773,6 +779,12 @@ async function start() {
                 } catch { /* storage blocked */ }
               }
               hint(`IMU time offset ${c.offsetMs >= 0 ? '+' : ''}${c.offsetMs} ms · ${f}`, 4000);
+            }
+            const sc = replay ? null : estimateScale(recPoses, recAcc);  // live phone only (replays have no device accelerometer)
+            if (sc) {
+              imuScaleM = sc.scale;
+              tele(`imu scale (last ${sc.span.toFixed(0)} s): 1 map unit = ${sc.scale.toFixed(3)} m (${sc.windows} windows, |g| ${sc.gLinear.toFixed(2)} from the linear step, ` +
+                   `bias ${sc.bias.toFixed(2)} m/s2, rms ${sc.rms.toFixed(3)} m/s)` + (floor ? ` -> camera ${(floor.height * sc.scale).toFixed(2)} m above the floor` : ''));
             }
           }
         }
