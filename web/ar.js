@@ -465,12 +465,13 @@ async function start() {
       let i = 0;
       // cover=a-b: frames from a to b seconds (sequence time) are black, as if the camera were covered (loss test)
       const cover = /^([\d.]+)-([\d.]+)$/.test(params.get('cover') || '') ? params.get('cover').split('-').map(Number) : null;
-      let blank = null;
+      let blank = null, seqEnded = false;
       const t0 = performance.now();
       nextBitmap = async () => {  // real-time playback; frames that are already late are skipped
         const now = (performance.now() - t0) / 1000;
         if (i >= man.frames.length) {  // end of the sequence: keep showing the last frame (was: undefined frame, TypeError)
           i = man.frames.length - 1;
+          if (!seqEnded) { seqEnded = true; tele(`dataset sequence ended (${man.frames.length} frames)`); }
           hint('End of the dataset sequence.', 60000);
           await new Promise((res) => setTimeout(res, 100));  // do not spin on the last frame
         }
@@ -733,7 +734,7 @@ async function start() {
       }
       prevStats = r.viz.stats; prevTrackMs = r.trackMs;
       if (r.mapWait !== mapWait) {
-        if (mapWait === 1 && r.mapWait === 0) tele(r.state === 2 || r.state === 5 ? 'room: relocalised into the saved map' : 'room: gave up waiting, new map');
+        if (r.mapWait === 0 && (mapWait === 1 || (mapWait === -1 && n <= 1))) tele(r.state === 2 || r.state === 5 ? 'room: relocalised into the saved map' : 'room: gave up waiting, new map');
         mapWait = r.mapWait;
       }
       state = r.state; stats = r.viz.stats; kps = r.viz.kps;
@@ -887,7 +888,7 @@ function showImuCalib() {  // start screen: the last IMU offset / focal measured
   let c = null;
   try { c = JSON.parse(localStorage.getItem(`imucalib:${$('res').value}`) || 'null'); } catch { /* storage blocked */ }
   if (!c) { $('imuNote').textContent = ''; return; }
-  $('imuNote').innerHTML = `Measured ${c.date.slice(0, 16).replace('T', ' ')} (Record gyro + poses): IMU offset ${c.offsetMs >= 0 ? '+' : ''}${c.offsetMs} ms` +
+  $('imuNote').innerHTML = `Measured ${new Date(c.date).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })} (Record gyro + poses): IMU offset ${c.offsetMs >= 0 ? '+' : ''}${c.offsetMs} ms` +
     (c.fovFit ? `, FOV ${c.fovFit.toFixed(1)}° (was ${c.fovNow}°)` : '') + ' <button id="imuApply">Apply</button>';
   $('imuApply').onclick = () => {
     ensureImuOffsetValue(c.offsetMs);
@@ -904,7 +905,7 @@ roomGet().then((room) => {  // start screen: offer the saved room
   if (!room) { $('roomNote').textContent = 'No saved room yet: use "Save room" while tracking.'; return; }
   const o = document.createElement('option');
   o.value = 'saved';
-  o.textContent = `Saved room (${room.date.slice(0, 16).replace('T', ' ')})`;
+  o.textContent = `Saved room (${new Date(room.date).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })})`;
   $('room').append(o);
   $('roomNote').textContent = `Saved: ${(room.map.byteLength / 1048576).toFixed(1)} MB, ${room.keyframes} keyframes, ${room.tree ? 'with a tree' : 'no tree'}, ` +
     `${room.W}×${room.H}, preset ${room.preset}. Same camera setting and vocabulary needed.`;
