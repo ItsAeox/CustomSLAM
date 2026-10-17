@@ -10,7 +10,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { createSlamWorker, cameraSettings, intrinsics, loadCalibration, phoneImuSettings, savedCalibrations, STATE, vocabUrl } from './slamclient.js';
 import { estimateImuCalib } from './imucalib.js';
 import { dot, fitPlaneRansac, normalize, rayPlane } from './plane.js';
-import { applyOptions, applyPreset, buildOptionsUI, describeOptions, matchPreset, optionsFromParams, optionsToParams, PRESETS } from './options.js';
+import { applyOptions, applyPreset, buildOptionsUI, describeOptions, matchPreset, OPTIONS, optionsFromParams, optionsToParams, PRESETS } from './options.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -21,6 +21,15 @@ if (params.get('res')) $('res').value = params.get('res');
 // results/hard10_rt), relocalise 10 s before a new map (stock 3 s), and keep the map while the tree is placed.
 const AR_DEFAULTS = { reloc: '10', tracker: 'klt' };
 const opts = optionsFromParams(params, AR_DEFAULTS, 'ar');
+function ensureImuOffsetValue(v) {  // a measured offset (imucalib.js) need not be one of the listed 20 ms steps
+  const d = OPTIONS.find((x) => x.key === 'imudt');
+  if (d && !d.values.some(([k]) => k === String(v))) d.values.push([String(v), `${v >= 0 ? '+' : ''}${v} (measured)`]);
+}
+ensureImuOffsetValue(opts.imudt);
+// Metric scale prior (claude/RESEARCH.md "Metric scale"): monocular maps have no scale, but the camera height above the
+// detected floor is measured in map units; a phone held at ~1.4 m gives metres per map unit. Shown in the log only.
+const PHONE_HEIGHT_M = 1.4;
+const metresPerUnit = () => (floor && floor.height > 0 ? PHONE_HEIGHT_M / floor.height : null);
 // Presets (web/options.js PRESETS) set every option at once; changing a single option shows "custom"
 const saveOptsToUrl = () => history.replaceState(null, '', `?${optionsToParams(opts, new URLSearchParams(location.search), AR_DEFAULTS)}`);
 const presetKey = () => matchPreset(opts, AR_DEFAULTS, 'ar');
@@ -81,6 +90,7 @@ const recPoses = [], recGyro = [];  // with rec: [t, qx, qy, qz, qw, maps] / [t,
 let recCalibAt = 0;
 let gyroOn = false;               // gyro rotation prior (option 'gyro', visual-only; or gyro init); set at start()
 let holdOn = false;               // option 'hold': show the tree through brief losses with the gyro-rotated last pose
+let replay = false;               // a dataset or a phone recording (record.html) is the camera; its IMU, not the phone's
 let qDev = [0, 0, 0, 1], qDevT = null;  // integrated device attitude from DeviceMotion rotation rates (x, y, z, w)
 let holdRef = null, holdTwc = null;     // last tracked pose with its attitude and time; the held pose while lost
 const HOLD_MS = 400;              // eval/deadreckon_sim.py: rotation-only hold is good for blips < ~0.3-0.5 s
@@ -88,8 +98,12 @@ const absClock = () => inertial || rec || gyroOn;  // frame times on the IMU's c
 let imuPending = [];
 let imuFlags = [0, 0];               // last logged IMU initialisation flags (map stats [4], [5])                 // live IMU samples not yet sent: [t abs s, ax, ay, az (m/s^2), gx, gy, gz (rad/s)] flat
 let lastMaps = 0, lastState = 0;
+let replayTaps = [], replayT = -1;               // recording taps still to replay: { t (s, sequence clock), u, v (image px) }
 let stash = null;          // anchors of a map that went inactive (tracking lost -> new map); restored on map merge
 let resetRequested = false;  // Reset button: sent to the worker between frames (one request at a time)
+let saveRequested = false;   // Save room button: also between frames
+let pendingRoom = null;      // a loaded room's tree and floor, restored once the tree model is loaded
+let mapWait = -1;            // room map: 1 = loaded, not relocalised into yet; 0 = relocalised; -1 = no room loaded
 const tracking = () => state === 2 || state === 5;  // 5: tracked by a KLT frame
 
 function layout() {  // cover-fit the processed image into the window; the GL canvas covers the same rectangle
@@ -117,7 +131,7 @@ function onMotion(e) {
   accLP = accLP ? accLP.map((x, i) => 0.7 * x + 0.3 * v[i]) : v;
   motionEvents++;
   const r = e.rotationRate;
-  if ((inertial || gyroOn) && r && r.alpha != null && a.x != null) {  // device axes = IMU body; rotationRate alpha/beta/gamma = z/x/y (deg/s)
+  if ((inertial || gyroOn) && !replay && r && r.alpha != null && a.x != null) {  // device axes = IMU body; rotationRate alpha/beta/gamma = z/x/y (deg/s)
     const d = Math.PI / 180;
     // IMU time = reported time - the measured offset (option imudt; reported = true + offset, see estimate_time_offset.py)
     imuPending.push((performance.timeOrigin + e.timeStamp) / 1000 - Number(opts.imudt) / 1000, a.x, a.y, a.z, r.beta * d, r.gamma * d, r.alpha * d);
@@ -237,19 +251,75 @@ function detectFloor() {
   if (floor && pl.inliers.length < 0.8 * floor.inliers) return;  // keep a better earlier estimate
   if (!floor || Math.abs(height - floor.height) > 0.2 * floor.height) {  // log new / clearly changed floor estimates
     const tilt = Math.acos(Math.min(1, Math.abs(dot(pl.n, up)))) * 180 / Math.PI;
-    tele(`floor ${floor ? 'updated' : 'found'}: camera height ${height.toFixed(3)} (map units), ${pl.inliers.length} of ${below.length} points below the camera, tilt to gravity ${tilt.toFixed(1)} deg`);
+    tele(`floor ${floor ? 'updated' : 'found'}: camera height ${height.toFixed(3)} (map units), ${pl.inliers.length} of ${below.length} points below the camera, tilt to gravity ${tilt.toFixed(1)} deg` +
+         ` | scale prior: 1 map unit ~ ${(PHONE_HEIGHT_M / height).toFixed(3)} m if the phone is ${PHONE_HEIGHT_M} m above the floor`);
   }
   floor = { n: pl.n, d: pl.d, height, inliers: pl.inliers.length, centroid: pl.centroid };
+  placeFloorMesh();
+}
+function placeFloorMesh() {
   if (!floorMesh) {
     floorMesh = new THREE.GridHelper(1, 10, 0x22c55e, 0x22c55e);
     floorMesh.material.transparent = true; floorMesh.material.opacity = 0.35;
     scene.add(floorMesh);
   }
   // the grid is fixed in the world: centred on the floor points that support the plane (not under the camera)
-  const k = dot(pl.n, pl.centroid) + pl.d;
-  floorMesh.position.set(pl.centroid[0] - pl.n[0] * k, pl.centroid[1] - pl.n[1] * k, pl.centroid[2] - pl.n[2] * k);
+  const k = dot(floor.n, floor.centroid) + floor.d;
+  floorMesh.position.set(floor.centroid[0] - floor.n[0] * k, floor.centroid[1] - floor.n[1] * k, floor.centroid[2] - floor.n[2] * k);
   floorMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(...floor.n));
-  floorMesh.scale.setScalar(height * 2);
+  floorMesh.scale.setScalar(floor.height * 2);
+}
+
+// ---------------------------------------------------------------- room map save and reload
+// One saved room per browser (IndexedDB): the SLAM map (slam/orbslam3/src/WebMapIO.cc format) with the tree and floor
+// in its coordinates. Loading it at the start makes ORB-SLAM3 relocalise into the saved map, so the tree comes back
+// where it was. The map only fits the same camera (size, intrinsics) and vocabulary (checked here and in WebMapIO.cc).
+const ROOM_DB = 'webvio-rooms', ROOM_STORE = 'rooms', ROOM_KEY = 'room';
+function roomDb() {
+  return new Promise((res, rej) => {
+    const rq = indexedDB.open(ROOM_DB, 1);
+    rq.onupgradeneeded = () => rq.result.createObjectStore(ROOM_STORE);
+    rq.onsuccess = () => res(rq.result);
+    rq.onerror = () => rej(rq.error);
+  });
+}
+async function roomGet() {
+  try {
+    const db = await roomDb();
+    return await new Promise((res, rej) => {
+      const rq = db.transaction(ROOM_STORE).objectStore(ROOM_STORE).get(ROOM_KEY);
+      rq.onsuccess = () => res(rq.result || null);
+      rq.onerror = () => rej(rq.error);
+    });
+  } catch { return null; }  // storage blocked (private window)
+}
+// gzip in the browser (CompressionStream): the map's floats compress little, but its integers and empty slots do
+const gzip = (buf, how) => new Response(new Blob([buf]).stream().pipeThrough(how === 'c' ? new CompressionStream('gzip') : new DecompressionStream('gzip'))).arrayBuffer();
+async function roomPut(room) {
+  const db = await roomDb();
+  return new Promise((res, rej) => {
+    const tx = db.transaction(ROOM_STORE, 'readwrite');
+    tx.objectStore(ROOM_STORE).put(room, ROOM_KEY);
+    tx.oncomplete = () => res(true);
+    tx.onerror = () => rej(tx.error);
+  });
+}
+function restoreRoom(room) {  // the saved tree and floor (hidden until tracking relocalises into the loaded map)
+  if (room.floor) { floor = room.floor; placeFloorMesh(); floorMesh.visible = false; }
+  downSum = room.downSum || [0, 0, 0]; downN = room.downN || 0;
+  if (room.tree) {
+    cactus = cactusProto.clone();
+    cactus.position.fromArray(room.tree.p);
+    cactus.quaternion.fromArray(room.tree.q);
+    objBase = room.tree.base;
+    $('size').value = room.tree.size;
+    $('sizeVal').textContent = `${sizeFactor().toFixed(2)}×`;
+    cactus.scale.setScalar(objBase * sizeFactor());
+    cactus.visible = false;
+    scene.add(cactus);
+    $('sizeRow').style.visibility = 'visible';
+  }
+  tele(`room restored: tree ${room.tree ? `at ${room.tree.p.map((x) => x.toFixed(4)).join(' ')}` : 'none'}, floor ${room.floor ? 'yes' : 'no'}`);
 }
 
 function placeCactus(clientX, clientY) {
@@ -302,7 +372,9 @@ function placeCactus(clientX, clientY) {
   cactus.scale.setScalar(size * sizeFactor());  // cactusProto is normalised to height 1, base at the origin
   scene.add(cactus);
   $('sizeRow').style.visibility = 'visible';
-  tele(`tree placed: ${floor ? 'floor plane' : 'tap plane'}, distance ${Math.hypot(hit[0] - o[0], hit[1] - o[1], hit[2] - o[2]).toFixed(2)}, size ${size.toFixed(3)} x ${sizeFactor().toFixed(2)} (map units)`);
+  tele(`tree placed: ${floor ? 'floor plane' : 'tap plane'}, distance ${Math.hypot(hit[0] - o[0], hit[1] - o[1], hit[2] - o[2]).toFixed(2)}, size ${size.toFixed(3)} x ${sizeFactor().toFixed(2)} (map units)` +
+       ` | at ${hit.map((x) => x.toFixed(4)).join(' ')} | camera ${o.map((x) => x.toFixed(4)).join(' ')}${floor ? ` | floor height ${floor.height.toFixed(4)}` : ''} | map ${stats[3]}` +
+       (metresPerUnit() ? ` | tree ~ ${(size * sizeFactor() * metresPerUnit()).toFixed(2)} m tall (phone at ${PHONE_HEIGHT_M} m)` : ''));
   hint('');
 }
 
@@ -329,11 +401,14 @@ function drawFrame(bmp) {
 }
 
 // ---------------------------------------------------------------- main loop
+let resChoice = '';  // the start screen's resolution choice (key of the stored IMU calibration)
 async function start() {
   $('go').disabled = true;
+  resChoice = $('res').value;
   inertial = opts.imu === 'on';  // the options may have changed since the page loaded
   rec = opts.rec === 'on';
-  gyroOn = (opts.gyro === 'on' || opts.init === 'gyro') && !inertial && !params.get('seq');  // dataset mode: no phone gyro
+  replay = !!params.get('seq');
+  gyroOn = (opts.gyro === 'on' || opts.init === 'gyro') && !inertial;  // dataset / recording: its own IMU (seq branch)
   holdOn = opts.hold === 'gyro' && (!params.get('seq') || params.get('holdtest') === '1');  // holdtest: run the code on a dataset (no gyro: held = last pose)
   try {
     if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
@@ -351,7 +426,16 @@ async function start() {
       // rotated into the camera frame (R_cb). At rest it is the reaction to gravity, so "down" = -a. noimu=1: none.
       const imu = params.get('noimu') ? null : await fetch(`/api/imu?dataset=${dataset}&name=${encodeURIComponent(name)}`)
         .then((r) => (r.ok ? r.json() : null)).catch(() => null);
-      const imuRaw = inertial ? await (await fetch(`/api/imu?dataset=${dataset}&name=${encodeURIComponent(name)}&raw=1`)).json() : null;
+      const imuRaw = (inertial || gyroOn) ? await fetch(`/api/imu?dataset=${dataset}&name=${encodeURIComponent(name)}&raw=1`)
+        .then((r) => (r.ok ? r.json() : null)).catch(() => null) : null;  // gyro presets: the gyro prior needs IMU.T_b_c1 in the settings (recordings have it)
+      // recordings (record.html): the taps, replayed at their time and image position (same tree placement for every preset)
+      if (dataset === 'phone') {
+        const txt = await fetch(`/datasets/phone/${encodeURIComponent(name)}/touches.csv`).then((r) => (r.ok ? r.text() : '')).catch(() => '');
+        replayTaps = txt.split(/\r?\n/).filter((l) => l && !l.startsWith('#')).map((l) => {
+          const [t, u, v] = l.split(','); return { t: Number(BigInt(t) - BigInt(Math.round(man.tBase * 1e9))) * 1e-9, u: Number(u), v: Number(v) };
+        });
+        tele(`recording ${name}: ${man.frames.length} frames, ${replayTaps.length} taps to replay`);
+      }
       let kRaw = 0;
       const imuUpTo = (t) => {  // raw dataset IMU samples up to t (inertial test mode)
         const out = [];
@@ -381,12 +465,13 @@ async function start() {
       let i = 0;
       // cover=a-b: frames from a to b seconds (sequence time) are black, as if the camera were covered (loss test)
       const cover = /^([\d.]+)-([\d.]+)$/.test(params.get('cover') || '') ? params.get('cover').split('-').map(Number) : null;
-      let blank = null;
+      let blank = null, seqEnded = false;
       const t0 = performance.now();
       nextBitmap = async () => {  // real-time playback; frames that are already late are skipped
         const now = (performance.now() - t0) / 1000;
         if (i >= man.frames.length) {  // end of the sequence: keep showing the last frame (was: undefined frame, TypeError)
           i = man.frames.length - 1;
+          if (!seqEnded) { seqEnded = true; tele(`dataset sequence ended (${man.frames.length} frames)`); }
           hint('End of the dataset sequence.', 60000);
           await new Promise((res) => setTimeout(res, 100));  // do not spin on the last frame
         }
@@ -519,9 +604,24 @@ async function start() {
       settingsText += phoneImuSettings(hz);
       tele(`IMU: DeviceMotion ${hz.toFixed(1)} Hz` + (imuN >= 10 ? ` (measured over ${imuN} events)` : ' (assumed: too few events yet)'));
     }
+    let room = $('room').value === 'saved' ? await roomGet() : null;
+    if (room) {  // the saved map fits only the same camera and vocabulary (WebMapIO.cc checks again)
+      const same = room.W === W && room.H === H && room.desc === opts.desc && room.voc === opts.voc && !inertial &&
+                   ['fx', 'fy', 'cx', 'cy'].every((k) => Math.abs(room.K[k] - K[k]) <= 0.01 * Math.abs(room.K[k]));
+      if (!same) {
+        tele(`room not loaded: saved for ${room.W}x${room.H} fx ${room.K.fx.toFixed(1)} ${room.desc}/${room.voc}, now ${W}x${H} fx ${K.fx.toFixed(1)} ${opts.desc}/${opts.voc}${inertial ? ' (IMU on: visual-only maps)' : ''}`);
+        hint('Saved room not loaded: it was saved with another camera setting, vocabulary or IMU mode. Starting a new room.', 5000);
+        room = null;
+      }
+    }
     const tInit = performance.now();
     const ready = await slam.request({ type: 'init', vocabUrl: vocabUrl(opts.desc, opts.voc), clahe, seed: 1, prof: params.get('prof') === '1', inertial,
-                                       settingsText: withTracker(settingsText) });
+                                       settingsText: withTracker(settingsText), mapBytes: room ? (room.gz ? await gzip(room.map, 'd') : room.map) : null });
+    if (room) {
+      tele(`room map ${ready.mapLoaded ? 'loaded' : 'NOT loaded'} (saved ${room.date}, ${(room.map.byteLength / 1048576).toFixed(1)} MB, preset ${room.preset})`);
+      if (ready.mapLoaded) pendingRoom = room;
+      else hint('The saved room could not be loaded (see Log). Starting a new room.', 5000);
+    }
     loadingDone = true; clearInterval(stallTimer);
     if (camStream) {  // WebCodecs: frames go straight to the worker; use it only if they match the stream we calibrated for
       const c = await slam.request({ type: 'camera', readable: camStream }, [camStream]);
@@ -543,6 +643,7 @@ async function start() {
       if (stash) { if (stash.cactus) scene.remove(stash.cactus); if (stash.floorMesh) scene.remove(stash.floorMesh); stash = null; }
       resetAnchors('Map reset. Move the phone slowly sideways.');
     };
+    $('btnSaveRoom').onclick = () => { saveRequested = true; hint('Saving the room…', 3000); };
     $('btnClear').onclick = () => { if (cactus) { scene.remove(cactus); cactus = null; $('sizeRow').style.visibility = 'hidden'; tele('tree removed'); } };
     let sizeLog = 0;
     $('size').oninput = () => {  // resize the placed tree (2^value: 0.25x .. 4x of the placement size)
@@ -571,6 +672,31 @@ async function start() {
         await slam.request({ type: 'reset' });
         tele('map reset requested');
       }
+      if (pendingRoom && cactusProto) { restoreRoom(pendingRoom); pendingRoom = null; }
+      if (saveRequested) {
+        saveRequested = false;
+        const sv = await slam.request({ type: 'saveMap' });
+        if (sv.type === 'mapSaved' && sv.ok) {
+          const tz = performance.now();
+          const packed = await gzip(sv.bytes, 'c');
+          tele(`room map gzip: ${(sv.bytes.byteLength / 1048576).toFixed(1)} -> ${(packed.byteLength / 1048576).toFixed(1)} MB (${(performance.now() - tz).toFixed(0)} ms)`);
+          const room = { v: 2, gz: true, date: new Date().toISOString(), map: packed, raw: sv.bytes.byteLength, W, H, K: { fx: K.fx, fy: K.fy, cx: K.cx, cy: K.cy },
+                         desc: opts.desc, voc: opts.voc, preset: presetKey(),
+                         tree: cactus ? { p: cactus.position.toArray(), q: cactus.quaternion.toArray(), base: objBase, size: Number($('size').value) } : null,
+                         floor, downSum, downN, keyframes: stats[0], points: stats[1] };
+          try {
+            await roomPut(room);
+            tele(`room saved: ${(sv.bytes.byteLength / 1048576).toFixed(1)} MB, ${stats[0]} KFs, ${stats[1]} points, tree ${cactus ? 'yes' : 'no'} (${sv.ms.toFixed(0)} ms)`);
+            hint(`Room saved (${(sv.bytes.byteLength / 1048576).toFixed(1)} MB). Choose "Saved room" at the start to reload it.`, 4000);
+          } catch (e) {
+            tele(`room save failed (storage): ${e}`);
+            hint('Saving failed: browser storage is full or blocked.', 4000);
+          }
+        } else {
+          tele(`room save failed: ${sv.text || 'see the slam log'}`);
+          hint('Saving failed (see Log).', 4000);
+        }
+      }
       const keep = opts.anchor === 'keep' && !!cactus;  // keep map: a loss relocalises instead of a new map (WebConfig.h)
       if (keep !== keepMapOn) {
         const k = await slam.request({ type: 'keepMap', on: keep });
@@ -590,6 +716,7 @@ async function start() {
         let imu = null;
         if (inertial || gyroOn) { imu = new Float64Array(f.imu || imuPending); if (!f.imu) imuPending = []; }
         r = await slam.request({ type: 'bitmap', bitmap: f.bitmap, t: f.t, viz: true, withMap: n % 10 === 0, imu }, [f.bitmap]);
+        replayT = f.t;
       }
       if (r.decodeMs != null) { decodeTimes.push(r.decodeMs); if (decodeTimes.length > 30) decodeTimes.shift(); }
       if (r.type !== 'pose') throw new Error(r.text || 'tracking error');
@@ -606,6 +733,10 @@ async function start() {
         if (!lost) lostSince = 0;
       }
       prevStats = r.viz.stats; prevTrackMs = r.trackMs;
+      if (r.mapWait !== mapWait) {
+        if (r.mapWait === 0 && (mapWait === 1 || (mapWait === -1 && n <= 1))) tele(r.state === 2 || r.state === 5 ? 'room: relocalised into the saved map' : 'room: gave up waiting, new map');
+        mapWait = r.mapWait;
+      }
       state = r.state; stats = r.viz.stats; kps = r.viz.kps;
       if (lastMaps && stats[3] > lastMaps) stashAnchors();              // lost -> ORB-SLAM3 started a new map
       else if (lastMaps && stats[3] < lastMaps) restoreAnchors();       // maps merged back into the old one
@@ -635,6 +766,12 @@ async function start() {
               const f = Number.isFinite(c.focalRatio) ? `focal x ${c.focalRatio.toFixed(3)} (roll ${c.rollRatio.toFixed(3)}, ${c.focalSamples} samples)` +
                 (calib ? '' : ` -> FOV ${fovFit.toFixed(1)}° instead of ${fovNow}°`) : 'focal: rotate more';
               tele(`imu calib (last ${(r.t - recPoses[0][0]).toFixed(0)} s): offset ${c.offsetMs >= 0 ? '+' : ''}${c.offsetMs} ms (cost ${c.cost.toFixed(4)}, ${c.samples} rates), ${f}`);
+              if (!replay) {  // kept for the start screen's "Apply" (per resolution choice)
+                try {
+                  localStorage.setItem(`imucalib:${resChoice}`, JSON.stringify({ offsetMs: c.offsetMs, focalRatio: c.focalRatio,
+                    fovNow, fovFit: Number.isFinite(c.focalRatio) && !calib ? fovFit : null, date: new Date().toISOString(), samples: c.samples }));
+                } catch { /* storage blocked */ }
+              }
               hint(`IMU time offset ${c.offsetMs >= 0 ? '+' : ''}${c.offsetMs} ms · ${f}`, 4000);
             }
           }
@@ -648,9 +785,15 @@ async function start() {
         if (tracking()) detectFloor();
       }
       drawFrame(r.bmp);
+      while (replayTaps.length && replayTaps[0].t <= replayT) {  // recorded tap: same image point as on the phone
+        const p = replayTaps.shift();
+        tele(`replayed tap at ${p.u.toFixed(0)}, ${p.v.toFixed(0)} px (t ${p.t.toFixed(2)} s): ${tracking() ? 'tracking' : 'not tracking, skipped'}`);
+        placeCactus(rect.x + p.u * rect.s, rect.y + p.v * rect.s);
+      }
       times.push(performance.now() - tf);
       if (times.length > 30) times.shift();
       if (state === 1) hint('Move the phone slowly sideways to start tracking');
+      else if ((state === 3 || state === 4) && mapWait === 1) hint('Saved room: point the camera at the area you saved (where the tree was)');
       else if (state === 3 || state === 4) hint(keepMapOn ? 'Tracking lost: point the camera back at where the tree was' : 'Tracking lost: move back towards where you were');
       else if (tracking() && inertial && !(stats[4] && stats[5])) hint(stats[4] ? 'IMU refining… keep moving' : 'IMU initialising: move the phone around');
       else if (tracking() && !cactus) hint(floor ? 'Tap the floor to place the tree' : (downN ? 'Point at the floor…' : 'Tap a flat surface to place the tree'));
@@ -741,6 +884,32 @@ function withTracker(yaml) {  // applies the selected options (web/options.js)
 }
 
 $('go').onclick = start;
+function showImuCalib() {  // start screen: the last IMU offset / focal measured with "Record gyro + poses" at this resolution
+  let c = null;
+  try { c = JSON.parse(localStorage.getItem(`imucalib:${$('res').value}`) || 'null'); } catch { /* storage blocked */ }
+  if (!c) { $('imuNote').textContent = ''; return; }
+  $('imuNote').innerHTML = `Measured ${new Date(c.date).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })} (Record gyro + poses): IMU offset ${c.offsetMs >= 0 ? '+' : ''}${c.offsetMs} ms` +
+    (c.fovFit ? `, FOV ${c.fovFit.toFixed(1)}° (was ${c.fovNow}°)` : '') + ' <button id="imuApply">Apply</button>';
+  $('imuApply').onclick = () => {
+    ensureImuOffsetValue(c.offsetMs);
+    opts.imudt = String(c.offsetMs);
+    if (c.fovFit) $('fov').value = c.fovFit.toFixed(1);
+    renderOpts(); saveOptsToUrl(); syncPreset();
+    $('imuNote').textContent = `Applied: IMU offset ${c.offsetMs >= 0 ? '+' : ''}${c.offsetMs} ms` + (c.fovFit ? `, FOV ${c.fovFit.toFixed(1)}°` : '') +
+      ' (offset: IMU and gyro presets; FOV: when the camera is not calibrated)';
+  };
+}
+$('res').addEventListener('change', showImuCalib);
+showImuCalib();
+roomGet().then((room) => {  // start screen: offer the saved room
+  if (!room) { $('roomNote').textContent = 'No saved room yet: use "Save room" while tracking.'; return; }
+  const o = document.createElement('option');
+  o.value = 'saved';
+  o.textContent = `Saved room (${new Date(room.date).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })})`;
+  $('room').append(o);
+  $('roomNote').textContent = `Saved: ${(room.map.byteLength / 1048576).toFixed(1)} MB, ${room.keyframes} keyframes, ${room.tree ? 'with a tree' : 'no tree'}, ` +
+    `${room.W}×${room.H}, preset ${room.preset}. Same camera setting and vocabulary needed.`;
+});
 {  // camera model shown on the start screen (the calibration is chosen by stream size once the camera runs)
   const saved = savedCalibrations();
   $('calibNote').innerHTML = saved.length

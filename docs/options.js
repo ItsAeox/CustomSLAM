@@ -27,6 +27,7 @@ export const OPTIONS = [
   { key: 'kltfrac', label: 'KLT quality gate (inliers vs last ORB frame)', values: [['0', 'off'], ['0.5', '50%'], ['0.7', '70%']], def: '0', when: (o) => o.tracker === 'klt' },
   { key: 'kltfb', label: 'KLT forward-backward check', values: [['1', 'on'], ['0', 'off']], def: '1', when: (o) => o.tracker === 'klt' },
   // round 2 (2026-10-17; claude/RESEARCH.md "Algorithm tracker"): defaults = previous behaviour
+  { key: 'kltpar', label: 'KLT optical flow', values: [['serial', 'one thread (original)'], ['parallel', '4 threads']], def: 'serial', when: (o) => o.tracker === 'klt' },
   { key: 'kltnorm', label: 'KLT exposure normalisation', values: [['off', 'off'], ['on', 'on (cancels exposure changes)']], def: 'off', when: (o) => o.tracker === 'klt' },
   { key: 'pose', label: 'Pose solver', values: [['g2o', 'g2o (original)'], ['fast', 'fast (same result, no g2o graph)']], def: 'g2o' },
   { key: 'orbpar', label: 'ORB extraction', values: [['serial', 'one thread (original)'], ['parallel', 'pyramid levels in parallel']], def: 'serial' },
@@ -34,6 +35,7 @@ export const OPTIONS = [
   { key: 'init', label: 'Map start', values: [['stock', 'original thresholds'], ['quick', 'quicker (60 matches, 0.5°, 40 points)'], ['gyro', 'gyro two-view (+ gyro prior)']], def: 'stock' },
   { key: 'kf', label: 'Keyframes', values: [['stock', 'original'], ['fewer', 'fewer (ratio 0.8)']], def: 'stock' },
   { key: 'voc', label: 'Vocabulary (download)', values: [['full', 'full (49 MB, original)'], ['small', 'small (5 MB, own k10L5)']], def: 'full', when: (o) => o.desc !== 'teblid' },
+  { key: 'rot', label: 'Turning on the spot', values: [['off', 'original (no new points without sideways motion)'], ['far', 'far points (prototype)']], def: 'off' },
   { key: 'hold', label: 'Tree during brief tracking losses', page: 'ar', values: [['hide', 'hidden (original)'], ['gyro', 'held by the gyro for up to 0.4 s']], def: 'hide' },
 ];
 
@@ -64,6 +66,11 @@ export const PRESETS = [
   { key: 'next', label: 'WebVIO next (dataset winners)', set: { kltmax: '4', motion: 'time', map: 'light', pose: 'fast', gyro: 'on',
     init: 'gyro', recover: 'coast', hold: 'gyro' },
     note: 'Quick solver + gyro start + gyro recovery + holding the tree through blips: the additions that helped on datasets (2026-10-17).' },
+  // round 3 (2026-10-18)
+  { key: 'fastflow', label: 'Fastest + 4-thread optical flow', set: { kltmax: '4', motion: 'time', map: 'light', kltpar: 'parallel' },
+    note: 'The KLT optical flow split over 4 threads (the browser build of OpenCV runs it on one). Same tracks as one thread; less time per KLT frame.' },
+  { key: 'rotate', label: 'Fastest + turning on the spot (prototype)', set: { kltmax: '4', motion: 'time', map: 'light', rot: 'far' },
+    note: 'Prototype: when you turn without moving sideways, new points are added far away (rotation only) instead of none, so tracking does not run out of points. Untested on the phone.' },
   { key: 'light', label: 'Light ORB', set: { tracker: 'stock', features: '600', levels: '6' },
     note: 'ORB on every frame with 600 features and 6 pyramid levels (23% less tracking time, same accuracy on EuRoC).' },
   { key: 'imu', label: 'IMU (visual-inertial)', set: { imu: 'on', tracker: 'stock' },
@@ -123,6 +130,8 @@ export function applyOptions(yaml, o) {
   if (o.map === 'light') extra.push('Web.LBA.MaxOptKFs: 20', 'Web.LBA.MaxFixedKFs: 20', 'Web.Mapping.Neighbors: 15');
   if ((o.gyro === 'on' || o.init === 'gyro') && o.imu !== 'on') extra.push('Web.Gyro.Prior: 1');  // + IMU.T_b_c1 (ar.js adds the phone IMU block)
   if (o.tracker === 'klt' && o.kltnorm === 'on') extra.push('Web.KLT.Normalize: 1');
+  if (o.tracker === 'klt' && o.kltpar === 'parallel') extra.push('Web.KLT.Parallel: 1');  // LK points split over 4 threads
+  if (o.rot === 'far') extra.push('Web.Rot.FarPoints: 1');  // pure-rotation prototype (LocalMapping::WebCreateFarPoints)
   if (o.pose === 'fast') extra.push('Web.Track.FastPose: 1');
   if (o.orbpar === 'parallel') extra.push('Web.ORB.Parallel: 1');
   if (o.recover === 'coast') extra.push('Web.Track.Coast: 2', 'Web.Track.CoastTime: 3');  // 3 s: looking away and back (gyro)
