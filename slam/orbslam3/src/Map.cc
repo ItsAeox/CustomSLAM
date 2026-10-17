@@ -359,7 +359,15 @@ void Map::SetLastMapChange(int currentChangeId)
 void Map::PreSave(std::set<GeometricCamera*> &spCams)
 {
     int nMPWithoutObs = 0;
+#ifdef ORBSLAM3_WEB
+    // web port: iterate copies. Erasing an observation can set a map point bad, which erases it from mspMapPoints
+    // while upstream iterated that set (crash when saving at the end of real-time runs, 2026-10-18)
+    const std::vector<MapPoint*> vpMPsCopy(mspMapPoints.begin(), mspMapPoints.end());
+    const std::vector<KeyFrame*> vpKFsCopy(mspKeyFrames.begin(), mspKeyFrames.end());
+    for(MapPoint* pMPi : vpMPsCopy)
+#else
     for(MapPoint* pMPi : mspMapPoints)
+#endif
     {
         if(!pMPi || pMPi->isBad())
             continue;
@@ -390,6 +398,16 @@ void Map::PreSave(std::set<GeometricCamera*> &spCams)
 
     // Backup of MapPoints
     mvpBackupMapPoints.clear();
+#ifdef ORBSLAM3_WEB
+    for(MapPoint* pMPi : vpMPsCopy)
+    {
+        if(!pMPi || pMPi->isBad())
+            continue;
+        pMPi->PreSave(mspKeyFrames,mspMapPoints);
+        if(!pMPi->isBad())  // PreSave itself may drop the last observations
+            mvpBackupMapPoints.push_back(pMPi);
+    }
+#else
     for(MapPoint* pMPi : mspMapPoints)
     {
         if(!pMPi || pMPi->isBad())
@@ -398,10 +416,15 @@ void Map::PreSave(std::set<GeometricCamera*> &spCams)
         mvpBackupMapPoints.push_back(pMPi);
         pMPi->PreSave(mspKeyFrames,mspMapPoints);
     }
+#endif
 
     // Backup of KeyFrames
     mvpBackupKeyFrames.clear();
+#ifdef ORBSLAM3_WEB
+    for(KeyFrame* pKFi : vpKFsCopy)
+#else
     for(KeyFrame* pKFi : mspKeyFrames)
+#endif
     {
         if(!pKFi || pKFi->isBad())
             continue;

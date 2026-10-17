@@ -7,9 +7,11 @@
 // Boost library and OpenSSL, absent from the web build. This file reuses upstream's per-object logic unchanged:
 // PreSave (pointers -> ids), the serialize() templates of KeyFrame, MapPoint, Map and the IMU types (what is stored),
 // and PostLoad (ids -> pointers, covisibility order, keyframe database). Only the archive is ours: a small binary
-// stream with the operator& interface the serialize() templates expect. Integers are written as 64 bits so a file
-// saved natively loads in the browser (wasm32 has 32-bit long and size_t). Not stored, taken from the loading
-// system: the cameras (checked against the saved parameters) and the vocabulary (checked by a tag).
+// stream with the operator& interface the serialize() templates expect. Integers are written at a fixed width
+// independent of the platform, so a file saved natively loads in the browser (wasm32 has 32-bit long and size_t):
+// version 1 = 64 bits each; version 2 (written now) = zigzag LEB128 varints, as most values are small (octaves,
+// indices, ids): ~210 KB per keyframe in version 1, ~120 KB in version 2 (MH01). Not stored, taken from the loading system: the cameras
+// (checked against the saved parameters) and the vocabulary (checked by a tag).
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -38,7 +40,7 @@ namespace
 {
 
 const char kMagic[8] = {'W', 'E', 'B', 'V', 'I', 'O', 'M', 'P'};
-const int64_t kVersion = 1;
+const int64_t kVersion = 2;  // 1: 64-bit integers (still read); 2: varints
 
 class WebOArchive
 {
@@ -61,28 +63,34 @@ private:
         if constexpr(std::is_same<T, bool>::value)
             Put<uint8_t>(t ? 1 : 0);
         else if constexpr(std::is_integral<T>::value || std::is_enum<T>::value)
-            Put<int64_t>(static_cast<int64_t>(t));
+            PutInt(static_cast<int64_t>(t));
         else if constexpr(std::is_floating_point<T>::value)
             Put<T>(t);
         else
             boost::serialization::access::serialize(*this, t, 0);
     }
-    void Save(std::string& s) { Put<int64_t>(s.size()); mOs.write(s.data(), s.size()); }
+    void PutInt(int64_t v)  // zigzag LEB128
+    {
+        uint64_t z = (static_cast<uint64_t>(v) << 1) ^ static_cast<uint64_t>(v >> 63);
+        while(z >= 0x80) { mOs.put(static_cast<char>(z | 0x80)); z >>= 7; }
+        mOs.put(static_cast<char>(z));
+    }
+    void Save(std::string& s) { PutInt(s.size()); mOs.write(s.data(), s.size()); }
     template<class T, class A> void Save(std::vector<T, A>& v)
     {
-        Put<int64_t>(v.size());
+        PutInt(v.size());
         for(T& e : v)
             Save(e);
     }
     template<class A> void Save(std::vector<bool, A>& v)
     {
-        Put<int64_t>(v.size());
+        PutInt(v.size());
         for(bool b : v)
             Put<uint8_t>(b ? 1 : 0);
     }
     template<class K, class V, class C, class A> void Save(std::map<K, V, C, A>& m)
     {
-        Put<int64_t>(m.size());
+        PutInt(m.size());
         for(auto& kv : m)
         {
             K k = kv.first;
@@ -108,6 +116,7 @@ public:
     typedef std::false_type is_saving;
     typedef std::true_type is_loading;
     explicit WebIArchive(std::istream& is) : mIs(is) {}
+    bool mVarint = true;  // false: a version-1 file (64-bit integers)
     template<class T> WebIArchive& operator&(T& t) { Load(t); return *this; }
     template<class T> WebIArchive& operator&(const boost::serialization::array_wrapper<T>& a)
     {
@@ -126,7 +135,7 @@ private:
     // element counts: a corrupt or truncated file must not allocate gigabytes
     size_t Count()
     {
-        const int64_t n = Get<int64_t>();
+        const int64_t n = GetInt();
         if(!mIs.good() || n < 0 || n > (int64_t(1) << 28))
         {
             mIs.setstate(std::ios::failbit);
@@ -134,12 +143,31 @@ private:
         }
         return static_cast<size_t>(n);
     }
+    int64_t GetInt()
+    {
+        if(!mVarint)
+            return Get<int64_t>();
+        uint64_t z = 0;
+        for(int shift = 0; shift < 64; shift += 7)
+        {
+            const int c = mIs.get();
+            if(c == EOF)
+            {
+                mIs.setstate(std::ios::failbit);
+                return 0;
+            }
+            z |= static_cast<uint64_t>(c & 0x7f) << shift;
+            if(!(c & 0x80))
+                break;
+        }
+        return static_cast<int64_t>(z >> 1) ^ -static_cast<int64_t>(z & 1);
+    }
     template<class T> void Load(T& t)
     {
         if constexpr(std::is_same<T, bool>::value)
             t = Get<uint8_t>() != 0;
         else if constexpr(std::is_integral<T>::value || std::is_enum<T>::value)
-            t = static_cast<T>(Get<int64_t>());
+            t = static_cast<T>(GetInt());
         else if constexpr(std::is_floating_point<T>::value)
             t = Get<T>();
         else
@@ -222,13 +250,14 @@ bool Atlas::WebSaveMap(std::ostream& os, Map* pMap, std::string& err)
 
     WebOArchive ar(os);
     os.write(kMagic, sizeof(kMagic));
-    int64_t version = kVersion;
+    const int64_t version = kVersion;  // raw 8 bytes (as in version 1), then varints
+    os.write(reinterpret_cast<const char*>(&version), sizeof(version));
     std::string vocTag = WebVocabularyTag(mpORBVocabulary);
     unsigned int camId = mvpCameras[0]->GetId();
     std::vector<float> camParams;
     for(size_t i = 0; i < mvpCameras[0]->size(); i++)
         camParams.push_back(mvpCameras[0]->getParameter(i));
-    ar & version & vocTag & camId & camParams;
+    ar & vocTag & camId & camParams;
     ar & *pMap;  // Map::serialize, with every keyframe and map point inline
     if(!ar.Good())
     {
@@ -249,13 +278,20 @@ Map* Atlas::WebLoadMap(std::istream& is, std::string& err)
     }
     WebIArchive ar(is);
     int64_t version = 0;
+    is.read(reinterpret_cast<char*>(&version), sizeof(version));
     std::string vocTag;
     unsigned int camId = 0;
     std::vector<float> camParams;
-    ar & version & vocTag & camId & camParams;
-    if(!ar.Good() || version != kVersion)
+    if(version != 1 && version != 2)
     {
         err = "unsupported map file version";
+        return nullptr;
+    }
+    ar.mVarint = version >= 2;
+    ar & vocTag & camId & camParams;
+    if(!ar.Good())
+    {
+        err = "truncated map file header";
         return nullptr;
     }
     if(vocTag != WebVocabularyTag(mpORBVocabulary))

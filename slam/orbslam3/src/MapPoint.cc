@@ -578,7 +578,12 @@ void MapPoint::PreSave(set<KeyFrame*>& spKF,set<MapPoint*>& spMP)
     mBackupObservationsId1.clear();
     mBackupObservationsId2.clear();
     // Save the id and position in each KF who view it
+#ifdef ORBSLAM3_WEB
+    const std::map<KeyFrame*,std::tuple<int,int> > obsCopy = mObservations;  // EraseObservation below erases from mObservations
+    for(std::map<KeyFrame*,std::tuple<int,int> >::const_iterator it = obsCopy.begin(), end = obsCopy.end(); it != end; ++it)
+#else
     for(std::map<KeyFrame*,std::tuple<int,int> >::const_iterator it = mObservations.begin(), end = mObservations.end(); it != end; ++it)
+#endif
     {
         KeyFrame* pKFi = it->first;
         if(spKF.find(pKFi) != spKF.end())

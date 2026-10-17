@@ -293,6 +293,8 @@ async function roomGet() {
     });
   } catch { return null; }  // storage blocked (private window)
 }
+// gzip in the browser (CompressionStream): the map's floats compress little, but its integers and empty slots do
+const gzip = (buf, how) => new Response(new Blob([buf]).stream().pipeThrough(how === 'c' ? new CompressionStream('gzip') : new DecompressionStream('gzip'))).arrayBuffer();
 async function roomPut(room) {
   const db = await roomDb();
   return new Promise((res, rej) => {
@@ -613,7 +615,7 @@ async function start() {
     }
     const tInit = performance.now();
     const ready = await slam.request({ type: 'init', vocabUrl: vocabUrl(opts.desc, opts.voc), clahe, seed: 1, prof: params.get('prof') === '1', inertial,
-                                       settingsText: withTracker(settingsText), mapBytes: room ? room.map : null });
+                                       settingsText: withTracker(settingsText), mapBytes: room ? (room.gz ? await gzip(room.map, 'd') : room.map) : null });
     if (room) {
       tele(`room map ${ready.mapLoaded ? 'loaded' : 'NOT loaded'} (saved ${room.date}, ${(room.map.byteLength / 1048576).toFixed(1)} MB, preset ${room.preset})`);
       if (ready.mapLoaded) pendingRoom = room;
@@ -674,7 +676,10 @@ async function start() {
         saveRequested = false;
         const sv = await slam.request({ type: 'saveMap' });
         if (sv.type === 'mapSaved' && sv.ok) {
-          const room = { v: 1, date: new Date().toISOString(), map: sv.bytes, W, H, K: { fx: K.fx, fy: K.fy, cx: K.cx, cy: K.cy },
+          const tz = performance.now();
+          const packed = await gzip(sv.bytes, 'c');
+          tele(`room map gzip: ${(sv.bytes.byteLength / 1048576).toFixed(1)} -> ${(packed.byteLength / 1048576).toFixed(1)} MB (${(performance.now() - tz).toFixed(0)} ms)`);
+          const room = { v: 2, gz: true, date: new Date().toISOString(), map: packed, raw: sv.bytes.byteLength, W, H, K: { fx: K.fx, fy: K.fy, cx: K.cx, cy: K.cy },
                          desc: opts.desc, voc: opts.voc, preset: presetKey(),
                          tree: cactus ? { p: cactus.position.toArray(), q: cactus.quaternion.toArray(), base: objBase, size: Number($('size').value) } : null,
                          floor, downSum, downN, keyframes: stats[0], points: stats[1] };
