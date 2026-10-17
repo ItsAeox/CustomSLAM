@@ -44,6 +44,9 @@ struct WebConfig
     double kltMaxFlow = 0;     // Web.KLT.MaxFlow: use ORB when the predicted median image motion exceeds this (px; 0 = off)
     double kltMinInlierFrac = 0;  // Web.KLT.MinInlierFrac: KLT pose inliers must reach this fraction of the last ORB
                                // frame's inliers, else the frame is re-tracked with ORB (0 = off)
+    int kltParallel = 0;       // Web.KLT.Parallel: 1 = the LK points are split over the shared thread pool (WebPool.h; same
+                               // result: every point is tracked on its own); 2 = both, serial result kept, mismatches and
+                               // timings reported (check). OpenCV's WASM build runs LK on one thread
     int kltNormalize = 0;      // Web.KLT.Normalize: 1 = the LK pyramid is built from the image with its global mean and
                                // contrast normalised (128 / 48): cancels exposure (gain/offset) changes between frames,
                                // which plain LK's brightness-constancy model does not handle. ORB frames are unaffected
@@ -120,6 +123,7 @@ inline void loadWebConfig(const std::string& settingsFile)
     readInt("Web.KLT.Levels", c.kltLevels);
     readInt("Web.KLT.Iterations", c.kltIterations);
     readInt("Web.KLT.Normalize", c.kltNormalize);
+    readInt("Web.KLT.Parallel", c.kltParallel);
     cv::FileNode rt = fs["Web.Track.RelocTimeout"];
     if (!rt.empty() && (rt.isInt() || rt.isReal())) c.relocTimeout = rt.real();
     cv::FileNode mf = fs["Web.KLT.MaxFlow"];
@@ -183,7 +187,8 @@ inline void loadWebConfig(const std::string& settingsFile)
         std::cout << " (max consecutive " << c.kltMaxConsecutive << ", min tracked " << c.kltMinTracked
                   << ", min inliers " << c.kltMinInliers << ", win " << c.kltWinSize << ", levels " << c.kltLevels
                   << ", FB " << c.kltFBThreshold << " px, iterations " << c.kltIterations << ", max flow " << c.kltMaxFlow
-                  << " px, min inlier frac " << c.kltMinInlierFrac << (c.kltNormalize ? ", exposure-normalised" : "") << ")";
+                  << " px, min inlier frac " << c.kltMinInlierFrac << (c.kltNormalize ? ", exposure-normalised" : "")
+                  << (c.kltParallel ? (c.kltParallel == 1 ? ", LK on 4 threads" : ", LK serial vs 4 threads (compare)") : "") << ")";
     std::cout << std::endl;
 }
 

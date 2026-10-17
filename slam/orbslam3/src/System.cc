@@ -541,6 +541,10 @@ void System::Shutdown()
     cout << "RECOVERY-STATS coast_tries=" << mpTracker->mnWebCoastTries << " coast_recoveries=" << mpTracker->mnWebCoastRecoveries
          << " reloc_recoveries=" << mpTracker->mnWebRelocRecoveries << endl;
     Optimizer::WebPrintFastPoseStats();
+    if(mpTracker->mnWebLKCalls)
+        cout << "KLTPAR-STATS calls=" << mpTracker->mnWebLKCalls << " points=" << mpTracker->mnWebLKPoints
+             << " mismatches=" << mpTracker->mnWebLKMismatch << " serial_ms_mean=" << mpTracker->mdWebLKSerialMs / mpTracker->mnWebLKCalls
+             << " parallel_ms_mean=" << mpTracker->mdWebLKParallelMs / mpTracker->mnWebLKCalls << endl;
 #endif
     {
         unique_lock<mutex> lock(mMutexReset);

@@ -145,6 +145,8 @@ public:
     double mdWebKLTPyrMs = 0;          // LK pyramid of every image while KLT is enabled (ms, all frames)
     double mdWebKLTFlowMs = 0, mdWebKLTCopyMs = 0, mdWebKLTPoseMs = 0;  // accepted KLT frames: LK, frame build, pose
     long mnWebCoastTries = 0, mnWebCoastRecoveries = 0, mnWebRelocRecoveries = 0;  // Web.Track.Coast statistics
+    long mnWebLKCalls = 0, mnWebLKPoints = 0, mnWebLKMismatch = 0;  // Web.KLT.Parallel compare mode
+    double mdWebLKSerialMs = 0, mdWebLKParallelMs = 0;
 #endif
 
     cv::Mat mImGray;

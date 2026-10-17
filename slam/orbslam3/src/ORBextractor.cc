@@ -70,6 +70,7 @@
 #include "ORBextractor.h"
 #ifdef ORBSLAM3_WEB
 #include "WebConfig.h"
+#include "WebPool.h"
 #include "teblid.hpp"  // slam/port/features/teblid (vendored from opencv_contrib)
 #endif
 
@@ -80,76 +81,7 @@ using namespace std;
 namespace ORB_SLAM3
 {
 #ifdef ORBSLAM3_WEB
-    // web port (Web.ORB.Parallel): persistent helper threads for the per-level work of one ORB extraction. Own threads
-    // because OpenCV's WASM build has no parallel framework (cv::parallel_for_ runs serially there). The caller works
-    // too; tasks are taken in index order (level 0, the largest, first). Used by the tracking thread only.
-    class WebLevelPool
-    {
-    public:
-        explicit WebLevelPool(int nHelpers)
-        {
-            for(int i = 0; i < nHelpers; i++)
-                std::thread([this] { Loop(); }).detach();  // never joined: the pool lives until the process ends
-        }
-        void Run(int nTasks, const std::function<void(int)>& f)
-        {
-            uint32_t gen;
-            {
-                std::unique_lock<std::mutex> lock(mMutex);
-                gen = ++mnGeneration;
-                mpTask = &f;
-                mnTasks = nTasks;
-                mnDone = 0;
-                mnNext.store((uint64_t)gen << 32);
-            }
-            mCvWork.notify_all();
-            Work(f, nTasks, gen);
-            std::unique_lock<std::mutex> lock(mMutex);
-            mCvDone.wait(lock, [&] { return mnDone == mnTasks; });
-        }
-    private:
-        // next task: generation (high 32 bits) + index; a helper that woke for an earlier call cannot take a task
-        void Work(const std::function<void(int)>& f, int nTasks, uint32_t gen)
-        {
-            while(true)
-            {
-                uint64_t v = mnNext.load();
-                if((uint32_t)(v >> 32) != gen || (int)(uint32_t)v >= nTasks)
-                    return;
-                if(!mnNext.compare_exchange_weak(v, v + 1))
-                    continue;
-                f((int)(uint32_t)v);
-                std::unique_lock<std::mutex> lock(mMutex);
-                if(++mnDone == mnTasks)
-                    mCvDone.notify_all();
-            }
-        }
-        void Loop()
-        {
-            uint32_t seen = 0;
-            while(true)
-            {
-                const std::function<void(int)>* f;
-                int n;
-                {
-                    std::unique_lock<std::mutex> lock(mMutex);
-                    mCvWork.wait(lock, [&] { return mnGeneration != seen; });
-                    seen = mnGeneration;
-                    f = mpTask;
-                    n = mnTasks;
-                }
-                Work(*f, n, seen);
-            }
-        }
-        std::mutex mMutex;
-        std::condition_variable mCvWork, mCvDone;
-        const std::function<void(int)>* mpTask = nullptr;
-        int mnTasks = 0, mnDone = 0;
-        std::atomic<uint64_t> mnNext{0};
-        uint32_t mnGeneration = 0;
-    };
-
-// web port (Web.ORB.SSC): Suppression via Square Covering (Bailo et al., "Efficient adaptive non-maximal suppression
+    // web port (Web.ORB.SSC): Suppression via Square Covering (Bailo et al., "Efficient adaptive non-maximal suppression
 // algorithms for homogeneous spatial keypoint distribution", PRL 2018; BSD reference code). The strongest keypoints are
 // kept, each suppressing a square of side w around it; w is found by binary search so that N (+-10 %) survive. Instead of
 // the octree (DistributeOctTree: one best keypoint per leaf after splitting until N leaves), which favours spreading over
@@ -207,13 +139,10 @@ static vector<cv::KeyPoint> WebSSC(vector<cv::KeyPoint> kps, int N, int cols, in
     return out;
 }
 
+    // Web.ORB.Parallel: the levels on the shared pool (WebPool.h)
     static void WebParallelLevels(int nLevels, const std::function<void(int)>& f)
     {
-        const int nThreads = webConfig().orbParallel == 1 ? 4 : webConfig().orbParallel;  // 1 = on (4 threads)
-        // started once, on first use, and never destroyed: destroying it at exit (static destructor) under the waiting
-        // helpers hung the process after the run (2026-10-17)
-        static WebLevelPool* pool = new WebLevelPool(std::max(0, nThreads - 1));
-        pool->Run(nLevels, f);
+        webPool().Run(nLevels, f);
     }
 #endif
 #ifdef REGISTER_TIMES

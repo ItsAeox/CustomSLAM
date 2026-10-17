@@ -29,6 +29,7 @@
 #include "MLPnPsolver.h"
 #include "GeometricTools.h"
 #include "WebConfig.h"
+#include "WebPool.h"
 #include "Thirdparty/DBoW2/DUtils/Random.h"  // web port: Web.Init.Gyro RANSAC
 #include <Eigen/Dense>
 
@@ -3311,6 +3312,39 @@ void Tracking::WebGrabGyro(const std::vector<IMU::Point>& v)
 // refines poses. No ORB extraction and no local-map search. Gates (any failing -> normal ORB frame on this image):
 // tracking OK with a valid motion model, at most Web.KLT.MaxConsecutive KLT frames in a row, no pending keyframe,
 // enough surviving tracks (Web.KLT.MinTracked) and enough pose inliers (Web.KLT.MinInliers).
+// web port (Web.KLT.Parallel): pyramidal LK with the points split over the shared pool (WebPool.h). Every point is
+// tracked on its own (OpenCV's LKTrackerInvoker), so the result equals one call over all points; natively OpenCV
+// already spreads the points over its own threads, in WASM it cannot (no parallel framework).
+static void WebLK(const vector<cv::Mat>& P0, const vector<cv::Mat>& P1, const vector<cv::Point2f>& in,
+                  vector<cv::Point2f>& out, vector<uchar>& st, cv::Size win, int levels, const cv::TermCriteria& crit,
+                  bool par)
+{
+    const int n = (int)in.size();
+    if(!par || n < 64)
+    {
+        vector<float> err;
+        cv::calcOpticalFlowPyrLK(P0, P1, in, out, st, err, win, levels, crit, cv::OPTFLOW_USE_INITIAL_FLOW);
+        return;
+    }
+    const int nt = webPool().Threads();
+    vector<vector<cv::Point2f>> outs(nt);
+    vector<vector<uchar>> sts(nt);
+    webPool().Run(nt, [&](int t) {
+        const int a = n * t / nt, b = n * (t + 1) / nt;
+        vector<cv::Point2f> pin(in.begin() + a, in.begin() + b);
+        outs[t].assign(out.begin() + a, out.begin() + b);  // initial flow
+        vector<float> err;
+        cv::calcOpticalFlowPyrLK(P0, P1, pin, outs[t], sts[t], err, win, levels, crit, cv::OPTFLOW_USE_INITIAL_FLOW);
+    });
+    st.resize(n);
+    for(int t = 0, k = 0; t < nt; t++)
+        for(size_t j = 0; j < outs[t].size(); j++, k++)
+        {
+            out[k] = outs[t][j];
+            st[k] = sts[t][j];
+        }
+}
+
 bool Tracking::TrackKLT(const cv::Mat& im, double timestamp)
 {
     const WebConfig& cfg = webConfig();
@@ -3378,9 +3412,25 @@ bool Tracking::TrackKLT(const cv::Mat& im, double timestamp)
 
     const cv::TermCriteria crit(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, cfg.kltIterations, 0.01);
     vector<uchar> vStatus;
-    vector<float> vErr;
-    cv::calcOpticalFlowPyrLK(mvWebPrevPyr, mvWebCurPyr, vPrev, vCur, vStatus, vErr, win, cfg.kltLevels, crit,
-                             cv::OPTFLOW_USE_INITIAL_FLOW);
+    if(cfg.kltParallel == 2)  // compare: serial and pooled LK on the same input; the serial result is used
+    {
+        vector<cv::Point2f> vCurP = vCur;
+        vector<uchar> vStatusP;
+        const auto c0 = std::chrono::steady_clock::now();
+        WebLK(mvWebPrevPyr, mvWebCurPyr, vPrev, vCur, vStatus, win, cfg.kltLevels, crit, false);
+        const auto c1 = std::chrono::steady_clock::now();
+        WebLK(mvWebPrevPyr, mvWebCurPyr, vPrev, vCurP, vStatusP, win, cfg.kltLevels, crit, true);
+        const auto c2 = std::chrono::steady_clock::now();
+        mnWebLKCalls++;
+        mnWebLKPoints += (long)vCur.size();
+        mdWebLKSerialMs += std::chrono::duration<double, std::milli>(c1 - c0).count();
+        mdWebLKParallelMs += std::chrono::duration<double, std::milli>(c2 - c1).count();
+        for(size_t j = 0; j < vCur.size(); j++)
+            if(vStatus[j] != vStatusP[j] || std::abs(vCur[j].x - vCurP[j].x) > 1e-4f || std::abs(vCur[j].y - vCurP[j].y) > 1e-4f)
+                mnWebLKMismatch++;
+    }
+    else
+        WebLK(mvWebPrevPyr, mvWebCurPyr, vPrev, vCur, vStatus, win, cfg.kltLevels, crit, cfg.kltParallel == 1);
     // forward-backward check on the forward survivors
     vector<int> vFwd;
     vector<cv::Point2f> vCurF, vBack;
@@ -3400,11 +3450,9 @@ bool Tracking::TrackKLT(const cv::Mat& im, double timestamp)
         return false;
     }
     vector<uchar> vStatusB(vCurF.size(), 1);
-    vector<float> vErrB;
     const bool bFB = cfg.kltFBThreshold > 0;  // forward-backward check (doubles the LK cost)
     if(bFB)
-        cv::calcOpticalFlowPyrLK(mvWebCurPyr, mvWebPrevPyr, vCurF, vBack, vStatusB, vErrB, win, cfg.kltLevels, crit,
-                                 cv::OPTFLOW_USE_INITIAL_FLOW);
+        WebLK(mvWebCurPyr, mvWebPrevPyr, vCurF, vBack, vStatusB, win, cfg.kltLevels, crit, cfg.kltParallel == 1);
     vector<cv::KeyPoint> vKeys;
     vector<MapPoint*> vMPs;
     const float fb2 = (float)(cfg.kltFBThreshold * cfg.kltFBThreshold);
