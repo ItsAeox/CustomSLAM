@@ -8,6 +8,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { createSlamWorker, cameraSettings, intrinsics, loadCalibration, phoneImuSettings, savedCalibrations, STATE, vocabUrl } from './slamclient.js';
+import { estimateImuCalib } from './imucalib.js';
 import { dot, fitPlaneRansac, normalize, rayPlane } from './plane.js';
 import { applyOptions, applyPreset, buildOptionsUI, describeOptions, matchPreset, optionsFromParams, optionsToParams, PRESETS } from './options.js';
 
@@ -76,7 +77,13 @@ const decodeTimes = [];               // per frame: gray image preparation in th
 const gyroHist = [];                 // [time ms, |rotation rate| deg/s] of the last second (logged on tracking loss)
 let inertial = opts.imu === 'on';  // ORB-SLAM3 mono-inertial (experimental); re-read from the options at start()
 let rec = false;                   // record gyro + poses for the time-offset estimate (option 'rec'); set at start()
-let gyroOn = false;               // gyro rotation prior (option 'gyro', visual-only); set at start()
+const recPoses = [], recGyro = [];  // with rec: [t, qx, qy, qz, qw, maps] / [t, wx, wy, wz] (last 90 s) for imucalib.js
+let recCalibAt = 0;
+let gyroOn = false;               // gyro rotation prior (option 'gyro', visual-only; or gyro init); set at start()
+let holdOn = false;               // option 'hold': show the tree through brief losses with the gyro-rotated last pose
+let qDev = [0, 0, 0, 1], qDevT = null;  // integrated device attitude from DeviceMotion rotation rates (x, y, z, w)
+let holdRef = null, holdTwc = null;     // last tracked pose with its attitude and time; the held pose while lost
+const HOLD_MS = 400;              // eval/deadreckon_sim.py: rotation-only hold is good for blips < ~0.3-0.5 s
 const absClock = () => inertial || rec || gyroOn;  // frame times on the IMU's clock (page timeOrigin + ms) instead of camera time
 let imuPending = [];
 let imuFlags = [0, 0];               // last logged IMU initialisation flags (map stats [4], [5])                 // live IMU samples not yet sent: [t abs s, ax, ay, az (m/s^2), gx, gy, gz (rad/s)] flat
@@ -118,6 +125,21 @@ function onMotion(e) {
   if (rec && r && r.alpha != null) {  // diagnostic: raw gyro (rad/s, device axes) on the frames' absolute clock
     const d = Math.PI / 180;
     tele(`imu ${((performance.timeOrigin + e.timeStamp) / 1000).toFixed(4)} ${(r.beta * d).toFixed(5)} ${(r.gamma * d).toFixed(5)} ${(r.alpha * d).toFixed(5)}`);
+    recGyro.push([(performance.timeOrigin + e.timeStamp) / 1000, r.beta * d, r.gamma * d, r.alpha * d]);
+    while (recGyro.length && recGyro[0][0] < recGyro[recGyro.length - 1][0] - 90) recGyro.shift();
+  }
+  if (holdOn && r && r.alpha != null) {  // attitude for the hold: q <- q * exp(w dt), w in device axes (rad/s)
+    if (qDevT != null) {
+      const dt = Math.min((e.timeStamp - qDevT) / 1000, 0.1), d = Math.PI / 180;
+      const w = [r.beta * d, r.gamma * d, r.alpha * d], th = Math.hypot(...w) * dt;
+      if (th > 0) {
+        const s = Math.sin(th / 2) / (th / dt), dq = [w[0] * s, w[1] * s, w[2] * s, Math.cos(th / 2)];
+        const [x, y, z, ww] = qDev;
+        qDev = [ww * dq[0] + x * dq[3] + y * dq[2] - z * dq[1], ww * dq[1] - x * dq[2] + y * dq[3] + z * dq[0],
+                ww * dq[2] + x * dq[1] - y * dq[0] + z * dq[3], ww * dq[3] - x * dq[0] - y * dq[1] - z * dq[2]];
+      }
+    }
+    qDevT = e.timeStamp;
   }
   if (r && r.alpha != null) {
     if (!imuN) imuT0 = e.timeStamp;
@@ -144,6 +166,19 @@ function gravityCam() {  // unit "down" in the camera frame (x right, y down, z 
 // ---------------------------------------------------------------- pose and anchors
 function rotOf(m) { return [m[0], m[4], m[8], m[1], m[5], m[9], m[2], m[6], m[10]]; }  // column-major 4x4 -> row-major R
 const mulR = (R, v) => [R[0] * v[0] + R[1] * v[1] + R[2] * v[2], R[3] * v[0] + R[4] * v[1] + R[5] * v[2], R[6] * v[0] + R[7] * v[1] + R[8] * v[2]];
+
+// Option 'hold': the last tracked camera pose rotated by the device rotation since (camera centre kept). Body (device)
+// rotation dq = q_ref^-1 q_now; camera = R_cb dq R_bc with R_bc = diag(1, -1, -1) (rear camera, portrait: as
+// slamclient.js phoneImuSettings); Twc_held = Twc_ref * [R_c 0; 0 1].
+function heldPose() {
+  const [ax, ay, az, aw] = holdRef.q, [bx, by, bz, bw] = qDev;
+  const x = aw * bx - ax * bw - ay * bz + az * by, y = aw * by + ax * bz - ay * bw - az * bx;  // conj(a) * b
+  const z = aw * bz - ax * by + ay * bx - az * bw, w = aw * bw + ax * bx + ay * by + az * bz;
+  const dq = new THREE.Matrix4().makeRotationFromQuaternion(new THREE.Quaternion(x, y, z, w));
+  const F = new THREE.Matrix4().makeScale(1, -1, -1);
+  const Rc = F.clone().multiply(dq).multiply(F);
+  return new THREE.Matrix4().fromArray(holdRef.twc).multiply(Rc).toArray();
+}
 
 function setCameraPose(m) {
   cam3.matrixWorld.fromArray(m).multiply(FLIP);
@@ -286,9 +321,10 @@ function drawFrame(bmp) {
     bgx.fillStyle = '#22c55e';
     for (let i = 0; i < kps.length; i += 3) if (kps[i + 2] === 1) bgx.fillRect(kps[i] - 1.5, kps[i + 1] - 1.5, 3, 3);
   }
-  if (twc) setCameraPose(twc);
+  if (holdTwc) setCameraPose(holdTwc);
+  else if (twc) setCameraPose(twc);
   if (floorMesh) floorMesh.visible = !cactus && tracking();
-  if (cactus) cactus.visible = tracking();  // hidden while lost: the last pose is stale
+  if (cactus) cactus.visible = tracking() || !!holdTwc;  // hidden while lost (stale pose), unless held by the gyro
   renderer.render(scene, cam3);
 }
 
@@ -297,7 +333,8 @@ async function start() {
   $('go').disabled = true;
   inertial = opts.imu === 'on';  // the options may have changed since the page loaded
   rec = opts.rec === 'on';
-  gyroOn = opts.gyro === 'on' && !inertial && !params.get('seq');  // dataset mode: no phone gyro
+  gyroOn = (opts.gyro === 'on' || opts.init === 'gyro') && !inertial && !params.get('seq');  // dataset mode: no phone gyro
+  holdOn = opts.hold === 'gyro' && !params.get('seq');
   try {
     if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
       await DeviceMotionEvent.requestPermission().catch(() => {});  // iOS
@@ -348,6 +385,11 @@ async function start() {
       const t0 = performance.now();
       nextBitmap = async () => {  // real-time playback; frames that are already late are skipped
         const now = (performance.now() - t0) / 1000;
+        if (i >= man.frames.length) {  // end of the sequence: keep showing the last frame (was: undefined frame, TypeError)
+          i = man.frames.length - 1;
+          hint('End of the dataset sequence.', 60000);
+          await new Promise((res) => setTimeout(res, 100));  // do not spin on the last frame
+        }
         while (i + 1 < man.frames.length && man.frames[i + 1].t <= now) i++;
         if (man.frames[i].t > now) await new Promise((res) => setTimeout(res, (man.frames[i].t - now) * 1000));
         const f = man.frames[Math.min(i++, man.frames.length - 1)];
@@ -478,7 +520,7 @@ async function start() {
       tele(`IMU: DeviceMotion ${hz.toFixed(1)} Hz` + (imuN >= 10 ? ` (measured over ${imuN} events)` : ' (assumed: too few events yet)'));
     }
     const tInit = performance.now();
-    const ready = await slam.request({ type: 'init', vocabUrl: vocabUrl(opts.desc), clahe, seed: 1, prof: params.get('prof') === '1', inertial,
+    const ready = await slam.request({ type: 'init', vocabUrl: vocabUrl(opts.desc, opts.voc), clahe, seed: 1, prof: params.get('prof') === '1', inertial,
                                        settingsText: withTracker(settingsText) });
     loadingDone = true; clearInterval(stallTimer);
     if (camStream) {  // WebCodecs: frames go straight to the worker; use it only if they match the stream we calibrated for
@@ -573,12 +615,29 @@ async function start() {
         imuFlags = [stats[4], stats[5]];
       }
       lastState = state; lastMaps = stats[3];
+      holdTwc = null;
+      if (holdOn && !tracking() && holdRef && performance.now() - holdRef.wall < HOLD_MS) holdTwc = heldPose();
       if (tracking()) {
         twc = r.twc;
+        if (holdOn) holdRef = { twc: twc.slice(), q: qDev.slice(), wall: performance.now() };
         if (rec) {  // diagnostic: camera pose (Twc, TUM order) per tracked frame -> eval/estimate_time_offset.py --ar-log
           const q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().fromArray(twc));
           tele(`pose ${r.t.toFixed(4)} ${twc[12].toFixed(4)} ${twc[13].toFixed(4)} ${twc[14].toFixed(4)} ` +
                `${q.x.toFixed(6)} ${q.y.toFixed(6)} ${q.z.toFixed(6)} ${q.w.toFixed(6)} ${stats[3]}`);  // + map count
+          recPoses.push([r.t, q.x, q.y, q.z, q.w, stats[3]]);
+          while (recPoses.length && recPoses[0][0] < r.t - 90) recPoses.shift();
+          if (performance.now() - recCalibAt > 10000 && recPoses.length > 50 && r.t - recPoses[0][0] > 20) {
+            recCalibAt = performance.now();
+            const c = estimateImuCalib(recPoses, recGyro);  // web/imucalib.js (= eval/estimate_time_offset.py --focal)
+            if (c) {
+              // focal ratio = f_true / f_assumed -> the horizontal FOV that would match (uncalibrated phone: the FOV box)
+              const fovNow = Number($('fov').value), fovFit = 2 * Math.atan(Math.tan(fovNow * Math.PI / 360) / c.focalRatio) * 180 / Math.PI;
+              const f = Number.isFinite(c.focalRatio) ? `focal x ${c.focalRatio.toFixed(3)} (roll ${c.rollRatio.toFixed(3)}, ${c.focalSamples} samples)` +
+                (calib ? '' : ` -> FOV ${fovFit.toFixed(1)}° instead of ${fovNow}°`) : 'focal: rotate more';
+              tele(`imu calib (last ${(r.t - recPoses[0][0]).toFixed(0)} s): offset ${c.offsetMs >= 0 ? '+' : ''}${c.offsetMs} ms (cost ${c.cost.toFixed(4)}, ${c.samples} rates), ${f}`);
+              hint(`IMU time offset ${c.offsetMs >= 0 ? '+' : ''}${c.offsetMs} ms · ${f}`, 4000);
+            }
+          }
         }
         const g = down || gravityCam();
         if (g) { const gw = mulR(rotOf(twc), g); downSum = downSum.map((x, i) => x + gw[i]); downN++; }
