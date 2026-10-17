@@ -81,6 +81,7 @@ const recPoses = [], recGyro = [];  // with rec: [t, qx, qy, qz, qw, maps] / [t,
 let recCalibAt = 0;
 let gyroOn = false;               // gyro rotation prior (option 'gyro', visual-only; or gyro init); set at start()
 let holdOn = false;               // option 'hold': show the tree through brief losses with the gyro-rotated last pose
+let replay = false;               // a dataset or a phone recording (record.html) is the camera; its IMU, not the phone's
 let qDev = [0, 0, 0, 1], qDevT = null;  // integrated device attitude from DeviceMotion rotation rates (x, y, z, w)
 let holdRef = null, holdTwc = null;     // last tracked pose with its attitude and time; the held pose while lost
 const HOLD_MS = 400;              // eval/deadreckon_sim.py: rotation-only hold is good for blips < ~0.3-0.5 s
@@ -88,6 +89,7 @@ const absClock = () => inertial || rec || gyroOn;  // frame times on the IMU's c
 let imuPending = [];
 let imuFlags = [0, 0];               // last logged IMU initialisation flags (map stats [4], [5])                 // live IMU samples not yet sent: [t abs s, ax, ay, az (m/s^2), gx, gy, gz (rad/s)] flat
 let lastMaps = 0, lastState = 0;
+let replayTaps = [], replayT = -1;               // recording taps still to replay: { t (s, sequence clock), u, v (image px) }
 let stash = null;          // anchors of a map that went inactive (tracking lost -> new map); restored on map merge
 let resetRequested = false;  // Reset button: sent to the worker between frames (one request at a time)
 const tracking = () => state === 2 || state === 5;  // 5: tracked by a KLT frame
@@ -117,7 +119,7 @@ function onMotion(e) {
   accLP = accLP ? accLP.map((x, i) => 0.7 * x + 0.3 * v[i]) : v;
   motionEvents++;
   const r = e.rotationRate;
-  if ((inertial || gyroOn) && r && r.alpha != null && a.x != null) {  // device axes = IMU body; rotationRate alpha/beta/gamma = z/x/y (deg/s)
+  if ((inertial || gyroOn) && !replay && r && r.alpha != null && a.x != null) {  // device axes = IMU body; rotationRate alpha/beta/gamma = z/x/y (deg/s)
     const d = Math.PI / 180;
     // IMU time = reported time - the measured offset (option imudt; reported = true + offset, see estimate_time_offset.py)
     imuPending.push((performance.timeOrigin + e.timeStamp) / 1000 - Number(opts.imudt) / 1000, a.x, a.y, a.z, r.beta * d, r.gamma * d, r.alpha * d);
@@ -302,7 +304,8 @@ function placeCactus(clientX, clientY) {
   cactus.scale.setScalar(size * sizeFactor());  // cactusProto is normalised to height 1, base at the origin
   scene.add(cactus);
   $('sizeRow').style.visibility = 'visible';
-  tele(`tree placed: ${floor ? 'floor plane' : 'tap plane'}, distance ${Math.hypot(hit[0] - o[0], hit[1] - o[1], hit[2] - o[2]).toFixed(2)}, size ${size.toFixed(3)} x ${sizeFactor().toFixed(2)} (map units)`);
+  tele(`tree placed: ${floor ? 'floor plane' : 'tap plane'}, distance ${Math.hypot(hit[0] - o[0], hit[1] - o[1], hit[2] - o[2]).toFixed(2)}, size ${size.toFixed(3)} x ${sizeFactor().toFixed(2)} (map units)` +
+       ` | at ${hit.map((x) => x.toFixed(4)).join(' ')} | camera ${o.map((x) => x.toFixed(4)).join(' ')}${floor ? ` | floor height ${floor.height.toFixed(4)}` : ''} | map ${stats[3]}`);
   hint('');
 }
 
@@ -333,7 +336,8 @@ async function start() {
   $('go').disabled = true;
   inertial = opts.imu === 'on';  // the options may have changed since the page loaded
   rec = opts.rec === 'on';
-  gyroOn = (opts.gyro === 'on' || opts.init === 'gyro') && !inertial && !params.get('seq');  // dataset mode: no phone gyro
+  replay = !!params.get('seq');
+  gyroOn = (opts.gyro === 'on' || opts.init === 'gyro') && !inertial;  // dataset / recording: its own IMU (seq branch)
   holdOn = opts.hold === 'gyro' && (!params.get('seq') || params.get('holdtest') === '1');  // holdtest: run the code on a dataset (no gyro: held = last pose)
   try {
     if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
@@ -351,7 +355,16 @@ async function start() {
       // rotated into the camera frame (R_cb). At rest it is the reaction to gravity, so "down" = -a. noimu=1: none.
       const imu = params.get('noimu') ? null : await fetch(`/api/imu?dataset=${dataset}&name=${encodeURIComponent(name)}`)
         .then((r) => (r.ok ? r.json() : null)).catch(() => null);
-      const imuRaw = inertial ? await (await fetch(`/api/imu?dataset=${dataset}&name=${encodeURIComponent(name)}&raw=1`)).json() : null;
+      const imuRaw = (inertial || gyroOn) ? await fetch(`/api/imu?dataset=${dataset}&name=${encodeURIComponent(name)}&raw=1`)
+        .then((r) => (r.ok ? r.json() : null)).catch(() => null) : null;  // gyro presets: the gyro prior needs IMU.T_b_c1 in the settings (recordings have it)
+      // recordings (record.html): the taps, replayed at their time and image position (same tree placement for every preset)
+      if (dataset === 'phone') {
+        const txt = await fetch(`/datasets/phone/${encodeURIComponent(name)}/touches.csv`).then((r) => (r.ok ? r.text() : '')).catch(() => '');
+        replayTaps = txt.split(/\r?\n/).filter((l) => l && !l.startsWith('#')).map((l) => {
+          const [t, u, v] = l.split(','); return { t: Number(BigInt(t) - BigInt(Math.round(man.tBase * 1e9))) * 1e-9, u: Number(u), v: Number(v) };
+        });
+        tele(`recording ${name}: ${man.frames.length} frames, ${replayTaps.length} taps to replay`);
+      }
       let kRaw = 0;
       const imuUpTo = (t) => {  // raw dataset IMU samples up to t (inertial test mode)
         const out = [];
@@ -590,6 +603,7 @@ async function start() {
         let imu = null;
         if (inertial || gyroOn) { imu = new Float64Array(f.imu || imuPending); if (!f.imu) imuPending = []; }
         r = await slam.request({ type: 'bitmap', bitmap: f.bitmap, t: f.t, viz: true, withMap: n % 10 === 0, imu }, [f.bitmap]);
+        replayT = f.t;
       }
       if (r.decodeMs != null) { decodeTimes.push(r.decodeMs); if (decodeTimes.length > 30) decodeTimes.shift(); }
       if (r.type !== 'pose') throw new Error(r.text || 'tracking error');
@@ -648,6 +662,11 @@ async function start() {
         if (tracking()) detectFloor();
       }
       drawFrame(r.bmp);
+      while (replayTaps.length && replayTaps[0].t <= replayT) {  // recorded tap: same image point as on the phone
+        const p = replayTaps.shift();
+        tele(`replayed tap at ${p.u.toFixed(0)}, ${p.v.toFixed(0)} px (t ${p.t.toFixed(2)} s): ${tracking() ? 'tracking' : 'not tracking, skipped'}`);
+        placeCactus(rect.x + p.u * rect.s, rect.y + p.v * rect.s);
+      }
       times.push(performance.now() - tf);
       if (times.length > 30) times.shift();
       if (state === 1) hint('Move the phone slowly sideways to start tracking');

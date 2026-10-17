@@ -14,6 +14,8 @@
 - /orbsettings/... ORB-SLAM3's official settings (baselines/orbslam3/settings)
 - /gt/...          ground truth, TUM format, camera frame (<root>/results/gt/<dataset>_<name>.txt)
 - POST /api/result?name=<file>[&append=1]      -> saves (or appends) the body to <results>/browser/<file>
+- POST /api/record?name=<rec>&file=<f>         -> recorder (record.html): stores <root>/datasets/phone/<rec>/ in the
+                                                  EuRoC layout (frame_<n>.jpg, data.csv, imu.csv, touches.csv, ...)
 - Optional HTTPS (for phones on the LAN): --cert cert.pem --key key.pem --host 0.0.0.0
 
 Usage: python serve.py [--root H:/Research] [--port 8000] [--host localhost] [--cert C --key K]
@@ -73,6 +75,20 @@ TUMVI_R_BC = [[-0.9995250378696743, 0.0075019185074052044, -0.02989013031643309]
               [-0.008522328211654736, -0.9993800792498829, 0.03415885127385616]]
 
 
+PHONE_R_BC = [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]]
+
+# recorder uploads: allowed file names -> path inside datasets/phone/<rec>/
+RECORD_FILES = {"data.csv": "mav0/cam0/data.csv", "imu.csv": "mav0/imu0/data.csv", "touches.csv": "touches.csv",
+                "gyro_gs.csv": "gyro_gs.csv", "accel_gs.csv": "accel_gs.csv", "meta.json": "meta.json",
+                "settings.yaml": "settings.yaml"}
+
+
+def record_path(name: str) -> str | None:
+    if re.fullmatch(r"frame_\d{1,7}\.jpg", name):
+        return f"mav0/cam0/data/{name}"
+    return RECORD_FILES.get(name)
+
+
 def imu_raw(seq: Path) -> dict:
     """Every IMU sample (EuRoC-format imu0, IMU body frame) on the camera timeline: t (s), acc (m/s^2), gyro (rad/s).
     For mono-inertial runs in ar.html's dataset test mode (?inertial=1)."""
@@ -100,7 +116,9 @@ def imu_manifest(seq: Path, dataset: str, hz: float = 50.0) -> dict:
         if l.strip() and not l.startswith("#"):
             ns0 = int(l.split(",", 1)[0])
             break
-    if dataset == "euroc":  # EuRoC: imu0 is the body frame; cam0 T_BS maps camera -> body
+    if dataset == "phone":  # recorder (record.js): DeviceMotion device axes, rear camera portrait: R_bc = diag(1, -1, -1)
+        r_bc = PHONE_R_BC
+    elif dataset == "euroc":  # EuRoC: imu0 is the body frame; cam0 T_BS maps camera -> body
         txt = (seq / "mav0" / "cam0" / "sensor.yaml").read_text()
         m = re.search(r"T_BS:.*?data:\s*\[([^\]]*)\]", txt, re.S)
         v = [float(x) for x in m.group(1).replace("\n", " ").split(",")]
@@ -140,6 +158,9 @@ def list_sequences(root: Path) -> list:
         for seq in sorted((ds_root / sub).glob("*")):
             if (seq / "mav0" / "cam0" / "data.csv").exists():
                 add(sub, seq.name, settings, sub == "tumvi")
+    for seq in sorted((ds_root / "phone").glob("*")):  # recorder sequences (settings written by record.js)
+        if (seq / "mav0" / "cam0" / "data.csv").exists() and (seq / "settings.yaml").exists():
+            add("phone", seq.name, f"/datasets/phone/{seq.name}/settings.yaml", False)
     for seq in sorted(ds_root.glob("*")):
         if (seq / "camera-calibration.json").exists() and (seq / "left_images").is_dir():
             s = root / "results" / "scratch" / "settings" / f"tumvie_{seq.name}.yaml"
@@ -186,7 +207,7 @@ class Handler(SimpleHTTPRequestHandler):
             q = parse_qs(u.query)
             name = q.get("name", [""])[0]
             dataset = q.get("dataset", ["tumvie"])[0]
-            sub = {"euroc": "euroc", "tumvi": "tumvi"}.get(dataset, "")
+            sub = {"euroc": "euroc", "tumvi": "tumvi", "phone": "phone"}.get(dataset, "")
             base = (self.root / "datasets" / sub).resolve()
             seq = (base / name).resolve()
             if not name or base not in seq.parents or not seq.is_dir():
@@ -197,7 +218,7 @@ class Handler(SimpleHTTPRequestHandler):
             q = parse_qs(u.query)
             name = q.get("name", [""])[0]
             dataset = q.get("dataset", [""])[0]
-            sub = {"euroc": "euroc", "tumvi": "tumvi"}.get(dataset, "")
+            sub = {"euroc": "euroc", "tumvi": "tumvi", "phone": "phone"}.get(dataset, "")
             base = (self.root / "datasets" / sub).resolve()
             seq = (base / name).resolve()
             if not sub or not name or base not in seq.parents or not (seq / "mav0" / "imu0" / "data.csv").exists():
@@ -215,6 +236,8 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         u = urlparse(self.path)
+        if u.path == "/api/record":
+            return self.record(parse_qs(u.query))
         if u.path != "/api/result":
             return self.send_error(404)
         q = parse_qs(u.query)
@@ -234,6 +257,27 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
         print(f"saved {out}", file=sys.stderr)
+
+
+    def record(self, q):
+        name, file = q.get("name", [""])[0], q.get("file", [""])[0]
+        rel = record_path(file)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name) or not rel:
+            return self.send_error(400, "bad recording or file name")
+        out = self.root / "datasets" / "phone" / name / rel
+        out.parent.mkdir(parents=True, exist_ok=True)
+        n = int(self.headers.get("Content-Length", 0))
+        out.write_bytes(self.rfile.read(n))
+        self.send_response(204)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        if not file.startswith("frame_"):
+            print(f"recording {name}: saved {rel}", file=sys.stderr)
+
+    def log_message(self, fmt, *args):  # quiet: one line per recorded frame would flood the log
+        if "/api/record" in (self.path or "") and " 204 " in (fmt % args):
+            return
+        super().log_message(fmt, *args)
 
 
 class V6Server(ThreadingHTTPServer):
