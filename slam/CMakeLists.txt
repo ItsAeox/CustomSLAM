@@ -131,7 +131,10 @@ if (BUILD_WASM)
   set_target_properties(orbslam3_web_js PROPERTIES OUTPUT_NAME "orbslam3")
   target_link_options(orbslam3_web_js PRIVATE
     --bind -sENVIRONMENT=web,worker -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createOrbSlam3
-    -sPTHREAD_POOL_SIZE=6 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=256MB -sMAXIMUM_MEMORY=2GB
+    # 10 pre-spawned workers: the module's main thread is the SLAM worker, and a pthread that needs a new Web Worker can
+    # only start while that thread is free. Local mapping + loop closing + Web.ORB.Parallel helpers (3) + the two-view
+    # initialiser's H/F threads (joined, i.e. the caller blocks) exceeded 6 and deadlocked (2026-10-17)
+    -sPTHREAD_POOL_SIZE=10 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=256MB -sMAXIMUM_MEMORY=2GB
     -sSTACK_SIZE=4MB -sDEFAULT_PTHREAD_STACK_SIZE=4MB -sFORCE_FILESYSTEM=1
     "-sEXPORTED_RUNTIME_METHODS=['FS','HEAPU8']")
 endif()
