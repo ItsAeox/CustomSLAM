@@ -3,7 +3,7 @@
 # First 300 frames, live@0.5, seeds 1-2; prints frames before the map and the gyro two-view lines.
 cd /mnt/h/Research/CustomSLAM
 S=/mnt/h/Research/datasets_synth; D=/mnt/h/Research/datasets; V=/mnt/h/Research/results/settings_variants
-B=/root/build/snap-97b9685/native/orbslam3_run; VOC=/mnt/h/Research/vocab/ORBvoc.bin; O=/mnt/h/Research/results/scratch/ginit_phone
+B=/root/build/snap-${1:-97b9685}/native/orbslam3_run; VOC=/mnt/h/Research/vocab/ORBvoc.bin; O=/mnt/h/Research/results/scratch/ginit_phone${1:+_$1}
 for v in preset-fast-gyro fast-gyro-ginit; do for src in orig phone; do for s in 1 2; do
   for q in "euroc V1_03_difficult" "euroc MH_04_difficult" "tumvi dataset-room1_512_16"; do
     set -- $q; ds=$1; n=$2; st=$V/EuRoC_mono_$v.yaml; c=""; [ $ds = tumvi ] && { st=$V/TUM-VI_mono_$v.yaml; c=--clahe; }

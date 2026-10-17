@@ -47,8 +47,10 @@ export const PRESETS = [
   { key: 'fast', label: 'Hybrid, fastest', set: { kltmax: '4', motion: 'time', map: 'light' },
     note: 'Up to 4 KLT frames, motion prediction scaled to the frame interval, lighter local mapping (best phone fps so far).' },
   // round 2 (2026-10-17): "Hybrid, fastest" plus one new algorithm each (claude/RESEARCH.md tracker, PHONE.md round 2)
-  { key: 'fastq', label: 'Fastest + quick solver', set: { kltmax: '4', motion: 'time', map: 'light', pose: 'fast', orbpar: 'parallel' },
-    note: 'Hybrid fastest with the pose solved without g2o (same result) and the ORB pyramid levels on 4 threads: less time per frame.' },
+  { key: 'fastq', label: 'Fastest + quick solver', set: { kltmax: '4', motion: 'time', map: 'light', pose: 'fast' },
+    note: 'Hybrid fastest with the pose solved without a g2o graph: the same result in less time (1.5-2.4x faster pose step).' },
+  { key: 'fastqp', label: 'Fastest + quick solver + parallel ORB', set: { kltmax: '4', motion: 'time', map: 'light', pose: 'fast', orbpar: 'parallel' },
+    note: 'As quick solver, plus the ORB pyramid levels extracted on 4 threads (may be slower if the phone puts them on its small cores).' },
   { key: 'gstart', label: 'Fastest + gyro start', set: { kltmax: '4', motion: 'time', map: 'light', gyro: 'on', init: 'gyro' },
     note: 'The map starts from two frames with the rotation measured by the gyro (2-point method), so less "move sideways" at the start. Includes the gyro rotation prior.' },
   { key: 'grecover', label: 'Fastest + gyro recovery', set: { kltmax: '4', motion: 'time', map: 'light', gyro: 'on', recover: 'coast', hold: 'gyro' },
