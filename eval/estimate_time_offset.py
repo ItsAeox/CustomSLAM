@@ -71,7 +71,7 @@ def camera_rates(traj):
     if traj.shape[1] > 8:  # AR logs: map count; a pair across a new map / merge has a meaningless relative rotation
         keep &= np.diff(traj[:, 8]) == 0
     rel = R[:-1].inv() * R[1:]       # R_c(k) -> c(k+1), in camera k
-    w = rel.as_rotvec() / dt[:, None]
+    w = rel.as_rotvec() / np.where(keep, dt, 1.0)[:, None]  # (duplicate stamps are dropped by keep)
     tm = 0.5 * (t[:-1] + t[1:])
     return tm[keep], w[keep]
 

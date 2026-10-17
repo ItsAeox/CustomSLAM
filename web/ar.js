@@ -385,6 +385,11 @@ async function start() {
       const t0 = performance.now();
       nextBitmap = async () => {  // real-time playback; frames that are already late are skipped
         const now = (performance.now() - t0) / 1000;
+        if (i >= man.frames.length) {  // end of the sequence: keep showing the last frame (was: undefined frame, TypeError)
+          i = man.frames.length - 1;
+          hint('End of the dataset sequence.', 60000);
+          await new Promise((res) => setTimeout(res, 100));  // do not spin on the last frame
+        }
         while (i + 1 < man.frames.length && man.frames[i + 1].t <= now) i++;
         if (man.frames[i].t > now) await new Promise((res) => setTimeout(res, (man.frames[i].t - now) * 1000));
         const f = man.frames[Math.min(i++, man.frames.length - 1)];
