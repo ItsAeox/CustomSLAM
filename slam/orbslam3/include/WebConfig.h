@@ -83,7 +83,8 @@ struct WebConfig
     double initMinParallax = 1.0; // Web.Init.MinParallax: degrees (TwoViewReconstruction)
     int initMinTriangulated = 50; // Web.Init.MinTriangulated: triangulated points of the two-view solution
     int initGyro = 0;             // Web.Init.Gyro: 1 = two-view initialisation with the gyro rotation (2-point RANSAC on
-                                  // the translation direction; needs Web.Gyro.Prior), stock reconstruction as fallback
+                                  // the translation direction; needs Web.Gyro.Prior), stock reconstruction as fallback;
+                                  // 2 = also refine rotation + translation (maps later in ginit_ab: not used)
 };
 
 inline WebConfig& webConfig()

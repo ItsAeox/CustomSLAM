@@ -448,8 +448,15 @@ int main(int argc, char** argv) {
   fs::current_path(out);  // REGISTER_TIMES builds write their *TimeStats.txt files to the working directory
   SLAM.Shutdown();
   const fs::path rawF = fs::path(out) / "f_euroc_ns.txt", rawKF = fs::path(out) / "kf_euroc_ns.txt";
-  SLAM.SaveTrajectoryEuRoC(rawF.string());
-  SLAM.SaveKeyFrameTrajectoryEuRoC(rawKF.string());
+  bool anyKF = false;  // ORB-SLAM3's savers crash when no map has a keyframe (a run ending right after a reset)
+  for (ORB_SLAM3::Map* m : SLAM.WebAtlas()->GetAllMaps()) anyKF = anyKF || !m->GetAllKeyFrames().empty();
+  if (anyKF) {
+    SLAM.SaveTrajectoryEuRoC(rawF.string());
+    SLAM.SaveKeyFrameTrajectoryEuRoC(rawKF.string());
+  } else {
+    std::ofstream(rawF.string()).close();
+    std::ofstream(rawKF.string()).close();
+  }
   euRoCToTum(rawF, fs::path(out) / "traj_tum.txt", d.tBase);
   euRoCToTum(rawKF, fs::path(out) / "kf_traj_tum.txt", d.tBase);
   // Every map's trajectory (claude/ISSUES.md H3): SaveTrajectoryEuRoC keeps only the largest map, so a multi-map run

@@ -3088,9 +3088,11 @@ bool Tracking::WebGyroTwoView(Sophus::SE3f& T21, vector<cv::Point3f>& vP3D, vect
     if(n < cfg.initMinTriangulated)
         return false;
     const float fx = mpCamera->getParameter(0);
-    // RANSAC with ~6 px (a phone gyro is tens of ms off the camera clock: ~1 deg at 30 deg/s), then rotation and
-    // translation refined together on those inliers, then the strict ~2 px test
-    const float thLoose = 6.0f / fx, thAng = 2.0f / fx;  // angle of f2 to the epipolar plane
+    // Web.Init.Gyro 1: RANSAC at ~2 px with the gyro rotation as is. 2: RANSAC at ~6 px (a phone gyro is tens of ms off
+    // the camera clock: ~1 deg at 30 deg/s), rotation and translation refined together, then the ~2 px test. ginit_ab
+    // (2026-10-17): 1 maps sooner (29.5 / 36.4 frames, dataset / phone-like gyro) than 2 (41.6 / 42.1) -> 1 is used
+    const bool bRefine = cfg.initGyro >= 2;
+    const float thAng = 2.0f / fx, thLoose = bRefine ? 6.0f / fx : thAng;  // angle of f2 to the epipolar plane
     auto planeErrR = [&](const Eigen::Matrix3f& R, const Eigen::Vector3f& t, int k) {
         const Eigen::Vector3f m = t.cross(R * vF1[k]);
         const float nm = m.norm();
@@ -3133,9 +3135,10 @@ bool Tracking::WebGyroTwoView(Sophus::SE3f& T21, vector<cv::Point3f>& vP3D, vect
     Eigen::JacobiSVD<Eigen::MatrixXf> svd(A, Eigen::ComputeFullV);
     Eigen::Vector3f t = svd.matrixV().col(2).normalized();
 
-    // joint refinement (Gauss-Newton, Huber 2 px, numeric Jacobian): R = exp(w) R21, t on its tangent plane, with a
+    // (mode 2) joint refinement (Gauss-Newton, Huber 2 px, numeric Jacobian): R = exp(w) R21, t on its tangent plane, with a
     // prior keeping R near the gyro's (sigma 0.75 deg vs 1 px per point): at small baselines a rotation change can mimic
     // the translation's parallax, the ambiguity the gyro is there to remove; the prior only decides that direction
+    if(bRefine)
     {
         const float lambdaR = std::pow((1.0f / fx) / (0.75f * (float)M_PI / 180.0f), 2);  // (sigma_e / sigma_R)^2
         Eigen::Vector3f wAcc = Eigen::Vector3f::Zero();  // rotation moved away from the gyro so far
