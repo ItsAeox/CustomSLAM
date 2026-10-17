@@ -21,6 +21,7 @@
 #include "System.h"
 #include "Converter.h"
 #include "WebConfig.h"
+#include "Optimizer.h"
 #include <thread>
 #include <pangolin/pangolin.h>
 #include <iomanip>
@@ -537,6 +538,9 @@ void System::Shutdown()
              << " flow_ms=" << (mpTracker->mnWebKLTFrames ? mpTracker->mdWebKLTFlowMs / mpTracker->mnWebKLTFrames : 0.0)
              << " frame_ms=" << (mpTracker->mnWebKLTFrames ? mpTracker->mdWebKLTCopyMs / mpTracker->mnWebKLTFrames : 0.0)
              << " pose_ms=" << (mpTracker->mnWebKLTFrames ? mpTracker->mdWebKLTPoseMs / mpTracker->mnWebKLTFrames : 0.0) << endl;
+    cout << "RECOVERY-STATS coast_tries=" << mpTracker->mnWebCoastTries << " coast_recoveries=" << mpTracker->mnWebCoastRecoveries
+         << " reloc_recoveries=" << mpTracker->mnWebRelocRecoveries << endl;
+    Optimizer::WebPrintFastPoseStats();
 #endif
     {
         unique_lock<mutex> lock(mMutexReset);

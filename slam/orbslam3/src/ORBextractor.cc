@@ -809,7 +809,7 @@ namespace ORB_SLAM3
 
         const float W = 35;
 
-        for (int level = 0; level < nlevels; ++level)
+        auto levelKeys = [&](int level)
         {
             const int minBorderX = EDGE_THRESHOLD-3;
             const int minBorderY = minBorderX;
@@ -913,7 +913,23 @@ namespace ORB_SLAM3
                 keypoints[i].octave=level;
                 keypoints[i].size = scaledPatchSize;
             }
+        };
+#ifdef ORBSLAM3_WEB
+        // web port (Web.ORB.Parallel): levels are independent (own image, own output vector)
+        if(webConfig().orbParallel)
+        {
+            cv::parallel_for_(cv::Range(0, nlevels), [&](const cv::Range& r) {
+                for (int level = r.start; level < r.end; ++level)
+                {
+                    levelKeys(level);
+                    computeOrientation(mvImagePyramid[level], allKeypoints[level], umax);
+                }
+            }, nlevels);
+            return;
         }
+#endif
+        for (int level = 0; level < nlevels; ++level)
+            levelKeys(level);
 
         // compute orientations
 #ifdef REGISTER_TIMES
@@ -1160,6 +1176,23 @@ namespace ORB_SLAM3
         _keypoints = vector<cv::KeyPoint>(nkeypoints);
 
         int offset = 0;
+#ifdef ORBSLAM3_WEB
+        // web port (Web.ORB.Parallel): blur + rotated BRIEF of every level in parallel, merged below in level order
+        const bool bParDesc = webConfig().orbParallel && webConfig().descriptor == 0;
+        vector<Mat> vLevelDesc(bParDesc ? nlevels : 0);
+        if(bParDesc)
+            cv::parallel_for_(cv::Range(0, nlevels), [&](const cv::Range& r) {
+                for (int level = r.start; level < r.end; ++level)
+                {
+                    if(allKeypoints[level].empty())
+                        continue;
+                    Mat workingMat = mvImagePyramid[level].clone();
+                    GaussianBlur(workingMat, workingMat, Size(7, 7), 2, 2, BORDER_REFLECT_101);
+                    vLevelDesc[level] = Mat((int)allKeypoints[level].size(), 32, CV_8U);
+                    computeDescriptors(workingMat, allKeypoints[level], vLevelDesc[level], pattern);
+                }
+            }, nlevels);
+#endif
         //Modified for speeding up stereo fisheye matching
         int monoIndex = 0, stereoIndex = nkeypoints-1;
         for (int level = 0; level < nlevels; ++level)
@@ -1172,7 +1205,9 @@ namespace ORB_SLAM3
 
             Mat desc = cv::Mat(nkeypointsLevel, 32, CV_8U);
 #ifdef ORBSLAM3_WEB
-            if(webConfig().descriptor == 1)
+            if(bParDesc)
+                desc = vLevelDesc[level];
+            else if(webConfig().descriptor == 1)
             {
                 // web port: TEBLID-256 instead of rotated BRIEF, on the same oriented-FAST keypoints (same 32 bytes /
                 // Hamming distance; needs a TEBLID vocabulary). Box averages on an integral image: no blur needed.

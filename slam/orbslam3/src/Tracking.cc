@@ -29,6 +29,8 @@
 #include "MLPnPsolver.h"
 #include "GeometricTools.h"
 #include "WebConfig.h"
+#include "Thirdparty/DBoW2/DUtils/Random.h"  // web port: Web.Init.Gyro RANSAC
+#include <Eigen/Dense>
 
 #include <opencv2/video/tracking.hpp>
 
@@ -1949,6 +1951,9 @@ void Tracking::Track()
 
     if(mState==NOT_INITIALIZED)
     {
+#ifdef ORBSLAM3_WEB
+        mbWebGood = false;  // a new map: no coasting from a pose of the old one
+#endif
         if(mSensor==System::STEREO || mSensor==System::RGBD || mSensor==System::IMU_STEREO || mSensor==System::IMU_RGBD)
         {
             StereoInitialization();
@@ -2060,8 +2065,19 @@ void Tracking::Track()
                     }
                     else
                     {
+#ifdef ORBSLAM3_WEB
+                        // web port: coast first (local-map search around the last good pose), then BoW relocalisation
+                        bOK = webConfig().coast && WebCoastTrack();
+                        if(!bOK)
+                        {
+                            bOK = Relocalization();
+                            if(bOK)
+                                mnWebRelocRecoveries++;
+                        }
+#else
                         // Relocalization
                         bOK = Relocalization();
+#endif
                         //std::cout << "mCurrentFrame.mTimeStamp:" << to_string(mCurrentFrame.mTimeStamp) << std::endl;
                         //std::cout << "mTimeStampLost:" << to_string(mTimeStampLost) << std::endl;
 #ifdef ORBSLAM3_WEB
@@ -2212,7 +2228,18 @@ void Tracking::Track()
         }
 
         if(bOK)
+        {
             mState = OK;
+#ifdef ORBSLAM3_WEB
+            mbWebGood = true;
+            mWebGoodTcw = mCurrentFrame.GetPose();
+            mdWebGoodTime = mCurrentFrame.mTimeStamp;
+            mpWebGoodMap = pCurrentMap;
+            mbWebGoodVel = mbVelocity;
+            mWebGoodVel = mVelocity;
+            mdWebGoodVelDt = mWebVelocityDt;
+#endif
+        }
         else if (mState == OK)
         {
             if (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
@@ -2578,7 +2605,11 @@ void Tracking::MonocularInitialization()
         int nmatches = matcher.SearchForInitialization(mInitialFrame,mCurrentFrame,mvbPrevMatched,mvIniMatches,100);
 
         // Check if there are enough correspondences
+        #ifdef ORBSLAM3_WEB
+        if(nmatches<webConfig().initMinMatches)  // Web.Init.MinMatches (stock 100)
+#else
         if(nmatches<100)
+#endif
         {
             mbReadyToInitializate = false;
             return;
@@ -2587,7 +2618,14 @@ void Tracking::MonocularInitialization()
         Sophus::SE3f Tcw;
         vector<bool> vbTriangulated; // Triangulated Correspondences (mvIniMatches)
 
+#ifdef ORBSLAM3_WEB
+        bool bTwoView = webConfig().initGyro && webConfig().gyroPrior && WebGyroTwoView(Tcw, mvIniP3D, vbTriangulated);
+        if(!bTwoView)
+            bTwoView = mpCamera->ReconstructWithTwoViews(mInitialFrame.mvKeysUn,mCurrentFrame.mvKeysUn,mvIniMatches,Tcw,mvIniP3D,vbTriangulated);
+        if(bTwoView)
+#else
         if(mpCamera->ReconstructWithTwoViews(mInitialFrame.mvKeysUn,mCurrentFrame.mvKeysUn,mvIniMatches,Tcw,mvIniP3D,vbTriangulated))
+#endif
         {
             for(size_t i=0, iend=mvIniMatches.size(); i<iend;i++)
             {
@@ -2672,7 +2710,11 @@ void Tracking::CreateInitialMapMonocular()
     else
         invMedianDepth = 1.0f/medianDepth;
 
+#ifdef ORBSLAM3_WEB
+    if(medianDepth<0 || pKFcur->TrackedMapPoints(1)<std::min(50, webConfig().initMinTriangulated))  // Web.Init.MinTriangulated
+#else
     if(medianDepth<0 || pKFcur->TrackedMapPoints(1)<50) // TODO Check, originally 100 tracks
+#endif
     {
         Verbose::PrintMess("Wrong initialization, reseting...", Verbose::VERBOSITY_QUIET);
         mpSystem->ResetActiveMap();
@@ -2819,6 +2861,338 @@ Sophus::SE3f Tracking::WebMotionPrediction(double tNow) const
     return V;
 }
 
+// web port (Web.Track.Coast): loss recovery without place recognition. While recently lost (monocular, visual-only),
+// the local map of the last good frame is searched around pose hypotheses with the wide lost-state window (15 px), and
+// the pose is refined by motion-only BA. Hypotheses: the last good pose and, with Web.Gyro.Prior, that pose rotated by
+// the gyro since (camera centre kept). Most phone losses are brief (blur, a fast turn) with the camera still in front of
+// the mapped area, whereas bag-of-words relocalisation needs a view close to a keyframe. Accepted like a relocalisation:
+// >= Web.Track.CoastMinInliers inliers, then the stricter local-map check of the next frames (mnLastRelocFrameId).
+bool Tracking::WebCoastTrack()
+{
+    const WebConfig& cfg = webConfig();
+    const double dt = mCurrentFrame.mTimeStamp - mdWebGoodTime;
+    if(!mbWebGood || mpWebGoodMap != mpAtlas->GetCurrentMap() || mvpLocalMapPoints.empty() || dt < 0 ||
+       dt > cfg.coastMaxTime)
+        return false;
+    mnWebCoastTries++;
+
+    // hypotheses for the current pose, most informed first: gyro rotation with the constant-velocity displacement over
+    // dt, gyro rotation alone, constant velocity alone (rescaled to dt, at most 4 intervals as WebMotionPrediction),
+    // no motion
+    vector<Sophus::SE3f> vHyp;
+    vector<const char*> vName;
+    const bool bVel = mbWebGoodVel && mdWebGoodVelDt > 0;
+    Sophus::SE3f Vdt;
+    if(bVel)
+        Vdt = Sophus::SE3f::exp(static_cast<float>(std::min(dt / mdWebGoodVelDt, 4.0)) * mWebGoodVel.log());
+    Eigen::Matrix3f dRb;
+    const double d = cfg.gyroTimeOffset;
+    if(cfg.gyroPrior && WebGyroRotation(mdWebGoodTime + d, mCurrentFrame.mTimeStamp + d, dRb))
+    {
+        const Sophus::SO3f Rbc = Sophus::SO3f::fitToSO3(Eigen::Map<const Eigen::Matrix<float, 3, 3, Eigen::RowMajor>>(cfg.gyroRbc));
+        const Sophus::SO3f dRc = Rbc.inverse() * Sophus::SO3f::fitToSO3(dRb) * Rbc;  // current camera in the good one
+        const Sophus::SO3f R = dRc.inverse();
+        if(bVel)
+        {
+            const Eigen::Vector3f c = -(Vdt.so3().inverse() * Vdt.translation());  // displacement in the good camera
+            vHyp.push_back(Sophus::SE3f(R, -(R * c)) * mWebGoodTcw);
+            vName.push_back("gyro+velocity");
+        }
+        vHyp.push_back(Sophus::SE3f(R, Eigen::Vector3f::Zero()) * mWebGoodTcw);
+        vName.push_back("gyro");
+    }
+    if(bVel)
+    {
+        vHyp.push_back(Vdt * mWebGoodTcw);
+        vName.push_back("velocity");
+    }
+    vHyp.push_back(mWebGoodTcw);
+    vName.push_back("still");
+
+    int nBest = 0;
+    Sophus::SE3f TBest;
+    vector<MapPoint*> vBest;
+    for(size_t h = 0; h < vHyp.size(); h++)
+    {
+        const Sophus::SE3f& T = vHyp[h];
+        fill(mCurrentFrame.mvpMapPoints.begin(), mCurrentFrame.mvpMapPoints.end(), static_cast<MapPoint*>(NULL));
+        fill(mCurrentFrame.mvbOutlier.begin(), mCurrentFrame.mvbOutlier.end(), false);
+        mCurrentFrame.SetPose(T);
+        SearchLocalPoints();
+        int nMatches = 0;
+        for(int i = 0; i < mCurrentFrame.N; i++)
+            if(mCurrentFrame.mvpMapPoints[i])
+                nMatches++;
+        if(mnWebCoastTries <= 40)  // diagnostics: the first tries of a run
+            cout << "coast try " << mnWebCoastTries << " " << vName[h]
+                 << ": dt " << dt << " s, local points " << mvpLocalMapPoints.size() << ", matches " << nMatches << endl;
+        if(nMatches < cfg.coastMinInliers)
+            continue;
+        Optimizer::PoseOptimization(&mCurrentFrame);
+        int nIn = 0;
+        for(int i = 0; i < mCurrentFrame.N; i++)
+        {
+            MapPoint* pMP = mCurrentFrame.mvpMapPoints[i];
+            if(!pMP)
+                continue;
+            if(mCurrentFrame.mvbOutlier[i])
+            {
+                mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint*>(NULL);
+                mCurrentFrame.mvbOutlier[i] = false;
+            }
+            else if(pMP->Observations() > 0)
+                nIn++;
+        }
+        if(mnWebCoastTries <= 40)
+            cout << "coast try " << mnWebCoastTries << ": inliers " << nIn << endl;
+        if(nIn > nBest)
+        {
+            nBest = nIn;
+            TBest = mCurrentFrame.GetPose();
+            vBest = mCurrentFrame.mvpMapPoints;
+        }
+    }
+    fill(mCurrentFrame.mvbOutlier.begin(), mCurrentFrame.mvbOutlier.end(), false);
+    if(nBest < cfg.coastMinInliers && cfg.coast >= 2)
+    {
+        // prior-free: each keypoint's nearest local-map point by descriptor (Hamming <= TH_LOW, ratio 0.8, one keypoint
+        // per point), MLPnP RANSAC as Relocalization, then motion-only BA and a projection search at that pose
+        const int N = mCurrentFrame.N;
+        vector<int> vD1(N, 256), vD2(N, 256);
+        vector<MapPoint*> vM(N, static_cast<MapPoint*>(NULL));
+        for(MapPoint* pMP : mvpLocalMapPoints)
+        {
+            if(!pMP || pMP->isBad())
+                continue;
+            const cv::Mat dm = pMP->GetDescriptor();
+            const uint32_t* a = dm.ptr<uint32_t>();
+            for(int i = 0; i < N; i++)
+            {
+                const uint32_t* b = mCurrentFrame.mDescriptors.ptr<uint32_t>(i);
+                int dist = 0;
+                for(int k = 0; k < 8; k++)
+                    dist += __builtin_popcount(a[k] ^ b[k]);
+                if(dist < vD1[i]) { vD2[i] = vD1[i]; vD1[i] = dist; vM[i] = pMP; }
+                else if(dist < vD2[i]) vD2[i] = dist;
+            }
+        }
+        std::map<MapPoint*, int> mOwner;  // one keypoint per map point: the closest
+        for(int i = 0; i < N; i++)
+        {
+            if(!vM[i] || vD1[i] > ORBmatcher::TH_LOW || vD1[i] > 0.8f * vD2[i])
+            {
+                vM[i] = static_cast<MapPoint*>(NULL);
+                continue;
+            }
+            auto it = mOwner.find(vM[i]);
+            if(it == mOwner.end())
+                mOwner[vM[i]] = i;
+            else if(vD1[i] < vD1[it->second])
+            {
+                vM[it->second] = static_cast<MapPoint*>(NULL);
+                it->second = i;
+            }
+            else
+                vM[i] = static_cast<MapPoint*>(NULL);
+        }
+        const int nCand = (int)mOwner.size();
+        int nGood = 0;
+        if(nCand >= 15)
+        {
+            MLPnPsolver solver(mCurrentFrame, vM);
+            solver.SetRansacParameters(0.99, 10, 300, 6, 0.5, 5.991);
+            vector<bool> vbInliers;
+            int nInl = 0;
+            bool bNoMore = false;
+            Eigen::Matrix4f eigTcw;
+            if(solver.iterate(300, bNoMore, vbInliers, nInl, eigTcw))
+            {
+                mCurrentFrame.SetPose(Sophus::SE3f(eigTcw));
+                for(int i = 0; i < N; i++)
+                    mCurrentFrame.mvpMapPoints[i] = (i < (int)vbInliers.size() && vbInliers[i]) ? vM[i] : static_cast<MapPoint*>(NULL);
+                nGood = Optimizer::PoseOptimization(&mCurrentFrame);
+                for(int i = 0; i < N; i++)
+                    if(mCurrentFrame.mvbOutlier[i])
+                    {
+                        mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint*>(NULL);
+                        mCurrentFrame.mvbOutlier[i] = false;
+                    }
+                if(nGood >= 10)
+                {
+                    SearchLocalPoints();
+                    nGood = Optimizer::PoseOptimization(&mCurrentFrame);
+                    for(int i = 0; i < N; i++)
+                        if(mCurrentFrame.mvbOutlier[i])
+                        {
+                            mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint*>(NULL);
+                            mCurrentFrame.mvbOutlier[i] = false;
+                        }
+                }
+            }
+        }
+        if(mnWebCoastTries <= 40)
+            cout << "coast try " << mnWebCoastTries << " local-map PnP: candidates " << nCand << ", inliers " << nGood << endl;
+        if(nGood > nBest)
+        {
+            nBest = nGood;
+            TBest = mCurrentFrame.GetPose();
+            vBest = mCurrentFrame.mvpMapPoints;
+        }
+    }
+    if(nBest < cfg.coastMinInliers)
+    {
+        fill(mCurrentFrame.mvpMapPoints.begin(), mCurrentFrame.mvpMapPoints.end(), static_cast<MapPoint*>(NULL));
+        return false;
+    }
+    mCurrentFrame.SetPose(TBest);
+    mCurrentFrame.mvpMapPoints = vBest;
+    mnLastRelocFrameId = mCurrentFrame.mnId;
+    mnWebCoastRecoveries++;
+    cout << "Recovered by coasting: " << nBest << " inliers, " << dt << " s after the last good frame" << endl;
+    return true;
+}
+
+// web port (Web.Init.Gyro): two-view initialisation with the rotation known from the gyro. With R21 given, the epipolar
+// constraint f2 . (t x R21 f1) = 0 is linear in the translation direction t: t . n = 0 with n = (R21 f1) x f2, so two
+// correspondences give t = n_a x n_b (minimal 2-point RANSAC, Kneip et al. 2011; Troiani et al. 2014). Refined on the
+// inliers (smallest singular vector), sign from cheirality, points triangulated and checked as TwoViewReconstruction's
+// CheckRT (positive depth, reprojection, parallax of the 50th point >= Web.Init.MinParallax, >= MinTriangulated
+// points). No homography/fundamental model selection: the rotation, the ambiguous part at low parallax, is measured.
+// The initial global BA refines R and t. False (stock reconstruction follows) without gyro coverage or support.
+bool Tracking::WebGyroTwoView(Sophus::SE3f& T21, vector<cv::Point3f>& vP3D, vector<bool>& vbTriangulated)
+{
+    const WebConfig& cfg = webConfig();
+    Eigen::Matrix3f dRb;
+    const double d = cfg.gyroTimeOffset;
+    if(!WebGyroRotation(mInitialFrame.mTimeStamp + d, mCurrentFrame.mTimeStamp + d, dRb))
+        return false;
+    const Sophus::SO3f Rbc = Sophus::SO3f::fitToSO3(Eigen::Map<const Eigen::Matrix<float, 3, 3, Eigen::RowMajor>>(cfg.gyroRbc));
+    const Eigen::Matrix3f R21 = (Rbc.inverse() * Sophus::SO3f::fitToSO3(dRb) * Rbc).inverse().matrix();
+
+    // bearings of the matches (unit vectors), constraint normals n = (R21 f1) x f2
+    vector<int> vI1;
+    vector<Eigen::Vector3f> vF1, vF2, vN;
+    for(size_t i = 0; i < mvIniMatches.size(); i++)
+    {
+        if(mvIniMatches[i] < 0)
+            continue;
+        const Eigen::Vector3f f1 = mpCamera->unprojectEig(mInitialFrame.mvKeysUn[i].pt).normalized();
+        const Eigen::Vector3f f2 = mpCamera->unprojectEig(mCurrentFrame.mvKeysUn[mvIniMatches[i]].pt).normalized();
+        vI1.push_back((int)i);
+        vF1.push_back(f1);
+        vF2.push_back(f2);
+        vN.push_back((R21 * f1).cross(f2));
+    }
+    const int n = (int)vI1.size();
+    if(n < cfg.initMinTriangulated)
+        return false;
+    const float fx = mpCamera->getParameter(0);
+    const float thAng = 2.0f / fx;  // ~2 px: angle of f2 to the epipolar plane
+    auto planeErr = [&](const Eigen::Vector3f& t, int k) {
+        const Eigen::Vector3f m = t.cross(R21 * vF1[k]);
+        const float nm = m.norm();
+        return nm > 1e-9f ? std::abs(vF2[k].dot(m)) / nm : 1.0f;
+    };
+
+    // 2-point RANSAC on the translation direction
+    vector<bool> vIn(n, false), vBestIn;
+    int nBestIn = 0;
+    DUtils::Random::SeedRandOnce(0);
+    for(int it = 0; it < 200; it++)
+    {
+        const int a = DUtils::Random::RandomInt(0, n - 1), b = DUtils::Random::RandomInt(0, n - 1);
+        if(a == b)
+            continue;
+        Eigen::Vector3f t = vN[a].cross(vN[b]);
+        if(t.norm() < 1e-9f)
+            continue;
+        t.normalize();
+        int nIn = 0;
+        for(int k = 0; k < n; k++)
+        {
+            vIn[k] = planeErr(t, k) < thAng;
+            nIn += vIn[k];
+        }
+        if(nIn > nBestIn)
+        {
+            nBestIn = nIn;
+            vBestIn = vIn;
+        }
+    }
+    if(nBestIn < cfg.initMinTriangulated)
+        return false;
+    // least squares on the inliers: t = smallest right singular vector of the stacked normals
+    Eigen::MatrixXf A(nBestIn, 3);
+    for(int k = 0, r = 0; k < n; k++)
+        if(vBestIn[k])
+            A.row(r++) = vN[k].normalized().transpose();
+    Eigen::JacobiSVD<Eigen::MatrixXf> svd(A, Eigen::ComputeFullV);
+    Eigen::Vector3f t = svd.matrixV().col(2).normalized();
+
+    // both signs: triangulate, keep the one with more points in front of both cameras (CheckRT's tests)
+    const float th2 = 4.0f / (fx * fx);  // reprojection, normalised plane (TwoViewReconstruction: 4 sigma^2, sigma 1 px)
+    int nGoodBest = -1;
+    float parallaxBest = 0;
+    vector<cv::Point3f> vP3DBest;
+    vector<bool> vbTriBest;
+    Eigen::Vector3f tBest = t;
+    for(int s = 0; s < 2; s++)
+    {
+        const Eigen::Vector3f ts = s ? -t : t;
+        Eigen::Matrix<float, 3, 4> P1, P2;
+        P1 << Eigen::Matrix3f::Identity(), Eigen::Vector3f::Zero();
+        P2 << R21, ts;
+        const Eigen::Vector3f O2 = -R21.transpose() * ts;
+        vector<cv::Point3f> vP(mvIniMatches.size());
+        vector<bool> vbTri(mvIniMatches.size(), false);
+        vector<float> vCos;
+        int nGood = 0;
+        for(int k = 0; k < n; k++)
+        {
+            if(!vBestIn[k])
+                continue;
+            Eigen::Vector3f x1 = vF1[k] / vF1[k](2), x2 = vF2[k] / vF2[k](2), X;
+            if(vF1[k](2) <= 0 || vF2[k](2) <= 0 || !GeometricTools::Triangulate(x1, x2, P1, P2, X) || !X.allFinite())
+                continue;
+            const Eigen::Vector3f X2 = R21 * X + ts;
+            const float cosPar = (X.normalized()).dot((X - O2).normalized());
+            if((X(2) <= 0 || X2(2) <= 0) && cosPar < 0.99998f)
+                continue;
+            const Eigen::Vector2f e1 = X.head<2>() / X(2) - x1.head<2>(), e2 = X2.head<2>() / X2(2) - x2.head<2>();
+            if(e1.squaredNorm() > th2 || e2.squaredNorm() > th2)
+                continue;
+            vCos.push_back(cosPar);
+            vP[vI1[k]] = cv::Point3f(X(0), X(1), X(2));
+            nGood++;
+            if(cosPar < 0.99998f)
+                vbTri[vI1[k]] = true;
+        }
+        if(nGood > nGoodBest)
+        {
+            nGoodBest = nGood;
+            float par = 0;
+            if(!vCos.empty())
+            {
+                sort(vCos.begin(), vCos.end());
+                par = acos(vCos[std::min(50, (int)vCos.size() - 1)]) * 180.0f / (float)CV_PI;
+            }
+            parallaxBest = par;
+            vP3DBest = vP;
+            vbTriBest = vbTri;
+            tBest = ts;
+        }
+    }
+    const int nTri = (int)std::count(vbTriBest.begin(), vbTriBest.end(), true);
+    if(nGoodBest < cfg.initMinTriangulated || nTri < cfg.initMinTriangulated || parallaxBest < cfg.initMinParallax)
+        return false;
+    T21 = Sophus::SE3f(Sophus::SO3f::fitToSO3(R21), tBest);
+    vP3D = vP3DBest;
+    vbTriangulated = vbTriBest;
+    cout << "Gyro two-view initialisation: " << nTri << " points, parallax " << parallaxBest << " deg, " << nBestIn << "/"
+         << n << " epipolar inliers" << endl;
+    return true;
+}
+
 // Gyro rotation of the IMU body from t0 to t1 (IMU clock): the rate is linear between samples, integrated on each
 // sub-interval (knots at t0, t1 and every sample in between) with its mean rate. Up to 50 ms beyond the newest sample
 // is extrapolated with the last rate (a browser delivers motion events late). False without coverage.
@@ -2852,7 +3226,7 @@ void Tracking::WebGrabGyro(const std::vector<IMU::Point>& v)
     mvWebGyro.insert(mvWebGyro.end(), v.begin(), v.end());
     if(mvWebGyro.empty())
         return;
-    const double tKeep = mvWebGyro.back().t - 2.0;  // a prediction spans one frame interval; keep 2 s
+    const double tKeep = mvWebGyro.back().t - 5.0;  // predictions span a frame interval; coasting / gyro init longer
     size_t k = 0;
     while(k < mvWebGyro.size() && mvWebGyro[k].t < tKeep)
         k++;
@@ -2872,7 +3246,17 @@ bool Tracking::TrackKLT(const cv::Mat& im, double timestamp)
     const cv::Size win(cfg.kltWinSize, cfg.kltWinSize);
     const auto t0 = std::chrono::steady_clock::now();
     // pyramid of this image; kept for the next frame by GrabImageMonocular whatever happens below
-    cv::buildOpticalFlowPyramid(im, mvWebCurPyr, win, cfg.kltLevels);
+    if(cfg.kltNormalize)  // Web.KLT.Normalize: global gain/offset normalisation (exposure changes)
+    {
+        cv::Scalar mean, sd;
+        cv::meanStdDev(im, mean, sd);
+        cv::Mat imN;
+        const double a = sd[0] > 1.0 ? 48.0 / sd[0] : 1.0;
+        im.convertTo(imN, CV_8U, a, 128.0 - a * mean[0]);
+        cv::buildOpticalFlowPyramid(imN, mvWebCurPyr, win, cfg.kltLevels);
+    }
+    else
+        cv::buildOpticalFlowPyramid(im, mvWebCurPyr, win, cfg.kltLevels);
     const auto tPyr = std::chrono::steady_clock::now();
     mdWebKLTPyrMs += std::chrono::duration<double, std::milli>(tPyr - t0).count();  // every frame
 

@@ -26,6 +26,14 @@ export const OPTIONS = [
   { key: 'kltflow', label: 'KLT motion gate (max predicted flow)', values: [['0', 'off'], ['10', '10 px'], ['20', '20 px'], ['30', '30 px']], def: '0', when: (o) => o.tracker === 'klt' },
   { key: 'kltfrac', label: 'KLT quality gate (inliers vs last ORB frame)', values: [['0', 'off'], ['0.5', '50%'], ['0.7', '70%']], def: '0', when: (o) => o.tracker === 'klt' },
   { key: 'kltfb', label: 'KLT forward-backward check', values: [['1', 'on'], ['0', 'off']], def: '1', when: (o) => o.tracker === 'klt' },
+  // round 2 (2026-10-17; claude/RESEARCH.md "Algorithm tracker"): defaults = previous behaviour
+  { key: 'kltnorm', label: 'KLT exposure normalisation', values: [['off', 'off'], ['on', 'on (cancels exposure changes)']], def: 'off', when: (o) => o.tracker === 'klt' },
+  { key: 'pose', label: 'Pose solver', values: [['g2o', 'g2o (original)'], ['fast', 'fast (same result, no g2o graph)']], def: 'g2o' },
+  { key: 'orbpar', label: 'ORB extraction', values: [['serial', 'one thread (original)'], ['parallel', 'pyramid levels in parallel']], def: 'serial' },
+  { key: 'recover', label: 'Recovery when lost', values: [['bow', 'bag-of-words relocalisation (original)'], ['coast', 'local-map search first, then bag of words']], def: 'bow' },
+  { key: 'init', label: 'Map start', values: [['stock', 'original thresholds'], ['quick', 'quicker (60 matches, 0.5°, 40 points)'], ['gyro', 'gyro two-view (+ gyro prior)']], def: 'stock' },
+  { key: 'kf', label: 'Keyframes', values: [['stock', 'original'], ['fewer', 'fewer (ratio 0.8)']], def: 'stock' },
+  { key: 'hold', label: 'Tree during brief tracking losses', page: 'ar', values: [['hide', 'hidden (original)'], ['gyro', 'held by the gyro for up to 0.4 s']], def: 'hide' },
 ];
 
 // Named presets (AR page): each sets every option; keys it does not list take the page default. Phone test plans
@@ -94,7 +102,14 @@ export function applyOptions(yaml, o) {
   if (o.desc === 'teblid') extra.push('Web.Descriptor: 1');  // the page also loads the TEBLID vocabulary (vocabUrl)
   if (o.motion === 'time') extra.push('Web.Track.TimeScaledMotion: 1');  // live camera: prediction scaled to the frame interval
   if (o.map === 'light') extra.push('Web.LBA.MaxOptKFs: 20', 'Web.LBA.MaxFixedKFs: 20', 'Web.Mapping.Neighbors: 15');
-  if (o.gyro === 'on' && o.imu !== 'on') extra.push('Web.Gyro.Prior: 1');  // + IMU.T_b_c1 (ar.js adds the phone IMU block)
+  if ((o.gyro === 'on' || o.init === 'gyro') && o.imu !== 'on') extra.push('Web.Gyro.Prior: 1');  // + IMU.T_b_c1 (ar.js adds the phone IMU block)
+  if (o.tracker === 'klt' && o.kltnorm === 'on') extra.push('Web.KLT.Normalize: 1');
+  if (o.pose === 'fast') extra.push('Web.Track.FastPose: 1');
+  if (o.orbpar === 'parallel') extra.push('Web.ORB.Parallel: 1');
+  if (o.recover === 'coast') extra.push('Web.Track.Coast: 2');
+  if (o.init === 'quick') extra.push('Web.Init.MinMatches: 60', 'Web.Init.MinParallax: 0.5', 'Web.Init.MinTriangulated: 40');
+  if (o.init === 'gyro' && o.imu !== 'on') extra.push('Web.Init.Gyro: 1');
+  if (o.kf === 'fewer') extra.push('Web.KF.RefRatio: 0.8');
   return extra.length ? `${y.replace(/\s*$/, '\n')}\n# web options (web/options.js)\n${extra.join('\n')}\n` : y;
 }
 

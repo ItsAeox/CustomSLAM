@@ -22,6 +22,9 @@
 
 
 #include <complex>
+#include <algorithm>
+#include <chrono>
+#include <limits>
 
 #include <Eigen/StdVector>
 #include <Eigen/Dense>
@@ -812,8 +815,249 @@ void Optimizer::FullInertialBA(Map *pMap, int its, const bool bFixLocal, const l
 }
 
 
+#ifdef ORBSLAM3_WEB
+// web port (Web.Track.FastPose): Optimizer::PoseOptimization for monocular frames without building a g2o graph. Same
+// problem and schedule: octave-weighted reprojection error, Huber delta sqrt(5.991), 4 rounds of at most 10
+// Levenberg-Marquardt iterations, each round from the frame's initial pose, inliers/outliers reclassified after every
+// round (chi2 > 5.991), no robust kernel in the last round, g2o's damping rule (lambda0 = 1e-5 max diag H, gain-ratio
+// update, 10 trials) and stop rules (failed trials; < 0.1 % chi2 decrease 3 times). Left-multiplicative SE(3) update
+// as VertexSE3Expmap. One loop over the observations instead of a graph of heap-allocated virtual edges: the pose of
+// every tracked frame is solved here (KLT frames, motion model, local map), several times per ORB frame.
+// Difference: outliers are classified at the final pose of the round (g2o uses the errors of its last trial step).
+namespace
+{
+struct WebPoseObs
+{
+    Eigen::Vector3d Xw;
+    Eigen::Vector2d uv;
+    double w;   // inverse sigma^2 of the keypoint octave
+    int idx;    // keypoint index in the frame
+};
+
+// robust chi2 at T over the active observations; with H/b also the normal equations (b = -J^T W e, as g2o)
+double WebPoseCost(const std::vector<WebPoseObs>& vObs, const std::vector<char>& vActive, const Sophus::SE3d& T,
+                   GeometricCamera* cam, bool robust, Eigen::Matrix<double, 6, 6>* H, Eigen::Matrix<double, 6, 1>* b)
+{
+    const double delta2 = 5.991, delta = std::sqrt(5.991);
+    double chi = 0;
+    if(H) { H->setZero(); b->setZero(); }
+    for(size_t k = 0; k < vObs.size(); k++)
+    {
+        if(!vActive[k])
+            continue;
+        const WebPoseObs& o = vObs[k];
+        const Eigen::Vector3d Xc = T * o.Xw;
+        const Eigen::Vector2d e = o.uv - cam->project(Xc);
+        const double c2 = o.w * e.squaredNorm();
+        double rho0 = c2, rho1 = 1.0;
+        if(robust && c2 > delta2)
+        {
+            const double s = std::sqrt(c2);
+            rho0 = 2 * delta * s - delta2;
+            rho1 = delta / s;
+        }
+        chi += rho0;
+        if(H)
+        {
+            Eigen::Matrix<double, 3, 6> D;  // d Xc / d [omega, upsilon] (left perturbation)
+            D << 0, Xc(2), -Xc(1), 1, 0, 0,
+                 -Xc(2), 0, Xc(0), 0, 1, 0,
+                 Xc(1), -Xc(0), 0, 0, 0, 1;
+            const Eigen::Matrix<double, 2, 6> J = -cam->projectJac(Xc) * D;
+            const double w = rho1 * o.w;
+            H->noalias() += w * J.transpose() * J;
+            b->noalias() -= w * J.transpose() * e;
+        }
+    }
+    return chi;
+}
+
+// g2o's [omega, upsilon] update applied on the left
+inline Sophus::SE3d WebPoseOplus(const Eigen::Matrix<double, 6, 1>& x, const Sophus::SE3d& T)
+{
+    Eigen::Matrix<double, 6, 1> v;
+    v << x.tail<3>(), x.head<3>();  // Sophus tangent order: [upsilon, omega]
+    return Sophus::SE3d::exp(v) * T;
+}
+
+// Levenberg-Marquardt as g2o::OptimizationAlgorithmLevenberg (ORB-SLAM3's version, including its stop criterion)
+Sophus::SE3d WebPoseLM(const std::vector<WebPoseObs>& vObs, const std::vector<char>& vActive, Sophus::SE3d T,
+                       GeometricCamera* cam, bool robust, int iterations)
+{
+    Eigen::Matrix<double, 6, 6> H;
+    Eigen::Matrix<double, 6, 1> b;
+    double lambda = 0, ni = 2;
+    int nBad = 0;
+    for(int it = 0; it < iterations; it++)
+    {
+        double currentChi = WebPoseCost(vObs, vActive, T, cam, robust, &H, &b);
+        const double iniChi = currentChi;
+        if(it == 0)
+        {
+            lambda = 1e-5 * H.diagonal().cwiseAbs().maxCoeff();
+            ni = 2;
+        }
+        double rho = 0;
+        int q = 0;
+        do
+        {
+            Eigen::Matrix<double, 6, 6> A = H;
+            A.diagonal().array() += lambda;
+            Eigen::LDLT<Eigen::Matrix<double, 6, 6>> ldlt(A);
+            const Eigen::Matrix<double, 6, 1> x = ldlt.solve(b);
+            const bool ok = ldlt.info() == Eigen::Success && x.allFinite();
+            const Sophus::SE3d Tn = ok ? WebPoseOplus(x, T) : T;
+            double tempChi = ok ? WebPoseCost(vObs, vActive, Tn, cam, robust, nullptr, nullptr)
+                                : std::numeric_limits<double>::max();
+            const double scale = x.dot(lambda * x + b) + 1e-3;
+            rho = (currentChi - tempChi) / scale;
+            if(rho > 0 && std::isfinite(tempChi))
+            {
+                const double alpha = std::min(1.0 - std::pow(2 * rho - 1, 3), 2.0 / 3.0);
+                lambda *= std::max(1.0 / 3.0, alpha);
+                ni = 2;
+                currentChi = tempChi;
+                T = Tn;
+            }
+            else
+            {
+                lambda *= ni;
+                ni *= 2;
+            }
+            q++;
+        } while(rho < 0 && q < 10);
+        if(q == 10 || rho == 0)
+            break;
+        if((iniChi - currentChi) * 1e3 < iniChi)
+            nBad++;
+        else
+            nBad = 0;
+        if(nBad >= 3)
+            break;
+    }
+    return T;
+}
+
+struct WebFastPoseStats
+{
+    long calls = 0, compared = 0, outlierMismatch = 0;
+    double msFast = 0, msG2o = 0, maxRotDeg = 0, sumRotDeg = 0, maxTransRel = 0, sumTransRel = 0;
+};
+WebFastPoseStats& webFastPoseStats()
+{
+    static WebFastPoseStats s;
+    return s;
+}
+thread_local bool tWebPoseG2o = false;  // compare mode: the g2o solve inside WebPoseDispatch
+
+int WebPoseOptimization(Frame* pFrame)
+{
+    const int N = pFrame->N;
+    std::vector<WebPoseObs> vObs;
+    vObs.reserve(N);
+    {
+        unique_lock<mutex> lock(MapPoint::mGlobalMutex);
+        for(int i = 0; i < N; i++)
+        {
+            MapPoint* pMP = pFrame->mvpMapPoints[i];
+            if(!pMP)
+                continue;
+            pFrame->mvbOutlier[i] = false;
+            const cv::KeyPoint& kp = pFrame->mvKeysUn[i];
+            vObs.push_back({pMP->GetWorldPos().cast<double>(), Eigen::Vector2d(kp.pt.x, kp.pt.y),
+                            (double)pFrame->mvInvLevelSigma2[kp.octave], i});
+        }
+    }
+    const int n = (int)vObs.size();
+    if(n < 3)
+        return 0;
+    GeometricCamera* cam = pFrame->mpCamera;
+    const Sophus::SE3d T0 = pFrame->GetPose().cast<double>();
+    std::vector<char> vActive(n, 1);
+    Sophus::SE3d T = T0;
+    int nBad = 0;
+    for(int it = 0; it < 4; it++)
+    {
+        T = WebPoseLM(vObs, vActive, (webConfig().fastPoseWarm && it > 0) ? T : T0, cam, it < 3, 10);
+        nBad = 0;
+        for(int k = 0; k < n; k++)
+        {
+            const WebPoseObs& o = vObs[k];
+            const Eigen::Vector2d e = o.uv - cam->project(T * o.Xw);
+            const bool bOut = o.w * e.squaredNorm() > 5.991;
+            pFrame->mvbOutlier[o.idx] = bOut;
+            vActive[k] = !bOut;
+            nBad += bOut;
+        }
+        if(n < 10)
+            break;
+    }
+    pFrame->SetPose(T.cast<float>());
+    return n - nBad;
+}
+
+// Web.Track.FastPose: 1 = solve with WebPoseOptimization; 2 = compare (both solvers on the same input, g2o result kept)
+int WebPoseDispatch(Frame* pFrame, int mode)
+{
+    WebFastPoseStats& s = webFastPoseStats();
+    s.calls++;
+    if(mode == 1)
+    {
+        const auto t0 = std::chrono::steady_clock::now();
+        const int r = WebPoseOptimization(pFrame);
+        s.msFast += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        return r;
+    }
+    const Sophus::SE3f T0 = pFrame->GetPose();
+    const auto t0 = std::chrono::steady_clock::now();
+    const int rFast = WebPoseOptimization(pFrame);
+    const auto t1 = std::chrono::steady_clock::now();
+    const Sophus::SE3f TFast = pFrame->GetPose();
+    const std::vector<bool> vOutFast = pFrame->mvbOutlier;
+    pFrame->SetPose(T0);
+    tWebPoseG2o = true;
+    const int r = Optimizer::PoseOptimization(pFrame);
+    tWebPoseG2o = false;
+    const auto t2 = std::chrono::steady_clock::now();
+    s.msFast += std::chrono::duration<double, std::milli>(t1 - t0).count();
+    s.msG2o += std::chrono::duration<double, std::milli>(t2 - t1).count();
+    if(r > 0 && rFast > 0)
+    {
+        const Sophus::SE3f TG = pFrame->GetPose();
+        const double rot = (TG.so3().inverse() * TFast.so3()).log().norm() * 180.0 / M_PI;
+        const double tr = (TG.inverse().translation() - TFast.inverse().translation()).norm() /
+                          std::max(1e-6f, TG.translation().norm() + 1e-3f);
+        s.compared++;
+        s.sumRotDeg += rot; s.maxRotDeg = std::max(s.maxRotDeg, rot);
+        s.sumTransRel += tr; s.maxTransRel = std::max(s.maxTransRel, tr);
+        for(int i = 0; i < pFrame->N; i++)
+            if(pFrame->mvpMapPoints[i] && pFrame->mvbOutlier[i] != vOutFast[i])
+                s.outlierMismatch++;
+    }
+    return r;
+}
+}  // namespace
+
+void Optimizer::WebPrintFastPoseStats()
+{
+    const WebFastPoseStats& s = webFastPoseStats();
+    if(!s.calls)
+        return;
+    cout << "FASTPOSE-STATS calls=" << s.calls << " fast_ms_mean=" << s.msFast / s.calls
+         << " g2o_ms_mean=" << (s.msG2o > 0 ? s.msG2o / s.calls : 0.0) << " compared=" << s.compared
+         << " rot_deg_mean=" << (s.compared ? s.sumRotDeg / s.compared : 0.0) << " rot_deg_max=" << s.maxRotDeg
+         << " trans_rel_mean=" << (s.compared ? s.sumTransRel / s.compared : 0.0) << " trans_rel_max=" << s.maxTransRel
+         << " outlier_mismatch=" << s.outlierMismatch << endl;
+}
+#endif
+
 int Optimizer::PoseOptimization(Frame *pFrame)
 {
+#ifdef ORBSLAM3_WEB
+    if(webConfig().fastPose && !tWebPoseG2o && !pFrame->mpCamera2 &&
+       std::none_of(pFrame->mvuRight.begin(), pFrame->mvuRight.end(), [](float u) { return u >= 0; }))
+        return WebPoseDispatch(pFrame, webConfig().fastPose);
+#endif
     g2o::SparseOptimizer optimizer;
     g2o::BlockSolver_6_3::LinearSolverType * linearSolver;
 

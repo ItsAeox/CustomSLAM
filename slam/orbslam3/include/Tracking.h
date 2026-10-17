@@ -144,6 +144,7 @@ public:
     double mdWebKLTms = 0;             // total time spent in accepted KLT frames (ms)
     double mdWebKLTPyrMs = 0;          // LK pyramid of every image while KLT is enabled (ms, all frames)
     double mdWebKLTFlowMs = 0, mdWebKLTCopyMs = 0, mdWebKLTPoseMs = 0;  // accepted KLT frames: LK, frame build, pose
+    long mnWebCoastTries = 0, mnWebCoastRecoveries = 0, mnWebRelocRecoveries = 0;  // Web.Track.Coast statistics
 #endif
 
     cv::Mat mImGray;
@@ -354,6 +355,16 @@ protected:
     Sophus::SE3f WebMotionPrediction(double tNow) const;
     std::vector<IMU::Point> mvWebGyro;  // gyro samples for Web.Gyro.Prior (IMU clock, oldest first)
     bool WebGyroRotation(double t0, double t1, Eigen::Matrix3f& dR) const;  // body rotation t0 -> t1 from mvWebGyro
+    // last frame tracked OK (pose, time, map), the origin of Web.Track.Coast
+    bool mbWebGood = false;
+    Sophus::SE3f mWebGoodTcw;
+    double mdWebGoodTime = 0;
+    Map* mpWebGoodMap = nullptr;
+    bool mbWebGoodVel = false;     // the motion model at that frame (velocity and its frame interval)
+    Sophus::SE3f mWebGoodVel;
+    double mdWebGoodVelDt = 0;
+    bool WebCoastTrack();
+    bool WebGyroTwoView(Sophus::SE3f& T21, vector<cv::Point3f>& vP3D, vector<bool>& vbTriangulated);  // Web.Init.Gyro
 public:
     void WebGrabGyro(const std::vector<IMU::Point>& v);  // visual-only modes: IMU samples for the gyro prior
 protected:

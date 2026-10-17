@@ -20,6 +20,7 @@
 
 #include "Converter.h"
 #include "GeometricTools.h"
+#include "WebConfig.h"
 
 #include "Thirdparty/DBoW2/DUtils/Random.h"
 
@@ -114,17 +115,22 @@ namespace ORB_SLAM3
         float RH = SH/(SH+SF);
 
         float minParallax = 1.0;
+        int minTriangulated = 50;
+#ifdef ORBSLAM3_WEB
+        minParallax = (float)webConfig().initMinParallax;
+        minTriangulated = webConfig().initMinTriangulated;
+#endif
 
         // Try to reconstruct from homography or fundamental depending on the ratio (0.40-0.45)
         if(RH>0.50) // if(RH>0.40)
         {
             //cout << "Initialization from Homography" << endl;
-            return ReconstructH(vbMatchesInliersH,H, mK,T21,vP3D,vbTriangulated,minParallax,50);
+            return ReconstructH(vbMatchesInliersH,H, mK,T21,vP3D,vbTriangulated,minParallax,minTriangulated);
         }
         else //if(pF_HF>0.6)
         {
             //cout << "Initialization from Fundamental" << endl;
-            return ReconstructF(vbMatchesInliersF,F,mK,T21,vP3D,vbTriangulated,minParallax,50);
+            return ReconstructF(vbMatchesInliersF,F,mK,T21,vP3D,vbTriangulated,minParallax,minTriangulated);
         }
     }
 

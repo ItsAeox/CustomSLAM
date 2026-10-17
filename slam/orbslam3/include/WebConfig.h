@@ -20,6 +20,8 @@ struct WebConfig
     int lbaIterations = 10;    // Web.LBA.Iterations: Levenberg-Marquardt iterations of local BA (stock 10)
     int mappingNeighbors = 0;  // Web.Mapping.Neighbors: covisible keyframes for triangulation / fusion (0 = stock: 30 mono)
     int descriptor = 0;        // Web.Descriptor: 0 = ORB (rotated BRIEF, stock), 1 = TEBLID-256 (needs a TEBLID vocabulary)
+    int orbParallel = 0;       // Web.ORB.Parallel: 1 = the pyramid levels of ORB extraction (FAST + octree + orientation,
+                               // blur + descriptors) run in parallel (cv::parallel_for_); same keypoints and descriptors
     double relocTimeout = 3.0; // Web.Track.RelocTimeout: seconds of relocalisation in the current map before a new map (stock 3)
     int timeScaledMotion = 0;  // Web.Track.TimeScaledMotion: 1 = the constant-velocity prediction is rescaled to the
                                // actual frame interval (live cameras drop frames when tracking is slow). 0 = stock
@@ -39,6 +41,9 @@ struct WebConfig
     double kltMaxFlow = 0;     // Web.KLT.MaxFlow: use ORB when the predicted median image motion exceeds this (px; 0 = off)
     double kltMinInlierFrac = 0;  // Web.KLT.MinInlierFrac: KLT pose inliers must reach this fraction of the last ORB
                                // frame's inliers, else the frame is re-tracked with ORB (0 = off)
+    int kltNormalize = 0;      // Web.KLT.Normalize: 1 = the LK pyramid is built from the image with its global mean and
+                               // contrast normalised (128 / 48): cancels exposure (gain/offset) changes between frames,
+                               // which plain LK's brightness-constancy model does not handle. ORB frames are unaffected
 
     int bowLevelsUp = 4;       // Web.BoW.LevelsUp: tree levels above the leaves for the BoW direct index (FeatureVector)
                                // used by SearchByBoW (Frame/KeyFrame::ComputeBoW; stock 4, made for L = 6 trees). A smaller
@@ -56,6 +61,26 @@ struct WebConfig
                                // KLT initial flow) comes from the gyroscope integrated between the two frames
     double gyroTimeOffset = 0; // Web.Gyro.TimeOffset: seconds added to frame times to get IMU times (> 0: IMU stamps late)
     float gyroRbc[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};  // camera -> IMU body rotation, row-major (from IMU.T_b_c1)
+
+    // Loss recovery by coasting (monocular, visual-only; see Tracking::WebCoastTrack). Off by default = stock.
+    int coast = 0;             // Web.Track.Coast: 1 = while recently lost, search the local map around the last good pose
+                               // (rotated by the gyro when Web.Gyro.Prior is on) before BoW relocalisation; 2 = also, if
+                               // that fails, match the frame against the whole local map by descriptor + MLPnP RANSAC
+    double coastMaxTime = 1.5; // Web.Track.CoastTime: seconds after the last good frame during which coasting is tried
+    int coastMinInliers = 50;  // Web.Track.CoastMinInliers: pose inliers to accept the coasted pose (relocalisation: 50)
+
+    int fastPose = 0;          // Web.Track.FastPose: motion-only pose optimisation of monocular frames (Optimizer.cc)
+                               // 0 = g2o (stock), 1 = the same problem solved without a g2o graph (WebPoseOptimization),
+                               // 2 = both on every call, g2o's result kept, differences and timings reported (check)
+    int fastPoseWarm = 0;      // Web.Track.FastPoseWarm: 1 = rounds 2-4 start from the previous round's pose (stock and
+                               // FastPose 1 restart every round from the initial pose)
+
+    // Monocular initialisation (two-view map), stock values by default. Lower = earlier first map, maybe a worse one.
+    int initMinMatches = 100;     // Web.Init.MinMatches: matches between the reference and current frame (else restart)
+    double initMinParallax = 1.0; // Web.Init.MinParallax: degrees (TwoViewReconstruction)
+    int initMinTriangulated = 50; // Web.Init.MinTriangulated: triangulated points of the two-view solution
+    int initGyro = 0;             // Web.Init.Gyro: 1 = two-view initialisation with the gyro rotation (2-point RANSAC on
+                                  // the translation direction; needs Web.Gyro.Prior), stock reconstruction as fallback
 };
 
 inline WebConfig& webConfig()
@@ -79,6 +104,7 @@ inline void loadWebConfig(const std::string& settingsFile)
     readInt("Web.LBA.Iterations", c.lbaIterations);
     readInt("Web.Mapping.Neighbors", c.mappingNeighbors);
     readInt("Web.Descriptor", c.descriptor);
+    readInt("Web.ORB.Parallel", c.orbParallel);
     readInt("Web.Track.KeepMap", c.keepMap);
     readInt("Web.Track.TimeScaledMotion", c.timeScaledMotion);
     readInt("Web.KLT.Enable", c.kltEnable);
@@ -88,6 +114,7 @@ inline void loadWebConfig(const std::string& settingsFile)
     readInt("Web.KLT.WinSize", c.kltWinSize);
     readInt("Web.KLT.Levels", c.kltLevels);
     readInt("Web.KLT.Iterations", c.kltIterations);
+    readInt("Web.KLT.Normalize", c.kltNormalize);
     cv::FileNode rt = fs["Web.Track.RelocTimeout"];
     if (!rt.empty() && (rt.isInt() || rt.isReal())) c.relocTimeout = rt.real();
     cv::FileNode mf = fs["Web.KLT.MaxFlow"];
@@ -116,6 +143,17 @@ inline void loadWebConfig(const std::string& settingsFile)
             c.gyroPrior = 0;
         }
     }
+    readInt("Web.Track.Coast", c.coast);
+    cv::FileNode ct = fs["Web.Track.CoastTime"];
+    if (!ct.empty() && (ct.isInt() || ct.isReal())) c.coastMaxTime = ct.real();
+    readInt("Web.Track.CoastMinInliers", c.coastMinInliers);
+    readInt("Web.Track.FastPose", c.fastPose);
+    readInt("Web.Track.FastPoseWarm", c.fastPoseWarm);
+    readInt("Web.Init.MinMatches", c.initMinMatches);
+    cv::FileNode ip = fs["Web.Init.MinParallax"];
+    if (!ip.empty() && (ip.isInt() || ip.isReal())) c.initMinParallax = ip.real();
+    readInt("Web.Init.MinTriangulated", c.initMinTriangulated);
+    readInt("Web.Init.Gyro", c.initGyro);
     std::cout << "Web config: LBA.MaxOptKFs " << c.lbaMaxOptKFs << ", LBA.MaxFixedKFs " << c.lbaMaxFixedKFs
               << ", LBA.Iterations " << c.lbaIterations << ", Mapping.Neighbors " << c.mappingNeighbors
               << " (0 = stock); descriptor " << (c.descriptor == 1 ? "TEBLID-256" : "ORB") << "; reloc timeout "
@@ -124,12 +162,22 @@ inline void loadWebConfig(const std::string& settingsFile)
               << (c.bowLevelsUp != 4 ? "; BoW levels up " + std::to_string(c.bowLevelsUp) : std::string())
               << (c.kfRefRatio > 0 ? "; KF ref ratio " + std::to_string(c.kfRefRatio) : std::string())
               << (c.cullRedundancy > 0 ? "; KF cull redundancy " + std::to_string(c.cullRedundancy) : std::string())
+              << (c.coast ? "; coast " + std::to_string(c.coastMaxTime) + " s, " + std::to_string(c.coastMinInliers) + " inliers"
+                          : std::string())
+              << (c.fastPose ? (c.fastPose == 1 ? "; fast pose solver" : "; fast pose solver (compare with g2o)") : "")
+              << (c.fastPose && c.fastPoseWarm ? " (warm start)" : "")
+              << (c.orbParallel ? "; parallel ORB levels (OpenCV threads " + std::to_string(cv::getNumThreads()) + ")" : "")
+              << (c.initMinMatches != 100 || c.initMinParallax != 1.0 || c.initMinTriangulated != 50
+                      ? "; init " + std::to_string(c.initMinMatches) + " matches, " + std::to_string(c.initMinParallax) +
+                            " deg, " + std::to_string(c.initMinTriangulated) + " points"
+                      : std::string())
+              << (c.initGyro ? "; gyro two-view init" : "")
               << "; KLT " << (c.kltEnable ? "on" : "off");
     if (c.kltEnable)
         std::cout << " (max consecutive " << c.kltMaxConsecutive << ", min tracked " << c.kltMinTracked
                   << ", min inliers " << c.kltMinInliers << ", win " << c.kltWinSize << ", levels " << c.kltLevels
                   << ", FB " << c.kltFBThreshold << " px, iterations " << c.kltIterations << ", max flow " << c.kltMaxFlow
-                  << " px, min inlier frac " << c.kltMinInlierFrac << ")";
+                  << " px, min inlier frac " << c.kltMinInlierFrac << (c.kltNormalize ? ", exposure-normalised" : "") << ")";
     std::cout << std::endl;
 }
 
