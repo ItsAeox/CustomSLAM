@@ -625,7 +625,10 @@ async function start() {
             recCalibAt = performance.now();
             const c = estimateImuCalib(recPoses, recGyro);  // web/imucalib.js (= eval/estimate_time_offset.py --focal)
             if (c) {
-              const f = Number.isFinite(c.focalRatio) ? `focal x ${c.focalRatio.toFixed(3)} (roll ${c.rollRatio.toFixed(3)}, ${c.focalSamples} samples)` : 'focal: rotate more';
+              // focal ratio = f_true / f_assumed -> the horizontal FOV that would match (uncalibrated phone: the FOV box)
+              const fovNow = Number($('fov').value), fovFit = 2 * Math.atan(Math.tan(fovNow * Math.PI / 360) / c.focalRatio) * 180 / Math.PI;
+              const f = Number.isFinite(c.focalRatio) ? `focal x ${c.focalRatio.toFixed(3)} (roll ${c.rollRatio.toFixed(3)}, ${c.focalSamples} samples)` +
+                (calib ? '' : ` -> FOV ${fovFit.toFixed(1)}° instead of ${fovNow}°`) : 'focal: rotate more';
               tele(`imu calib (last ${(r.t - recPoses[0][0]).toFixed(0)} s): offset ${c.offsetMs >= 0 ? '+' : ''}${c.offsetMs} ms (cost ${c.cost.toFixed(4)}, ${c.samples} rates), ${f}`);
               hint(`IMU time offset ${c.offsetMs >= 0 ? '+' : ''}${c.offsetMs} ms · ${f}`, 4000);
             }
