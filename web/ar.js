@@ -8,6 +8,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { createSlamWorker, cameraSettings, intrinsics, loadCalibration, phoneImuSettings, savedCalibrations, STATE, vocabUrl } from './slamclient.js';
+import { estimateImuCalib } from './imucalib.js';
 import { dot, fitPlaneRansac, normalize, rayPlane } from './plane.js';
 import { applyOptions, applyPreset, buildOptionsUI, describeOptions, matchPreset, optionsFromParams, optionsToParams, PRESETS } from './options.js';
 
@@ -76,6 +77,8 @@ const decodeTimes = [];               // per frame: gray image preparation in th
 const gyroHist = [];                 // [time ms, |rotation rate| deg/s] of the last second (logged on tracking loss)
 let inertial = opts.imu === 'on';  // ORB-SLAM3 mono-inertial (experimental); re-read from the options at start()
 let rec = false;                   // record gyro + poses for the time-offset estimate (option 'rec'); set at start()
+const recPoses = [], recGyro = [];  // with rec: [t, qx, qy, qz, qw, maps] / [t, wx, wy, wz] (last 90 s) for imucalib.js
+let recCalibAt = 0;
 let gyroOn = false;               // gyro rotation prior (option 'gyro', visual-only; or gyro init); set at start()
 let holdOn = false;               // option 'hold': show the tree through brief losses with the gyro-rotated last pose
 let qDev = [0, 0, 0, 1], qDevT = null;  // integrated device attitude from DeviceMotion rotation rates (x, y, z, w)
@@ -122,6 +125,8 @@ function onMotion(e) {
   if (rec && r && r.alpha != null) {  // diagnostic: raw gyro (rad/s, device axes) on the frames' absolute clock
     const d = Math.PI / 180;
     tele(`imu ${((performance.timeOrigin + e.timeStamp) / 1000).toFixed(4)} ${(r.beta * d).toFixed(5)} ${(r.gamma * d).toFixed(5)} ${(r.alpha * d).toFixed(5)}`);
+    recGyro.push([(performance.timeOrigin + e.timeStamp) / 1000, r.beta * d, r.gamma * d, r.alpha * d]);
+    while (recGyro.length && recGyro[0][0] < recGyro[recGyro.length - 1][0] - 90) recGyro.shift();
   }
   if (holdOn && r && r.alpha != null) {  // attitude for the hold: q <- q * exp(w dt), w in device axes (rad/s)
     if (qDevT != null) {
@@ -614,6 +619,17 @@ async function start() {
           const q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().fromArray(twc));
           tele(`pose ${r.t.toFixed(4)} ${twc[12].toFixed(4)} ${twc[13].toFixed(4)} ${twc[14].toFixed(4)} ` +
                `${q.x.toFixed(6)} ${q.y.toFixed(6)} ${q.z.toFixed(6)} ${q.w.toFixed(6)} ${stats[3]}`);  // + map count
+          recPoses.push([r.t, q.x, q.y, q.z, q.w, stats[3]]);
+          while (recPoses.length && recPoses[0][0] < r.t - 90) recPoses.shift();
+          if (performance.now() - recCalibAt > 10000 && recPoses.length > 50 && r.t - recPoses[0][0] > 20) {
+            recCalibAt = performance.now();
+            const c = estimateImuCalib(recPoses, recGyro);  // web/imucalib.js (= eval/estimate_time_offset.py --focal)
+            if (c) {
+              const f = Number.isFinite(c.focalRatio) ? `focal x ${c.focalRatio.toFixed(3)} (roll ${c.rollRatio.toFixed(3)}, ${c.focalSamples} samples)` : 'focal: rotate more';
+              tele(`imu calib (last ${(r.t - recPoses[0][0]).toFixed(0)} s): offset ${c.offsetMs >= 0 ? '+' : ''}${c.offsetMs} ms (cost ${c.cost.toFixed(4)}, ${c.samples} rates), ${f}`);
+              hint(`IMU time offset ${c.offsetMs >= 0 ? '+' : ''}${c.offsetMs} ms · ${f}`, 4000);
+            }
+          }
         }
         const g = down || gravityCam();
         if (g) { const gw = mulR(rotOf(twc), g); downSum = downSum.map((x, i) => x + gw[i]); downN++; }
