@@ -530,6 +530,8 @@ void System::Shutdown()
 #ifdef ORBSLAM3_WEB
     cout << "LM-STATS keyframes=" << mpLocalMapper->mnDiagKFs << " lba_done=" << mpLocalMapper->mnDiagLBADone
          << " lba_aborted=" << mpLocalMapper->mnDiagLBAAborted << " lba_skipped_newkf=" << mpLocalMapper->mnDiagLBASkipped << endl;
+    if(webConfig().rotFar)
+        cout << "ROT-STATS far_created=" << mpLocalMapper->mnWebFarCreated << " far_culled=" << mpLocalMapper->mnWebFarCulled << endl;
     if(webConfig().kltEnable)
         cout << "KLT-STATS klt_frames=" << mpTracker->mnWebKLTFrames << " orb_frames=" << mpTracker->mnWebORBFrames
              << " klt_fallbacks=" << mpTracker->mnWebKLTFallbacks << " klt_ms_mean="
@@ -545,6 +547,8 @@ void System::Shutdown()
         cout << "KLTPAR-STATS calls=" << mpTracker->mnWebLKCalls << " points=" << mpTracker->mnWebLKPoints
              << " mismatches=" << mpTracker->mnWebLKMismatch << " serial_ms_mean=" << mpTracker->mdWebLKSerialMs / mpTracker->mnWebLKCalls
              << " parallel_ms_mean=" << mpTracker->mdWebLKParallelMs / mpTracker->mnWebLKCalls << endl;
+    if(mpTracker->mbWebLoadedMap)
+        cout << "WEBMAP-STATS reloc_after_s=" << mpTracker->mdWebLoadRelocTime << endl;
 #endif
     {
         unique_lock<mutex> lock(mMutexReset);
@@ -1359,6 +1363,98 @@ bool System::WaitForMappingIdle(double timeoutSec)
         if(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() > timeoutSec) return false;
         usleep(500);
     }
+    return true;
+}
+
+bool System::WebSaveMap(const string& path, Map* pMap)
+{
+    mpAtlas->SetORBVocabulary(mpVocabulary);  // set only by upstream LoadAtlas otherwise (the vocabulary tag needs it)
+    mpAtlas->SetKeyFrameDababase(mpKeyFrameDatabase);
+    const auto t0 = std::chrono::steady_clock::now();
+    auto waited = [&]() { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); };
+    // a consistent copy: no global BA running, local mapping paused (or already finished after Shutdown)
+    while(mpLoopCloser->isRunningGBA() && waited() < 30)
+        usleep(2000);
+    if(mpLoopCloser->isRunningGBA())
+    {
+        cerr << "WEBMAP save failed: global bundle adjustment still running" << endl;
+        return false;
+    }
+    bool paused = false;
+    if(!mpLocalMapper->isFinished())
+    {
+        mpLocalMapper->RequestStop();
+        while(!mpLocalMapper->isStopped() && !mpLocalMapper->isFinished() && waited() < 10)
+            usleep(1000);
+        paused = mpLocalMapper->isStopped();
+        if(!paused && !mpLocalMapper->isFinished())
+        {
+            mpLocalMapper->Release();
+            cerr << "WEBMAP save failed: local mapping did not pause" << endl;
+            return false;
+        }
+    }
+    if(!pMap)
+        for(Map* pMi : mpAtlas->GetAllMaps())
+            if(!pMap || pMi->KeyFramesInMap() > pMap->KeyFramesInMap())
+                pMap = pMi;
+    bool ok = false;
+    string err = "no map";
+    size_t nKF = 0, nMP = 0;
+    if(pMap)
+    {
+        unique_lock<mutex> lock(pMap->mMutexMapUpdate);
+        nKF = pMap->KeyFramesInMap();
+        nMP = pMap->MapPointsInMap();
+        std::ofstream f(path, std::ios::binary);
+        ok = f.good() && mpAtlas->WebSaveMap(f, pMap, err);
+    }
+    if(paused)
+        mpLocalMapper->Release();
+    if(!ok)
+    {
+        cerr << "WEBMAP save failed: " << err << endl;
+        return false;
+    }
+    std::ifstream sz(path, std::ios::binary | std::ios::ate);
+    cout << "WEBMAP saved map " << pMap->GetId() << ": " << nKF << " keyframes, " << nMP << " map points, "
+         << (long long)sz.tellg() << " bytes, " << (long)(waited() * 1000) << " ms -> " << path << endl;
+    return true;
+}
+
+bool System::WebLoadMap(const string& path)
+{
+    if(mSensor != MONOCULAR)
+    {
+        cerr << "WEBMAP load failed: monocular only (inertial maps need the IMU state of the saved session)" << endl;
+        return false;
+    }
+    if(mpTracker->mState != Tracking::NO_IMAGES_YET)
+    {
+        cerr << "WEBMAP load failed: only before the first frame" << endl;
+        return false;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    std::ifstream f(path, std::ios::binary);
+    if(!f.good())
+    {
+        cerr << "WEBMAP load failed: cannot open " << path << endl;
+        return false;
+    }
+    mpAtlas->SetKeyFrameDababase(mpKeyFrameDatabase);
+    mpAtlas->SetORBVocabulary(mpVocabulary);
+    string err;
+    Map* pMap = mpAtlas->WebLoadMap(f, err);
+    if(!pMap)
+    {
+        cerr << "WEBMAP load failed: " << err << endl;
+        return false;
+    }
+    mpTracker->WebAdoptLoadedMap(pMap);
+    cout << "WEBMAP loaded map " << pMap->GetId() << ": " << pMap->KeyFramesInMap() << " keyframes, "
+         << pMap->MapPointsInMap() << " map points, "
+         << (long)(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() * 1000) << " ms <- "
+         << path << endl;
     return true;
 }
 #endif

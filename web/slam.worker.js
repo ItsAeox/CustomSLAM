@@ -148,7 +148,13 @@ self.onmessage = async (e) => {
       if (msg.inertial) slam.initSensor('/ORBvoc.bin', '/settings.yaml', !!msg.clahe, msg.seed ?? -1, true);  // IMU_MONOCULAR
       else slam.init('/ORBvoc.bin', '/settings.yaml', !!msg.clahe, msg.seed ?? -1);
       M.FS.unlink('/ORBvoc.bin');  // the vocabulary is in the tree now; free the 48 MB file copy
-      postMessage({ type: 'ready', ms: performance.now() - t0, vocabBytes: voc.byteLength, heap: M.HEAPU8.length });
+      let mapLoaded = null;  // room map (AR page, IndexedDB): loaded before the first frame, then relocalised into
+      if (msg.mapBytes) {
+        M.FS.writeFile('/room.map', new Uint8Array(msg.mapBytes));
+        mapLoaded = slam.loadMap('/room.map');
+        M.FS.unlink('/room.map');
+      }
+      postMessage({ type: 'ready', ms: performance.now() - t0, vocabBytes: voc.byteLength, heap: M.HEAPU8.length, mapLoaded });
     } else if (msg.type === 'frame') {
       const td = performance.now();
       const { img, bmp } = await decode(msg.url, !!msg.viz);
@@ -159,7 +165,7 @@ self.onmessage = async (e) => {
       feedImu(msg.imu, msg.t);  // inertial mode: IMU samples up to this frame
       const state = slam.track(msg.t);
       const out = { type: 'pose', idx: msg.idx, t: msg.t, state, twc: Array.from(slam.poseTwc()),
-                    trackMs: slam.lastTrackMs(), decodeMs, heap: M.HEAPU8.length };
+                    trackMs: slam.lastTrackMs(), decodeMs, heap: M.HEAPU8.length, mapWait: slam.loadWait() };
       if (msg.viz) {
         const tv = performance.now();
         out.viz = vizData(!!msg.withMap);
@@ -186,7 +192,7 @@ self.onmessage = async (e) => {
       feedImu(msg.imu, msg.t);  // inertial mode: IMU samples up to this frame
       const state = slam.track(msg.t);
       const out = { type: 'pose', t: msg.t, state, twc: Array.from(slam.poseTwc()), trackMs: slam.lastTrackMs(),
-                    decodeMs, heap: M.HEAPU8.length, bmp };
+                    decodeMs, heap: M.HEAPU8.length, mapWait: slam.loadWait(), bmp };
       const transfer = [bmp];
       if (msg.viz) {
         out.viz = vizData(!!msg.withMap);
@@ -219,7 +225,7 @@ self.onmessage = async (e) => {
       feedImu(msg.imu, t);
       const state = slam.track(t);
       const out = { type: 'pose', t, state, twc: Array.from(slam.poseTwc()), trackMs: slam.lastTrackMs(), decodeMs,
-                    heap: M.HEAPU8.length, bmp: f, cam: [camFrames, camDropped] };
+                    heap: M.HEAPU8.length, mapWait: slam.loadWait(), bmp: f, cam: [camFrames, camDropped] };
       const transfer = [f];
       if (msg.viz) {
         out.viz = vizData(!!msg.withMap);
@@ -257,6 +263,12 @@ self.onmessage = async (e) => {
       postMessage({ type: 'views', n: 0 });
     } else if (msg.type === 'calibSolve') {  // -> [rms, fx, fy, cx, cy, k1, k2, p1, p2, per-view rms...]
       postMessage({ type: 'calib', r: Array.from(cal.solve(msg.cols, msg.rows)) });
+    } else if (msg.type === 'saveMap') {  // room map: the current map in WebMapIO.cc's format, for IndexedDB
+      const t0 = performance.now();
+      const ok = slam.saveMap('/room.map');
+      const bytes = ok ? M.FS.readFile('/room.map').buffer : null;  // readFile returns a copy (not a heap view)
+      if (ok) M.FS.unlink('/room.map');
+      postMessage({ type: 'mapSaved', ok, ms: performance.now() - t0, bytes }, bytes ? [bytes] : []);
     } else if (msg.type === 'keepMap') {  // AR anchor placed/removed: relocalise in the map instead of replacing it
       slam.setKeepMap(!!msg.on);
       postMessage({ type: 'keepMap', on: !!msg.on });

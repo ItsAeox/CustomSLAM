@@ -1316,6 +1316,13 @@ namespace ORB_SLAM3
                 {
                     if(!pMPinKF->isBad())
                     {
+#ifdef ORBSLAM3_WEB
+                        if(pMPinKF->mbWebFar != pMP->mbWebFar)  // far points (Web.Rot.FarPoints): the real point wins
+                        {
+                            if(pMPinKF->mbWebFar) pMPinKF->Replace(pMP);
+                        }
+                        else
+#endif
                         if(pMPinKF->Observations()>pMP->Observations())
                             pMP->Replace(pMPinKF);
                         else

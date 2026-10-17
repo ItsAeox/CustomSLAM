@@ -48,7 +48,7 @@ class HBRBVocabulary : public ORB_SLAM3::ORBVocabulary {
   static size_t nodesFor(int k, int L) { size_t n = 1, p = 1; for (int l = 0; l < L; ++l) { p *= k; n += p; } return n; }
   static int bit(const unsigned char* d, int i) { return (d[i >> 3] >> (i & 7)) & 1; }
 
-  void step(NodeId parent, const std::vector<pDescriptor>& descs, int level) {
+  void step(DBoW2::NodeId parent, const std::vector<pDescriptor>& descs, int level) {
     if (descs.empty()) return;
     const int n = (int)descs.size();
     std::vector<cv::Mat> centres;            // final binary centres
@@ -114,10 +114,10 @@ class HBRBVocabulary : public ORB_SLAM3::ORBVocabulary {
       }
     }
     // all children first, then the next level (DBoW2's node order); ids are indices (m_nodes may reallocate)
-    std::vector<std::pair<NodeId, int>> kids;
+    std::vector<std::pair<DBoW2::NodeId, int>> kids;
     for (size_t j = 0; j < centres.size(); ++j) {
       if (groups[j].empty()) continue;
-      NodeId id = m_nodes.size();
+      DBoW2::NodeId id = m_nodes.size();
       m_nodes.push_back(Node(id));
       m_nodes.back().descriptor = centres[j];
       m_nodes.back().parent = parent;

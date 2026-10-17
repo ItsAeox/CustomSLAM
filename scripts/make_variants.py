@@ -26,7 +26,7 @@ Variants (applied to baselines/orbslam3/settings/{EuRoC,TUM-VI}_mono.yaml):
              levels, norm = exposure-normalised KLT, ginit = gyro two-view
              initialisation (fast-gyro-ginit only), ssc = SSC keypoint selection, speed = orbpar + fastposew, nofb = no backward LK
              pass, kf080 = fewer keyframes, kltpar = optical flow on 4 threads (kltparc: serial vs 4 threads compare
-             mode), speed2 = speed + kltpar)
+             mode), speed2 = speed + kltpar, rot = far points for pure rotation (prototype))
 
 Usage: make_variants.py <out_dir> [variant ...]   (default: all)
 """
@@ -111,6 +111,7 @@ FAST_MODS = {
     "kltpar": ["Web.KLT.Parallel: 1"],
     "kltparc": ["Web.KLT.Parallel: 2"],
     "speed2": ["Web.ORB.Parallel: 1", "Web.Track.FastPose: 1", "Web.KLT.Parallel: 1"],
+    "rot": ["Web.Rot.FarPoints: 1"],
 }
 def focal(text, k):  # wrong focal length (uncalibrated phone): Camera1.fx / fy scaled by k
     return re.sub(r"(Camera1\.f[xy]:\s*)([0-9.eE+-]+)", lambda m: f"{m.group(1)}{float(m.group(2)) * k:.6f}", text)

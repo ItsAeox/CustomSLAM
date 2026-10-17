@@ -390,7 +390,86 @@ void LocalMapping::MapPointCulling()
             borrar--;
         }
     }
+#ifdef ORBSLAM3_WEB
+    // far points (Web.Rot.FarPoints): found too rarely, or older than Web.Rot.FarLife keyframes
+    for(list<MapPoint*>::iterator it = mlpWebFarPoints.begin(); it != mlpWebFarPoints.end();)
+    {
+        MapPoint* pMP = *it;
+        if(pMP->isBad())
+            it = mlpWebFarPoints.erase(it);
+        else if(pMP->GetFoundRatio() < 0.25f || ((int)nCurrentKFid - (int)pMP->mnFirstKFid) >= webConfig().rotFarLife)
+        {
+            pMP->SetBadFlag();
+            mnWebFarCulled++;
+            it = mlpWebFarPoints.erase(it);
+        }
+        else
+            ++it;
+    }
+#endif
 }
+
+#ifdef ORBSLAM3_WEB
+int LocalMapping::WebCreateFarPoints(KeyFrame* pKF2, float medianDepth)
+{
+    // Pure-rotation prototype (claude/RESEARCH.md P1; points at infinity / deferred triangulation). The baseline to pKF2
+    // is too short to triangulate (turning on the spot), so stock creates nothing and tracking starves once the mapped
+    // points leave the view. Here keypoints seen in both keyframes become far points: on the current keyframe's ray at
+    // Web.Rot.FarDepth x pKF2's scene median depth, nearly at infinity, so in the pose optimisation they constrain the
+    // rotation and hardly the translation. Matching: with pure rotation a keypoint of pKF2 maps into the current
+    // keyframe by the rotation alone (the infinite homography), so each pKF2 keypoint without a map point is rotated
+    // across and searched in a 10 px radius (x its scale), Hamming distance <= TH_LOW with the 0.8 ratio test.
+    KeyFrame* pKF1 = mpCurrentKeyFrame;
+    if(pKF1->NLeft != -1 || pKF2->NLeft != -1)
+        return 0;  // monocular (one camera) only
+    const Eigen::Matrix3f R1w = pKF1->GetRotation(), R2w = pKF2->GetRotation();
+    const Eigen::Matrix3f R12 = R1w * R2w.transpose();  // camera-2 bearings in camera 1
+    const Eigen::Matrix3f Rw1 = R1w.transpose();
+    const Eigen::Vector3f O1 = pKF1->GetCameraCenter();
+    const float dFar = webConfig().rotFarDepth * medianDepth;
+    std::vector<char> used(pKF1->N, 0);
+    int n = 0;
+    for(int i2 = 0; i2 < pKF2->N; i2++)
+    {
+        if(pKF2->GetMapPoint(i2))
+            continue;
+        const cv::KeyPoint& kp2 = pKF2->mvKeysUn[i2];
+        const Eigen::Vector3f b1 = R12 * pKF2->mpCamera->unprojectEig(kp2.pt);
+        if(b1(2) <= 0.1f * b1.norm())
+            continue;
+        const Eigen::Vector2f uv1 = pKF1->mpCamera->project(b1);
+        if(uv1(0) < pKF1->mnMinX || uv1(0) >= pKF1->mnMaxX || uv1(1) < pKF1->mnMinY || uv1(1) >= pKF1->mnMaxY)
+            continue;
+        const vector<size_t> vCand = pKF1->GetFeaturesInArea(uv1(0), uv1(1), 10.f * pKF1->mvScaleFactors[kp2.octave]);
+        const cv::Mat d2 = pKF2->mDescriptors.row(i2);
+        int best = 256, second = 256, bestIdx = -1;
+        for(size_t i1 : vCand)
+        {
+            if(used[i1] || pKF1->GetMapPoint(i1) || std::abs(pKF1->mvKeysUn[i1].octave - kp2.octave) > 1)
+                continue;
+            const int dist = ORBmatcher::DescriptorDistance(pKF1->mDescriptors.row(i1), d2);
+            if(dist < best) { second = best; best = dist; bestIdx = (int)i1; }
+            else if(dist < second) second = dist;
+        }
+        if(bestIdx < 0 || best > ORBmatcher::TH_LOW || best > 0.8f * second)
+            continue;
+        used[bestIdx] = 1;
+        const Eigen::Vector3f ray1 = pKF1->mpCamera->unprojectEig(pKF1->mvKeysUn[bestIdx].pt).normalized();
+        MapPoint* pMP = new MapPoint(O1 + Rw1 * (ray1 * dFar), pKF1, mpAtlas->GetCurrentMap());
+        pMP->mbWebFar = true;
+        pMP->AddObservation(pKF1, bestIdx);
+        pMP->AddObservation(pKF2, i2);
+        pKF1->AddMapPoint(pMP, bestIdx);
+        pKF2->AddMapPoint(pMP, i2);
+        pMP->ComputeDistinctiveDescriptors();
+        pMP->UpdateNormalAndDepth();
+        mpAtlas->AddMapPoint(pMP);
+        mlpWebFarPoints.push_back(pMP);
+        n++;
+    }
+    return n;
+}
+#endif
 
 
 void LocalMapping::CreateNewMapPoints()
@@ -468,7 +547,13 @@ void LocalMapping::CreateNewMapPoints()
             const float ratioBaselineDepth = baseline/medianDepthKF2;
 
             if(ratioBaselineDepth<0.01)
+            {
+#ifdef ORBSLAM3_WEB
+                if(webConfig().rotFar && !mbInertial && medianDepthKF2 > 0)
+                    mnWebFarCreated += WebCreateFarPoints(pKF2, medianDepthKF2);
+#endif
                 continue;
+            }
         }
 
         // Search matches that fullfil epipolar constraint
@@ -785,6 +870,18 @@ void LocalMapping::SearchInNeighbors()
     {
         KeyFrame* pKFi = *vit;
 
+#ifdef ORBSLAM3_WEB
+        if(webConfig().rotFar)  // far points (Web.Rot.FarPoints) are not fused: they have no real depth
+        {
+            vector<MapPoint*> vpReal;
+            for(MapPoint* pMP : vpMapPointMatches)
+                if(pMP && !pMP->mbWebFar)
+                    vpReal.push_back(pMP);
+            matcher.Fuse(pKFi,vpReal);
+            if(pKFi->NLeft != -1) matcher.Fuse(pKFi,vpReal,true);
+            continue;
+        }
+#endif
         matcher.Fuse(pKFi,vpMapPointMatches);
         if(pKFi->NLeft != -1) matcher.Fuse(pKFi,vpMapPointMatches,true);
     }
@@ -810,6 +907,10 @@ void LocalMapping::SearchInNeighbors()
                 continue;
             if(pMP->isBad() || pMP->mnFuseCandidateForKF == mpCurrentKeyFrame->mnId)
                 continue;
+#ifdef ORBSLAM3_WEB
+            if(pMP->mbWebFar)
+                continue;
+#endif
             pMP->mnFuseCandidateForKF = mpCurrentKeyFrame->mnId;
             vpFuseCandidates.push_back(pMP);
         }

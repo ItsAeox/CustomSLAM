@@ -26,6 +26,14 @@ struct WebConfig
     int orbSSC = 0;            // Web.ORB.SSC: 1 = keypoints per level chosen by Suppression via Square Covering (Bailo et
                                // al. 2018: strongest corners, homogeneous spread) instead of the octree (stock)
     double relocTimeout = 3.0; // Web.Track.RelocTimeout: seconds of relocalisation in the current map before a new map (stock 3)
+    int rotFar = 0;            // Web.Rot.FarPoints: 1 = pure-rotation prototype (LocalMapping::WebCreateFarPoints): keyframe
+                               // pairs too close to triangulate give far points (on the ray at FarDepth x the scene median
+                               // depth), kept out of local BA, fusion and the AR plane fits. 0 = stock (nothing created)
+    double rotFarDepth = 10.0; // Web.Rot.FarDepth: far-point depth in scene median depths
+    int rotFarLife = 6;        // Web.Rot.FarLife: keyframes a far point lives (it constrains rotation only while the camera
+                               // stays near where it was made)
+    double mapLoadWait = 20.0; // Web.Map.LoadWait: after a room map is loaded (System::WebLoadMap), seconds of relocalisation
+                               // into it before a new map is started; < 0 = wait until relocalised
     int timeScaledMotion = 0;  // Web.Track.TimeScaledMotion: 1 = the constant-velocity prediction is rescaled to the
                                // actual frame interval (live cameras drop frames when tracking is slow). 0 = stock
     int keepMap = 0;           // Web.Track.KeepMap: 1 = a tracking loss never resets or replaces the active map; the tracker
@@ -126,6 +134,12 @@ inline void loadWebConfig(const std::string& settingsFile)
     readInt("Web.KLT.Parallel", c.kltParallel);
     cv::FileNode rt = fs["Web.Track.RelocTimeout"];
     if (!rt.empty() && (rt.isInt() || rt.isReal())) c.relocTimeout = rt.real();
+    readInt("Web.Rot.FarPoints", c.rotFar);
+    readInt("Web.Rot.FarLife", c.rotFarLife);
+    cv::FileNode fd = fs["Web.Rot.FarDepth"];
+    if (!fd.empty() && (fd.isInt() || fd.isReal())) c.rotFarDepth = fd.real();
+    cv::FileNode lw = fs["Web.Map.LoadWait"];
+    if (!lw.empty() && (lw.isInt() || lw.isReal())) c.mapLoadWait = lw.real();
     cv::FileNode mf = fs["Web.KLT.MaxFlow"];
     if (!mf.empty() && (mf.isInt() || mf.isReal())) c.kltMaxFlow = mf.real();
     cv::FileNode mi = fs["Web.KLT.MinInlierFrac"];

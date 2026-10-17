@@ -20,6 +20,9 @@
 // period minus the TrackMonocular time). It ignores image loading, which on WSL's /mnt drives made runs play at
 // ~0.5x. --rt-wall plays every frame on a wall-clock schedule while a background thread loads the next one;
 // --live behaves like a camera (the tracker always gets the newest frame, late frames are dropped).
+//
+// Room map save / reload (slam/orbslam3/src/WebMapIO.cc): --save-map <file> writes the largest map at the end;
+// --load-map <file> loads one before the first frame, and tracking relocalises into it (Web.Map.LoadWait).
 
 #include <System.h>
 #include <ImuTypes.h>
@@ -319,6 +322,7 @@ int main(int argc, char** argv) {
   bool gyro = false;        // mono: also pass the dataset IMU (only the gyro prior uses it: Web.Gyro.Prior in the settings)
   bool trace = false;       // diagnostic: per-frame trace (state, tracked points, live Twc) -> trace.txt
   int seed = -1;  // -1: ORB-SLAM3 default (TwoViewReconstruction seeds with 0)
+  string saveMap, loadMap;  // room map save / reload (WebMapIO.cc): the largest map at the end / a map loaded first
   for (int i = 1; i < argc; ++i) {
     string a = argv[i];
     auto next = [&]() { if (i + 1 >= argc) { std::cerr << "missing value for " << a << "\n"; std::exit(2); } return string(argv[++i]); };
@@ -338,6 +342,8 @@ int main(int argc, char** argv) {
     else if (a == "--sync-mapping") syncMapping = true;
     else if (a == "--gyro") gyro = true;
     else if (a == "--trace") trace = true;
+    else if (a == "--save-map") saveMap = next();
+    else if (a == "--load-map") loadMap = next();
     else { std::cerr << "unknown arg " << a << "\n"; return 2; }
   }
   if (dataset.empty() || mode.empty() || seq.empty() || vocab.empty() || settings.empty() || out.empty()) {
@@ -363,6 +369,7 @@ int main(int argc, char** argv) {
                          inertial ? ORB_SLAM3::System::IMU_MONOCULAR : ORB_SLAM3::System::MONOCULAR,
                          /*bUseViewer=*/false);
   const float imageScale = SLAM.GetImageScale();
+  if (!loadMap.empty() && !SLAM.WebLoadMap(loadMap)) return 3;  // the reason is printed (WEBMAP ...)
   cv::Ptr<cv::CLAHE> claheOp = cv::createCLAHE(3.0, cv::Size(8, 8));  // as in ORB-SLAM3's TUM-VI examples
 
   // First IMU sample considered: the last one at or before the first frame (as in mono_inertial_tum_vi.cc)
@@ -447,6 +454,7 @@ int main(int argc, char** argv) {
   const auto msEnd = mapSize(SLAM);  // before the final global optimisation / shutdown
   fs::current_path(out);  // REGISTER_TIMES builds write their *TimeStats.txt files to the working directory
   SLAM.Shutdown();
+  if (!saveMap.empty()) SLAM.WebSaveMap(saveMap);  // the largest map; failures are printed (WEBMAP ...)
   const fs::path rawF = fs::path(out) / "f_euroc_ns.txt", rawKF = fs::path(out) / "kf_euroc_ns.txt";
   bool anyKF = false;  // ORB-SLAM3's savers crash when no map has a keyframe (a run ending right after a reset)
   for (ORB_SLAM3::Map* m : SLAM.WebAtlas()->GetAllMaps()) anyKF = anyKF || !m->GetAllKeyFrames().empty();
@@ -476,7 +484,7 @@ int main(int argc, char** argv) {
   info << std::setprecision(17) << "dataset " << dataset << "\nmode " << mode << "\nseq " << seq
        << "\nsettings " << settings << "\nclahe " << clahe << "\nseed " << seed << "\nrealtime " << realtime
        << "\nrate_scale " << rateScale << "\nlive " << live << "\nrt_wall " << rtWall << "\nsync_mapping " << syncMapping
-       << "\ngyro " << gyro << "\nframes " << N << "\nprocessed " << processed << "\ndropped " << dropped
+       << "\ngyro " << gyro << "\nload_map " << loadMap << "\nframes " << N << "\nprocessed " << processed << "\ndropped " << dropped
        << "\nwall_s " << wallS << "\nseq_s " << seqS
        << "\neffective_rate " << (wallS > 0 ? seqS / wallS : 0.0)  // 1 = real time (x 1/rate_scale when scaled)
        << "\nmap_points " << msEnd[0] << "\nkeyframes " << msEnd[1] << "\nmaps " << msEnd[2] << "\nsaved_maps " << savedMaps

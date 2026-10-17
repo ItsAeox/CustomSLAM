@@ -1950,6 +1950,15 @@ void Tracking::Track()
     }
 
 
+#ifdef ORBSLAM3_WEB
+    if(mState==NOT_INITIALIZED && mbWebLoadWait && mdWebLoadStart < 0)
+    {
+        // a loaded map (System::WebLoadMap): relocalise into it instead of initialising a new one
+        mState = RECENTLY_LOST;
+        mTimeStampLost = mdWebLoadStart = mCurrentFrame.mTimeStamp;
+        mbWebGood = false;
+    }
+#endif
     if(mState==NOT_INITIALIZED)
     {
 #ifdef ORBSLAM3_WEB
@@ -2075,6 +2084,12 @@ void Tracking::Track()
                             if(bOK)
                                 mnWebRelocRecoveries++;
                         }
+                        if(bOK && mbWebLoadWait)
+                        {
+                            mbWebLoadWait = false;
+                            mdWebLoadRelocTime = mCurrentFrame.mTimeStamp - mdWebLoadStart;
+                            cout << "WEBMAP relocalised into the loaded map after " << mdWebLoadRelocTime << " s" << endl;
+                        }
 #else
                         // Relocalization
                         bOK = Relocalization();
@@ -2085,7 +2100,9 @@ void Tracking::Track()
                         // web port: how long to keep relocalising in the current map before starting a new one
                         // (Web.Track.RelocTimeout, stock 3 s). Longer keeps AR anchors when the user comes back.
                         // Keep map: no timeout, never a new map (the user is guided back to the mapped area).
-                        if(!webConfig().keepMap && mCurrentFrame.mTimeStamp-mTimeStampLost>webConfig().relocTimeout && !bOK)
+                        // A loaded map waits longer (Web.Map.LoadWait; < 0: until relocalised).
+                        const double timeout = mbWebLoadWait ? webConfig().mapLoadWait : webConfig().relocTimeout;
+                        if(!webConfig().keepMap && timeout >= 0 && mCurrentFrame.mTimeStamp-mTimeStampLost>timeout && !bOK)
 #else
                         if(mCurrentFrame.mTimeStamp-mTimeStampLost>3.0f && !bOK)
 #endif
@@ -2093,6 +2110,14 @@ void Tracking::Track()
                             mState = LOST;
                             Verbose::PrintMess("Track Lost...", Verbose::VERBOSITY_NORMAL);
                             bOK=false;
+#ifdef ORBSLAM3_WEB
+                            if(mbWebLoadWait)
+                            {
+                                mbWebLoadWait = false;  // the loaded map stays in the atlas (a later merge may find it)
+                                cout << "WEBMAP no relocalisation into the loaded map within " << timeout
+                                     << " s: a new map is started" << endl;
+                            }
+#endif
                         }
                     }
                 }
@@ -2414,6 +2439,17 @@ void Tracking::Track()
     if(mState==OK || mState==RECENTLY_LOST)
     {
         // Store frame pose information to retrieve the complete camera trajectory afterwards.
+#ifdef ORBSLAM3_WEB
+        if(mpWebLoadRefKF && (mbWebLoadWait || (!mCurrentFrame.isSet() && mlRelativeFramePoses.empty())))
+        {
+            // a loaded map not relocalised into yet: no pose of this session (and none to repeat), stored as lost
+            mlRelativeFramePoses.push_back(Sophus::SE3f());
+            mlpReferences.push_back(mpWebLoadRefKF);
+            mlFrameTimes.push_back(mCurrentFrame.mTimeStamp);
+            mlbLost.push_back(true);
+        }
+        else
+#endif
         if(mCurrentFrame.isSet())
         {
             Sophus::SE3f Tcr_ = mCurrentFrame.GetPose() * mCurrentFrame.mpReferenceKF->GetPoseInverse();
@@ -2868,6 +2904,22 @@ Sophus::SE3f Tracking::WebMotionPrediction(double tNow) const
 // the gyro since (camera centre kept). Most phone losses are brief (blur, a fast turn) with the camera still in front of
 // the mapped area, whereas bag-of-words relocalisation needs a view close to a keyframe. Accepted like a relocalisation:
 // >= Web.Track.CoastMinInliers inliers, then the stricter local-map check of the next frames (mnLastRelocFrameId).
+void Tracking::WebAdoptLoadedMap(Map* pMap)
+{
+    // Track() turns the first frame's NOT_INITIALIZED into RECENTLY_LOST, so BoW relocalisation searches the loaded
+    // map's keyframes; no last keyframe of this session yet (CreateNewKeyFrame links to it), a valid reference keyframe
+    // for the bookkeeping of frames tracked before the relocalisation.
+    KeyFrame* pLast = nullptr;
+    for(KeyFrame* pKF : pMap->GetAllKeyFrames())
+        if(!pKF->isBad() && (!pLast || pKF->mnId > pLast->mnId))
+            pLast = pKF;
+    mbWebLoadedMap = mbWebLoadWait = true;
+    mdWebLoadStart = mdWebLoadRelocTime = -1;
+    mpWebLoadRefKF = mpReferenceKF = pLast;
+    mpLastKeyFrame = nullptr;
+    mbWebGood = false;
+}
+
 bool Tracking::WebCoastTrack()
 {
     const WebConfig& cfg = webConfig();

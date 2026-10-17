@@ -67,6 +67,7 @@ public:
 #ifdef ORBSLAM3_WEB
     // web port diagnostics: local-mapping activity counters (read at shutdown)
     int mnDiagKFs = 0, mnDiagLBADone = 0, mnDiagLBAAborted = 0, mnDiagLBASkipped = 0;
+    long mnWebFarCreated = 0, mnWebFarCulled = 0;  // Web.Rot.FarPoints statistics
 #endif
     void SetAcceptKeyFrames(bool flag);
     bool SetNotStop(bool flag);
@@ -139,6 +140,10 @@ protected:
     bool CheckNewKeyFrames();
     void ProcessNewKeyFrame();
     void CreateNewMapPoints();
+#ifdef ORBSLAM3_WEB
+    int WebCreateFarPoints(KeyFrame* pKF2, float medianDepth);
+    std::list<MapPoint*> mlpWebFarPoints;  // far points still alive (culled after Web.Rot.FarLife keyframes)
+#endif
 
     void MapPointCulling();
     void SearchInNeighbors();

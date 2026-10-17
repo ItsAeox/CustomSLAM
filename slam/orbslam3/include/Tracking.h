@@ -147,6 +147,13 @@ public:
     long mnWebCoastTries = 0, mnWebCoastRecoveries = 0, mnWebRelocRecoveries = 0;  // Web.Track.Coast statistics
     long mnWebLKCalls = 0, mnWebLKPoints = 0, mnWebLKMismatch = 0;  // Web.KLT.Parallel compare mode
     double mdWebLKSerialMs = 0, mdWebLKParallelMs = 0;
+    // room map reload (System::WebLoadMap): the first frames relocalise into the loaded map instead of initialising
+    void WebAdoptLoadedMap(Map* pMap);
+    bool mbWebLoadedMap = false;       // a map was loaded at the start
+    bool mbWebLoadWait = false;        // ... and not relocalised into yet
+    KeyFrame* mpWebLoadRefKF = nullptr;
+    double mdWebLoadStart = -1;        // first frame time after the load (s)
+    double mdWebLoadRelocTime = -1;    // time to the first relocalisation into the loaded map (s; -1 = none)
 #endif
 
     cv::Mat mImGray;

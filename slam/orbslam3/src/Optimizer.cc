@@ -1401,6 +1401,10 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
             if(pMP)
                 if(!pMP->isBad() && pMP->GetMap() == pCurrentMap)
                 {
+#ifdef ORBSLAM3_WEB
+                    if(pMP->mbWebFar)  // far points (Web.Rot.FarPoints): no depth to optimise
+                        continue;
+#endif
 
                     if(pMP->mnBALocalForKF!=pKF->mnId)
                     {

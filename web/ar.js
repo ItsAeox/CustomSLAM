@@ -92,6 +92,9 @@ let lastMaps = 0, lastState = 0;
 let replayTaps = [], replayT = -1;               // recording taps still to replay: { t (s, sequence clock), u, v (image px) }
 let stash = null;          // anchors of a map that went inactive (tracking lost -> new map); restored on map merge
 let resetRequested = false;  // Reset button: sent to the worker between frames (one request at a time)
+let saveRequested = false;   // Save room button: also between frames
+let pendingRoom = null;      // a loaded room's tree and floor, restored once the tree model is loaded
+let mapWait = -1;            // room map: 1 = loaded, not relocalised into yet; 0 = relocalised; -1 = no room loaded
 const tracking = () => state === 2 || state === 5;  // 5: tracked by a KLT frame
 
 function layout() {  // cover-fit the processed image into the window; the GL canvas covers the same rectangle
@@ -242,16 +245,69 @@ function detectFloor() {
     tele(`floor ${floor ? 'updated' : 'found'}: camera height ${height.toFixed(3)} (map units), ${pl.inliers.length} of ${below.length} points below the camera, tilt to gravity ${tilt.toFixed(1)} deg`);
   }
   floor = { n: pl.n, d: pl.d, height, inliers: pl.inliers.length, centroid: pl.centroid };
+  placeFloorMesh();
+}
+function placeFloorMesh() {
   if (!floorMesh) {
     floorMesh = new THREE.GridHelper(1, 10, 0x22c55e, 0x22c55e);
     floorMesh.material.transparent = true; floorMesh.material.opacity = 0.35;
     scene.add(floorMesh);
   }
   // the grid is fixed in the world: centred on the floor points that support the plane (not under the camera)
-  const k = dot(pl.n, pl.centroid) + pl.d;
-  floorMesh.position.set(pl.centroid[0] - pl.n[0] * k, pl.centroid[1] - pl.n[1] * k, pl.centroid[2] - pl.n[2] * k);
+  const k = dot(floor.n, floor.centroid) + floor.d;
+  floorMesh.position.set(floor.centroid[0] - floor.n[0] * k, floor.centroid[1] - floor.n[1] * k, floor.centroid[2] - floor.n[2] * k);
   floorMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(...floor.n));
-  floorMesh.scale.setScalar(height * 2);
+  floorMesh.scale.setScalar(floor.height * 2);
+}
+
+// ---------------------------------------------------------------- room map save and reload
+// One saved room per browser (IndexedDB): the SLAM map (slam/orbslam3/src/WebMapIO.cc format) with the tree and floor
+// in its coordinates. Loading it at the start makes ORB-SLAM3 relocalise into the saved map, so the tree comes back
+// where it was. The map only fits the same camera (size, intrinsics) and vocabulary (checked here and in WebMapIO.cc).
+const ROOM_DB = 'webvio-rooms', ROOM_STORE = 'rooms', ROOM_KEY = 'room';
+function roomDb() {
+  return new Promise((res, rej) => {
+    const rq = indexedDB.open(ROOM_DB, 1);
+    rq.onupgradeneeded = () => rq.result.createObjectStore(ROOM_STORE);
+    rq.onsuccess = () => res(rq.result);
+    rq.onerror = () => rej(rq.error);
+  });
+}
+async function roomGet() {
+  try {
+    const db = await roomDb();
+    return await new Promise((res, rej) => {
+      const rq = db.transaction(ROOM_STORE).objectStore(ROOM_STORE).get(ROOM_KEY);
+      rq.onsuccess = () => res(rq.result || null);
+      rq.onerror = () => rej(rq.error);
+    });
+  } catch { return null; }  // storage blocked (private window)
+}
+async function roomPut(room) {
+  const db = await roomDb();
+  return new Promise((res, rej) => {
+    const tx = db.transaction(ROOM_STORE, 'readwrite');
+    tx.objectStore(ROOM_STORE).put(room, ROOM_KEY);
+    tx.oncomplete = () => res(true);
+    tx.onerror = () => rej(tx.error);
+  });
+}
+function restoreRoom(room) {  // the saved tree and floor (hidden until tracking relocalises into the loaded map)
+  if (room.floor) { floor = room.floor; placeFloorMesh(); floorMesh.visible = false; }
+  downSum = room.downSum || [0, 0, 0]; downN = room.downN || 0;
+  if (room.tree) {
+    cactus = cactusProto.clone();
+    cactus.position.fromArray(room.tree.p);
+    cactus.quaternion.fromArray(room.tree.q);
+    objBase = room.tree.base;
+    $('size').value = room.tree.size;
+    $('sizeVal').textContent = `${sizeFactor().toFixed(2)}×`;
+    cactus.scale.setScalar(objBase * sizeFactor());
+    cactus.visible = false;
+    scene.add(cactus);
+    $('sizeRow').style.visibility = 'visible';
+  }
+  tele(`room restored: tree ${room.tree ? `at ${room.tree.p.map((x) => x.toFixed(4)).join(' ')}` : 'none'}, floor ${room.floor ? 'yes' : 'no'}`);
 }
 
 function placeCactus(clientX, clientY) {
@@ -532,9 +588,24 @@ async function start() {
       settingsText += phoneImuSettings(hz);
       tele(`IMU: DeviceMotion ${hz.toFixed(1)} Hz` + (imuN >= 10 ? ` (measured over ${imuN} events)` : ' (assumed: too few events yet)'));
     }
+    let room = $('room').value === 'saved' ? await roomGet() : null;
+    if (room) {  // the saved map fits only the same camera and vocabulary (WebMapIO.cc checks again)
+      const same = room.W === W && room.H === H && room.desc === opts.desc && room.voc === opts.voc && !inertial &&
+                   ['fx', 'fy', 'cx', 'cy'].every((k) => Math.abs(room.K[k] - K[k]) <= 0.01 * Math.abs(room.K[k]));
+      if (!same) {
+        tele(`room not loaded: saved for ${room.W}x${room.H} fx ${room.K.fx.toFixed(1)} ${room.desc}/${room.voc}, now ${W}x${H} fx ${K.fx.toFixed(1)} ${opts.desc}/${opts.voc}${inertial ? ' (IMU on: visual-only maps)' : ''}`);
+        hint('Saved room not loaded: it was saved with another camera setting, vocabulary or IMU mode. Starting a new room.', 5000);
+        room = null;
+      }
+    }
     const tInit = performance.now();
     const ready = await slam.request({ type: 'init', vocabUrl: vocabUrl(opts.desc, opts.voc), clahe, seed: 1, prof: params.get('prof') === '1', inertial,
-                                       settingsText: withTracker(settingsText) });
+                                       settingsText: withTracker(settingsText), mapBytes: room ? room.map : null });
+    if (room) {
+      tele(`room map ${ready.mapLoaded ? 'loaded' : 'NOT loaded'} (saved ${room.date}, ${(room.map.byteLength / 1048576).toFixed(1)} MB, preset ${room.preset})`);
+      if (ready.mapLoaded) pendingRoom = room;
+      else hint('The saved room could not be loaded (see Log). Starting a new room.', 5000);
+    }
     loadingDone = true; clearInterval(stallTimer);
     if (camStream) {  // WebCodecs: frames go straight to the worker; use it only if they match the stream we calibrated for
       const c = await slam.request({ type: 'camera', readable: camStream }, [camStream]);
@@ -556,6 +627,7 @@ async function start() {
       if (stash) { if (stash.cactus) scene.remove(stash.cactus); if (stash.floorMesh) scene.remove(stash.floorMesh); stash = null; }
       resetAnchors('Map reset. Move the phone slowly sideways.');
     };
+    $('btnSaveRoom').onclick = () => { saveRequested = true; hint('Saving the room…', 3000); };
     $('btnClear').onclick = () => { if (cactus) { scene.remove(cactus); cactus = null; $('sizeRow').style.visibility = 'hidden'; tele('tree removed'); } };
     let sizeLog = 0;
     $('size').oninput = () => {  // resize the placed tree (2^value: 0.25x .. 4x of the placement size)
@@ -583,6 +655,28 @@ async function start() {
         resetRequested = false;
         await slam.request({ type: 'reset' });
         tele('map reset requested');
+      }
+      if (pendingRoom && cactusProto) { restoreRoom(pendingRoom); pendingRoom = null; }
+      if (saveRequested) {
+        saveRequested = false;
+        const sv = await slam.request({ type: 'saveMap' });
+        if (sv.type === 'mapSaved' && sv.ok) {
+          const room = { v: 1, date: new Date().toISOString(), map: sv.bytes, W, H, K: { fx: K.fx, fy: K.fy, cx: K.cx, cy: K.cy },
+                         desc: opts.desc, voc: opts.voc, preset: presetKey(),
+                         tree: cactus ? { p: cactus.position.toArray(), q: cactus.quaternion.toArray(), base: objBase, size: Number($('size').value) } : null,
+                         floor, downSum, downN, keyframes: stats[0], points: stats[1] };
+          try {
+            await roomPut(room);
+            tele(`room saved: ${(sv.bytes.byteLength / 1048576).toFixed(1)} MB, ${stats[0]} KFs, ${stats[1]} points, tree ${cactus ? 'yes' : 'no'} (${sv.ms.toFixed(0)} ms)`);
+            hint(`Room saved (${(sv.bytes.byteLength / 1048576).toFixed(1)} MB). Choose "Saved room" at the start to reload it.`, 4000);
+          } catch (e) {
+            tele(`room save failed (storage): ${e}`);
+            hint('Saving failed: browser storage is full or blocked.', 4000);
+          }
+        } else {
+          tele(`room save failed: ${sv.text || 'see the slam log'}`);
+          hint('Saving failed (see Log).', 4000);
+        }
       }
       const keep = opts.anchor === 'keep' && !!cactus;  // keep map: a loss relocalises instead of a new map (WebConfig.h)
       if (keep !== keepMapOn) {
@@ -620,6 +714,10 @@ async function start() {
         if (!lost) lostSince = 0;
       }
       prevStats = r.viz.stats; prevTrackMs = r.trackMs;
+      if (r.mapWait !== mapWait) {
+        if (mapWait === 1 && r.mapWait === 0) tele(r.state === 2 || r.state === 5 ? 'room: relocalised into the saved map' : 'room: gave up waiting, new map');
+        mapWait = r.mapWait;
+      }
       state = r.state; stats = r.viz.stats; kps = r.viz.kps;
       if (lastMaps && stats[3] > lastMaps) stashAnchors();              // lost -> ORB-SLAM3 started a new map
       else if (lastMaps && stats[3] < lastMaps) restoreAnchors();       // maps merged back into the old one
@@ -670,6 +768,7 @@ async function start() {
       times.push(performance.now() - tf);
       if (times.length > 30) times.shift();
       if (state === 1) hint('Move the phone slowly sideways to start tracking');
+      else if ((state === 3 || state === 4) && mapWait === 1) hint('Saved room: point the camera at the area you saved (where the tree was)');
       else if (state === 3 || state === 4) hint(keepMapOn ? 'Tracking lost: point the camera back at where the tree was' : 'Tracking lost: move back towards where you were');
       else if (tracking() && inertial && !(stats[4] && stats[5])) hint(stats[4] ? 'IMU refining… keep moving' : 'IMU initialising: move the phone around');
       else if (tracking() && !cactus) hint(floor ? 'Tap the floor to place the tree' : (downN ? 'Point at the floor…' : 'Tap a flat surface to place the tree'));
@@ -760,6 +859,15 @@ function withTracker(yaml) {  // applies the selected options (web/options.js)
 }
 
 $('go').onclick = start;
+roomGet().then((room) => {  // start screen: offer the saved room
+  if (!room) { $('roomNote').textContent = 'No saved room yet: use "Save room" while tracking.'; return; }
+  const o = document.createElement('option');
+  o.value = 'saved';
+  o.textContent = `Saved room (${room.date.slice(0, 16).replace('T', ' ')})`;
+  $('room').append(o);
+  $('roomNote').textContent = `Saved: ${(room.map.byteLength / 1048576).toFixed(1)} MB, ${room.keyframes} keyframes, ${room.tree ? 'with a tree' : 'no tree'}, ` +
+    `${room.W}×${room.H}, preset ${room.preset}. Same camera setting and vocabulary needed.`;
+});
 {  // camera model shown on the start screen (the calibration is chosen by stream size once the camera runs)
   const saved = savedCalibrations();
   $('calibNote').innerHTML = saved.length

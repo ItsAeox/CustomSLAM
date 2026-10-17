@@ -179,6 +179,11 @@ public:
     // web port: block until local mapping has processed all queued keyframes (synchronous-mapping mode for
     // deterministic, thread-timing-independent evaluation). Returns false on timeout.
     bool WaitForMappingIdle(double timeoutSec = 5.0);
+    // web port: room map save and reload (WebMapIO.cc). Save: one map (default the largest) to a file, local mapping
+    // paused for the copy (or after Shutdown). Load: monocular, before the first frame; tracking then relocalises
+    // into the loaded map (Web.Map.LoadWait). Both print WEBMAP lines and return false on failure.
+    bool WebSaveMap(const std::string& path, Map* pMap = nullptr);
+    bool WebLoadMap(const std::string& path);
     // web port: read-only access for the browser viewer (what MapDrawer/FrameDrawer draw upstream). Only read
     // from the thread that calls Track*, between frames.
     Tracking* WebTracker() { return mpTracker; }

@@ -800,11 +800,19 @@ float KeyFrame::ComputeSceneMedianDepth(const int q)
         if(mvpMapPoints[i])
         {
             MapPoint* pMP = mvpMapPoints[i];
+#ifdef ORBSLAM3_WEB
+            if(pMP->mbWebFar)  // far points (Web.Rot.FarPoints) have no real depth
+                continue;
+#endif
             Eigen::Vector3f x3Dw = pMP->GetWorldPos();
             float z = Rcw2.dot(x3Dw) + zcw;
             vDepths.push_back(z);
         }
     }
+#ifdef ORBSLAM3_WEB
+    if(vDepths.empty())
+        return -1.0;  // only far points (or none): callers treat <= 0 as unknown
+#endif
 
     sort(vDepths.begin(),vDepths.end());
 

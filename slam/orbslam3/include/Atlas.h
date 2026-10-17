@@ -28,6 +28,8 @@
 
 #include <set>
 #include <mutex>
+#include <iosfwd>
+#include <string>
 #include <boost/serialization/vector.hpp>
 #include <boost/serialization/export.hpp>
 
@@ -126,6 +128,14 @@ public:
     // Function for garantee the correction of serialization of this object
     void PreSave();
     void PostLoad();
+#ifdef ORBSLAM3_WEB
+    // web port (WebMapIO.cc): room map save and reload in a portable binary stream (one map). Saving needs local
+    // mapping stopped (System::WebSaveMap); loading is for a fresh system before its first frame: the loaded map
+    // becomes the current one. Returns false / nullptr with the reason in err.
+    bool WebSaveMap(std::ostream& os, Map* pMap, std::string& err);
+    Map* WebLoadMap(std::istream& is, std::string& err);
+    static std::string WebVocabularyTag(ORBVocabulary* pVoc);
+#endif
 
     map<long unsigned int, KeyFrame*> GetAtlasKeyframes();
 

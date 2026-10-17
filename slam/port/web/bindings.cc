@@ -155,7 +155,7 @@ class WebSlam {
     std::unordered_set<ORB_SLAM3::MapPoint*> local(ref.begin(), ref.end());
     mps_.reserve(all.size() * 4);
     for (ORB_SLAM3::MapPoint* mp : all) {
-      if (!mp || mp->isBad()) continue;
+      if (!mp || mp->isBad() || mp->mbWebFar) continue;  // far points (Web.Rot.FarPoints): no depth, not for plane fits
       const Eigen::Vector3f p = mp->GetWorldPos();
       mps_.insert(mps_.end(), {p.x(), p.y(), p.z(), local.count(mp) ? 1.f : 0.f});
     }
@@ -268,6 +268,17 @@ class WebSlam {
   // or starting a new one (WebConfig::keepMap). Called between frames, on the thread that calls track().
   void setKeepMap(bool on) { ORB_SLAM3::webConfig().keepMap = on ? 1 : 0; }
   void shutdown() { if (sys_) { sys_->Shutdown(); sys_.reset(); } }
+
+  // Room map save / reload (slam/orbslam3/src/WebMapIO.cc). Files live in the emscripten FS; the page moves them to
+  // and from IndexedDB. Save: the current map, between frames (local mapping is paused for the copy). Load: right after
+  // init, before the first frame; tracking then relocalises into the loaded map (Web.Map.LoadWait).
+  bool saveMap(const std::string& path) { return sys_ && sys_->WebSaveMap(path, sys_->WebAtlas()->GetCurrentMap()); }
+  bool loadMap(const std::string& path) { return sys_ && sys_->WebLoadMap(path); }
+  // after a load: 1 = still waiting for the first relocalisation, 0 = relocalised (or gave up), -1 = no map loaded
+  int loadWait() {
+    if (!sys_ || !sys_->WebTracker()->mbWebLoadedMap) return -1;
+    return sys_->WebTracker()->mbWebLoadWait ? 1 : 0;
+  }
 
   // End of a dataset run: stop the threads and save ORB-SLAM3's final (optimised) trajectory, exactly like
   // the native driver does (EuRoC format, ns timestamps). Files are written to the emscripten FS.
@@ -399,5 +410,8 @@ EMSCRIPTEN_BINDINGS(orbslam3_web) {
       .function("profile", &WebSlam::profile)
       .function("setKeepMap", &WebSlam::setKeepMap)
       .function("shutdown", &WebSlam::shutdown)
+      .function("saveMap", &WebSlam::saveMap)
+      .function("loadMap", &WebSlam::loadMap)
+      .function("loadWait", &WebSlam::loadWait)
       .function("finishAndSave", &WebSlam::finishAndSave);
 }

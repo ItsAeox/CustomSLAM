@@ -99,6 +99,9 @@ class MapPoint
 
         ar & mfMinDistance;
         ar & mfMaxDistance;
+#ifdef ORBSLAM3_WEB
+        ar & mbWebFar;  // WebMapIO.cc (room maps): far points stay far after a reload
+#endif
 
     }
 
@@ -206,6 +209,9 @@ public:
     static std::mutex mGlobalMutex;
 
     unsigned int mnOriginMapId;
+#ifdef ORBSLAM3_WEB
+    bool mbWebFar = false;  // pure-rotation prototype (Web.Rot.FarPoints): a far point, not triangulated (no depth)
+#endif
 
 protected:    
 
