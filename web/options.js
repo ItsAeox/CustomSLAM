@@ -33,6 +33,7 @@ export const OPTIONS = [
   { key: 'recover', label: 'Recovery when lost', values: [['bow', 'bag-of-words relocalisation (original)'], ['coast', 'local-map search first, then bag of words']], def: 'bow' },
   { key: 'init', label: 'Map start', values: [['stock', 'original thresholds'], ['quick', 'quicker (60 matches, 0.5°, 40 points)'], ['gyro', 'gyro two-view (+ gyro prior)']], def: 'stock' },
   { key: 'kf', label: 'Keyframes', values: [['stock', 'original'], ['fewer', 'fewer (ratio 0.8)']], def: 'stock' },
+  { key: 'voc', label: 'Vocabulary (download)', values: [['full', 'full (49 MB, original)'], ['small', 'small (5 MB, own k10L5)']], def: 'full', when: (o) => o.desc !== 'teblid' },
   { key: 'hold', label: 'Tree during brief tracking losses', page: 'ar', values: [['hide', 'hidden (original)'], ['gyro', 'held by the gyro for up to 0.4 s']], def: 'hide' },
 ];
 
@@ -106,10 +107,11 @@ export function applyOptions(yaml, o) {
   if (o.tracker === 'klt' && o.kltnorm === 'on') extra.push('Web.KLT.Normalize: 1');
   if (o.pose === 'fast') extra.push('Web.Track.FastPose: 1');
   if (o.orbpar === 'parallel') extra.push('Web.ORB.Parallel: 1');
-  if (o.recover === 'coast') extra.push('Web.Track.Coast: 2');
+  if (o.recover === 'coast') extra.push('Web.Track.Coast: 2', 'Web.Track.CoastTime: 3');  // 3 s: looking away and back (gyro)
   if (o.init === 'quick') extra.push('Web.Init.MinMatches: 60', 'Web.Init.MinParallax: 0.5', 'Web.Init.MinTriangulated: 40');
   if (o.init === 'gyro' && o.imu !== 'on') extra.push('Web.Init.Gyro: 1');
   if (o.kf === 'fewer') extra.push('Web.KF.RefRatio: 0.8');
+  if (o.voc === 'small' && o.desc !== 'teblid') extra.push('Web.BoW.LevelsUp: 3');  // L5 tree: BoW index at the stock depth
   return extra.length ? `${y.replace(/\s*$/, '\n')}\n# web options (web/options.js)\n${extra.join('\n')}\n` : y;
 }
 

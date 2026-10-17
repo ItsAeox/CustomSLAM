@@ -22,6 +22,8 @@ cp "$W/models/xfeat_640x480.onnx" "$W/models/xfeat_480x640.onnx" "$OUT/models/" 
 gzip -6 -n -c "$VOCAB" > "$OUT/vocab/ORBvoc.bin.gz"
 TEBLID_VOCAB="$(dirname "$VOCAB")/TEBLIDvoc_own_k10L6.bin"  # optional: descriptor option 'TEBLID' (vocab_train)
 if [ -f "$TEBLID_VOCAB" ]; then gzip -6 -n -c "$TEBLID_VOCAB" > "$OUT/vocab/TEBLIDvoc_own_k10L6.bin.gz"; fi
+SMALL_VOCAB="$(dirname "$VOCAB")/ORBvoc_own_k10L5.bin"  # optional: vocabulary option 'small' (5 MB, vocab_eval 2026-10-17)
+if [ -f "$SMALL_VOCAB" ]; then gzip -6 -n -c "$SMALL_VOCAB" > "$OUT/vocab/ORBvoc_own_k10L5.bin.gz"; fi
 touch "$OUT/.nojekyll"  # serve files as-is (no Jekyll processing)
 cat > "$OUT/index.html" <<'EOF'
 <!doctype html>

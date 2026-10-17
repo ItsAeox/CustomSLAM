@@ -3055,7 +3055,8 @@ bool Tracking::WebCoastTrack()
 // web port (Web.Init.Gyro): two-view initialisation with the rotation known from the gyro. With R21 given, the epipolar
 // constraint f2 . (t x R21 f1) = 0 is linear in the translation direction t: t . n = 0 with n = (R21 f1) x f2, so two
 // correspondences give t = n_a x n_b (minimal 2-point RANSAC, Kneip et al. 2011; Troiani et al. 2014). Refined on the
-// inliers (smallest singular vector), sign from cheirality, points triangulated and checked as TwoViewReconstruction's
+// inliers (smallest singular vector), then R and t refined together (a phone gyro is off the camera clock by tens of
+// ms), sign from cheirality, points triangulated and checked as TwoViewReconstruction's
 // CheckRT (positive depth, reprojection, parallax of the 50th point >= Web.Init.MinParallax, >= MinTriangulated
 // points). No homography/fundamental model selection: the rotation, the ambiguous part at low parallax, is measured.
 // The initial global BA refines R and t. False (stock reconstruction follows) without gyro coverage or support.
@@ -3067,7 +3068,7 @@ bool Tracking::WebGyroTwoView(Sophus::SE3f& T21, vector<cv::Point3f>& vP3D, vect
     if(!WebGyroRotation(mInitialFrame.mTimeStamp + d, mCurrentFrame.mTimeStamp + d, dRb))
         return false;
     const Sophus::SO3f Rbc = Sophus::SO3f::fitToSO3(Eigen::Map<const Eigen::Matrix<float, 3, 3, Eigen::RowMajor>>(cfg.gyroRbc));
-    const Eigen::Matrix3f R21 = (Rbc.inverse() * Sophus::SO3f::fitToSO3(dRb) * Rbc).inverse().matrix();
+    Eigen::Matrix3f R21 = (Rbc.inverse() * Sophus::SO3f::fitToSO3(dRb) * Rbc).inverse().matrix();
 
     // bearings of the matches (unit vectors), constraint normals n = (R21 f1) x f2
     vector<int> vI1;
@@ -3087,12 +3088,15 @@ bool Tracking::WebGyroTwoView(Sophus::SE3f& T21, vector<cv::Point3f>& vP3D, vect
     if(n < cfg.initMinTriangulated)
         return false;
     const float fx = mpCamera->getParameter(0);
-    const float thAng = 2.0f / fx;  // ~2 px: angle of f2 to the epipolar plane
-    auto planeErr = [&](const Eigen::Vector3f& t, int k) {
-        const Eigen::Vector3f m = t.cross(R21 * vF1[k]);
+    // RANSAC with ~6 px (a phone gyro is tens of ms off the camera clock: ~1 deg at 30 deg/s), then rotation and
+    // translation refined together on those inliers, then the strict ~2 px test
+    const float thLoose = 6.0f / fx, thAng = 2.0f / fx;  // angle of f2 to the epipolar plane
+    auto planeErrR = [&](const Eigen::Matrix3f& R, const Eigen::Vector3f& t, int k) {
+        const Eigen::Vector3f m = t.cross(R * vF1[k]);
         const float nm = m.norm();
-        return nm > 1e-9f ? std::abs(vF2[k].dot(m)) / nm : 1.0f;
+        return nm > 1e-9f ? vF2[k].dot(m) / nm : 1.0f;
     };
+    auto planeErr = [&](const Eigen::Vector3f& t, int k) { return std::abs(planeErrR(R21, t, k)); };
 
     // 2-point RANSAC on the translation direction
     vector<bool> vIn(n, false), vBestIn;
@@ -3110,7 +3114,7 @@ bool Tracking::WebGyroTwoView(Sophus::SE3f& T21, vector<cv::Point3f>& vP3D, vect
         int nIn = 0;
         for(int k = 0; k < n; k++)
         {
-            vIn[k] = planeErr(t, k) < thAng;
+            vIn[k] = planeErr(t, k) < thLoose;
             nIn += vIn[k];
         }
         if(nIn > nBestIn)
@@ -3128,6 +3132,63 @@ bool Tracking::WebGyroTwoView(Sophus::SE3f& T21, vector<cv::Point3f>& vP3D, vect
             A.row(r++) = vN[k].normalized().transpose();
     Eigen::JacobiSVD<Eigen::MatrixXf> svd(A, Eigen::ComputeFullV);
     Eigen::Vector3f t = svd.matrixV().col(2).normalized();
+
+    // joint refinement (Gauss-Newton, Huber 2 px, numeric Jacobian): R = exp(w) R21, t on its tangent plane
+    {
+        vector<int> vK;
+        for(int k = 0; k < n; k++)
+            if(vBestIn[k])
+                vK.push_back(k);
+        const float hub = thAng;
+        for(int it = 0; it < 10; it++)
+        {
+            Eigen::Vector3f b1 = t.unitOrthogonal(), b2 = t.cross(b1);
+            auto model = [&](const Eigen::Matrix<float, 5, 1>& x, Eigen::Matrix3f& R, Eigen::Vector3f& tt) {
+                R = Sophus::SO3f::exp(x.head<3>()).matrix() * R21;
+                tt = (t + x(3) * b1 + x(4) * b2).normalized();
+            };
+            Eigen::Matrix<float, 5, 5> H = Eigen::Matrix<float, 5, 5>::Zero();
+            Eigen::Matrix<float, 5, 1> g = Eigen::Matrix<float, 5, 1>::Zero();
+            const float h = 1e-4f;
+            for(int k : vK)
+            {
+                const float e0 = planeErrR(R21, t, k);
+                Eigen::Matrix<float, 5, 1> J;
+                for(int j = 0; j < 5; j++)
+                {
+                    Eigen::Matrix<float, 5, 1> x = Eigen::Matrix<float, 5, 1>::Zero();
+                    x(j) = h;
+                    Eigen::Matrix3f R;
+                    Eigen::Vector3f tt;
+                    model(x, R, tt);
+                    J(j) = (planeErrR(R, tt, k) - e0) / h;
+                }
+                const float w = std::abs(e0) <= hub ? 1.0f : hub / std::abs(e0);
+                H += w * J * J.transpose();
+                g += w * J * e0;
+            }
+            const Eigen::Matrix<float, 5, 1> dx = -(H + 1e-9f * Eigen::Matrix<float, 5, 5>::Identity()).ldlt().solve(g);
+            if(!dx.allFinite())
+                break;
+            Eigen::Matrix3f R;
+            Eigen::Vector3f tt;
+            model(dx, R, tt);
+            R21 = Sophus::SO3f::fitToSO3(R).matrix();
+            t = tt;
+            if(dx.norm() < 1e-6f)
+                break;
+        }
+        // strict inliers at the refined geometry; the normals depend on R
+        nBestIn = 0;
+        for(int k = 0; k < n; k++)
+        {
+            vN[k] = (R21 * vF1[k]).cross(vF2[k]);
+            vBestIn[k] = planeErr(t, k) < thAng;
+            nBestIn += vBestIn[k];
+        }
+        if(nBestIn < cfg.initMinTriangulated)
+            return false;
+    }
 
     // both signs: triangulate, keep the one with more points in front of both cameras (CheckRT's tests)
     const float th2 = 4.0f / (fx * fx);  // reprojection, normalised plane (TwoViewReconstruction: 4 sigma^2, sigma 1 px)

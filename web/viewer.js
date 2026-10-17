@@ -304,7 +304,7 @@ async function startCamera() {
   };
   const request = (msg, transfer = []) => new Promise((res) => { pending = res; worker.postMessage(msg, transfer); });
   setStatus('loading WASM + vocabulary…');
-  const ready = await request({ type: 'init', vocabUrl: vocabUrl(opts.desc), settingsText, clahe: false, seed: Number($('seed').value) });
+  const ready = await request({ type: 'init', vocabUrl: vocabUrl(opts.desc, opts.voc), settingsText, clahe: false, seed: Number($('seed').value) });
   if (ready.type === 'error') return finishUi();
 
   const trackMs = [];
@@ -387,7 +387,7 @@ async function start() {
   setStatus('loading WASM + vocabulary…');
   const settingsText = withTracker(await (await fetch(info.settings)).text());
   log(`options: ${describeOptions(opts)}`);
-  const ready = await request({ type: 'init', vocabUrl: vocabUrl(opts.desc), settingsText, clahe: info.clahe, seed });
+  const ready = await request({ type: 'init', vocabUrl: vocabUrl(opts.desc, opts.voc), settingsText, clahe: info.clahe, seed });
   if (ready.type === 'error') return finishUi();
   log(`init ${ready.ms.toFixed(0)} ms, ${navigator.hardwareConcurrency} hardware threads`);
 

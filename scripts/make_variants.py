@@ -24,7 +24,7 @@ Variants (applied to baselines/orbslam3/settings/{EuRoC,TUM-VI}_mono.yaml):
              (coast / coast2 = loss recovery (prior search / + local-map PnP), fastpose / posecheck (+w: warm-started
              rounds) = g2o-free pose solver / compare mode, init = lower two-view thresholds, orbpar = parallel ORB
              levels, norm = exposure-normalised KLT, ginit = gyro two-view
-             initialisation (fast-gyro-ginit only), speed = orbpar + fastposew, nofb = no backward LK
+             initialisation (fast-gyro-ginit only), ssc = SSC keypoint selection, speed = orbpar + fastposew, nofb = no backward LK
              pass, kf080 = fewer keyframes)
 
 Usage: make_variants.py <out_dir> [variant ...]   (default: all)
@@ -105,8 +105,15 @@ FAST_MODS = {
     "orbpar": ["Web.ORB.Parallel: 1"],
     "norm": ["Web.KLT.Normalize: 1"],
     "ginit": ["Web.Init.Gyro: 1"],
+    "ssc": ["Web.ORB.SSC: 1"],
     "speed": ["Web.ORB.Parallel: 1", "Web.Track.FastPose: 1"],
 }
+def focal(text, k):  # wrong focal length (uncalibrated phone): Camera1.fx / fy scaled by k
+    return re.sub(r"(Camera1\.f[xy]:\s*)([0-9.eE+-]+)", lambda m: f"{m.group(1)}{float(m.group(2)) * k:.6f}", text)
+
+
+VARIANTS["fast-fx090"] = lambda t: focal(VARIANTS["preset-fast"](t), 0.9)  # focal-from-gyro check (estimate_time_offset --focal)
+VARIANTS["fast-fx110"] = lambda t: focal(VARIANTS["preset-fast"](t), 1.1)
 for m, lines in FAST_MODS.items():
     VARIANTS[f"fast-{m}"] = (lambda ls: lambda t: add(VARIANTS["preset-fast"](t), *ls))(lines)
 

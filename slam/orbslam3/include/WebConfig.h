@@ -20,8 +20,11 @@ struct WebConfig
     int lbaIterations = 10;    // Web.LBA.Iterations: Levenberg-Marquardt iterations of local BA (stock 10)
     int mappingNeighbors = 0;  // Web.Mapping.Neighbors: covisible keyframes for triangulation / fusion (0 = stock: 30 mono)
     int descriptor = 0;        // Web.Descriptor: 0 = ORB (rotated BRIEF, stock), 1 = TEBLID-256 (needs a TEBLID vocabulary)
-    int orbParallel = 0;       // Web.ORB.Parallel: 1 = the pyramid levels of ORB extraction (FAST + octree + orientation,
-                               // blur + descriptors) run in parallel (cv::parallel_for_); same keypoints and descriptors
+    int orbParallel = 0;       // Web.ORB.Parallel: the pyramid levels of ORB extraction (FAST + octree + orientation,
+                               // blur + descriptors) run on this many threads (1 = 4 threads; 0 = serial, stock); same
+                               // keypoints and descriptors. Own pool: OpenCV's WASM build has no parallel framework
+    int orbSSC = 0;            // Web.ORB.SSC: 1 = keypoints per level chosen by Suppression via Square Covering (Bailo et
+                               // al. 2018: strongest corners, homogeneous spread) instead of the octree (stock)
     double relocTimeout = 3.0; // Web.Track.RelocTimeout: seconds of relocalisation in the current map before a new map (stock 3)
     int timeScaledMotion = 0;  // Web.Track.TimeScaledMotion: 1 = the constant-velocity prediction is rescaled to the
                                // actual frame interval (live cameras drop frames when tracking is slow). 0 = stock
@@ -105,6 +108,7 @@ inline void loadWebConfig(const std::string& settingsFile)
     readInt("Web.Mapping.Neighbors", c.mappingNeighbors);
     readInt("Web.Descriptor", c.descriptor);
     readInt("Web.ORB.Parallel", c.orbParallel);
+    readInt("Web.ORB.SSC", c.orbSSC);
     readInt("Web.Track.KeepMap", c.keepMap);
     readInt("Web.Track.TimeScaledMotion", c.timeScaledMotion);
     readInt("Web.KLT.Enable", c.kltEnable);
@@ -166,7 +170,8 @@ inline void loadWebConfig(const std::string& settingsFile)
                           : std::string())
               << (c.fastPose ? (c.fastPose == 1 ? "; fast pose solver" : "; fast pose solver (compare with g2o)") : "")
               << (c.fastPose && c.fastPoseWarm ? " (warm start)" : "")
-              << (c.orbParallel ? "; parallel ORB levels (OpenCV threads " + std::to_string(cv::getNumThreads()) + ")" : "")
+              << (c.orbSSC ? "; SSC keypoint selection" : "")
+              << (c.orbParallel ? "; parallel ORB levels (" + std::to_string(c.orbParallel == 1 ? 4 : c.orbParallel) + " threads)" : "")
               << (c.initMinMatches != 100 || c.initMinParallax != 1.0 || c.initMinTriangulated != 50
                       ? "; init " + std::to_string(c.initMinMatches) + " matches, " + std::to_string(c.initMinParallax) +
                             " deg, " + std::to_string(c.initMinTriangulated) + " points"

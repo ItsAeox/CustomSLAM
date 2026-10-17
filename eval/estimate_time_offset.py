@@ -84,6 +84,8 @@ def main():
     ap.add_argument("--tbc", required=True)
     ap.add_argument("--max-ms", type=float, default=200)
     ap.add_argument("--step-ms", type=float, default=1)
+    ap.add_argument("--focal", action="store_true",
+                    help="also estimate the focal-length error from the rate ratio (Karpenko et al. 2011 style)")
     a = ap.parse_args()
 
     if a.ar_log:
@@ -122,6 +124,32 @@ def main():
     print(f"{name}: offset {best[0] * 1000:+.0f} ms (Huber cost {best[1]:.4f}, "
           f"magnitude correlation {best[2]:.3f}); correlation peak at {c_best[0] * 1000:+.0f} ms; "
           f"camera rates {tc.size}, frame period {period * 1000:.1f} ms")
+    if a.focal:
+        # Focal length from the gyro: with an assumed focal f_a, a rotation about the camera x / y axes moves the image
+        # by f_true * angle, which the SLAM explains as a rotation of (f_true / f_a) * angle; roll (z) does not depend on
+        # the focal. So visual rate ~ s * gyro rate on x, y with s = f_true / f_a, and ~ 1 on z (a check). Least squares
+        # at the best offset over samples with a clear rate, after dropping the 10 % largest residuals.
+        lag = best[0]
+        lo, hi = tc - period / 2 + lag, tc + period / 2 + lag
+        ok = (lo >= ti[0]) & (hi <= ti[-1])
+        il, ih = np.searchsorted(ti, lo[ok]), np.searchsorted(ti, hi[ok])
+        wg = (cs[ih] - cs[il]) / (ti[np.minimum(ih, ti.size - 1)] - ti[il] + 1e-9)[:, None]
+        wv = wc[ok]
+
+        def ratio(g, v):
+            m = np.abs(g) > 0.2  # rad/s: rates below are noise-dominated
+            g, v = g[m], v[m]
+            if g.size < 30:
+                return np.nan, g.size
+            k = np.dot(g, v) / np.dot(g, g)
+            res = np.abs(v - k * g)
+            keep = res <= np.quantile(res, 0.9)
+            return np.dot(g[keep], v[keep]) / np.dot(g[keep], g[keep]), int(keep.sum())
+
+        sxy, nxy = ratio(np.concatenate([wg[:, 0], wg[:, 1]]), np.concatenate([wv[:, 0], wv[:, 1]]))
+        sz, nz = ratio(wg[:, 2], wv[:, 2])
+        print(f"{name}: focal check: visual/gyro rate ratio x+y {sxy:.3f} ({nxy} samples), roll {sz:.3f} ({nz}) "
+              f"-> f_true ~ {sxy:.3f} x f_assumed (roll-normalised {sxy / sz:.3f})")
 
 
 if __name__ == "__main__":

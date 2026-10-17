@@ -59,6 +59,11 @@
 #include <opencv2/features2d/features2d.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 #include <vector>
+#include <functional>
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <iostream>
 #include <chrono>
 
@@ -74,6 +79,142 @@ using namespace std;
 
 namespace ORB_SLAM3
 {
+#ifdef ORBSLAM3_WEB
+    // web port (Web.ORB.Parallel): persistent helper threads for the per-level work of one ORB extraction. Own threads
+    // because OpenCV's WASM build has no parallel framework (cv::parallel_for_ runs serially there). The caller works
+    // too; tasks are taken in index order (level 0, the largest, first). Used by the tracking thread only.
+    class WebLevelPool
+    {
+    public:
+        explicit WebLevelPool(int nHelpers)
+        {
+            for(int i = 0; i < nHelpers; i++)
+                mvThreads.emplace_back([this] { Loop(); });
+        }
+        void Run(int nTasks, const std::function<void(int)>& f)
+        {
+            uint32_t gen;
+            {
+                std::unique_lock<std::mutex> lock(mMutex);
+                gen = ++mnGeneration;
+                mpTask = &f;
+                mnTasks = nTasks;
+                mnDone = 0;
+                mnNext.store((uint64_t)gen << 32);
+            }
+            mCvWork.notify_all();
+            Work(f, nTasks, gen);
+            std::unique_lock<std::mutex> lock(mMutex);
+            mCvDone.wait(lock, [&] { return mnDone == mnTasks; });
+        }
+    private:
+        // next task: generation (high 32 bits) + index; a helper that woke for an earlier call cannot take a task
+        void Work(const std::function<void(int)>& f, int nTasks, uint32_t gen)
+        {
+            while(true)
+            {
+                uint64_t v = mnNext.load();
+                if((uint32_t)(v >> 32) != gen || (int)(uint32_t)v >= nTasks)
+                    return;
+                if(!mnNext.compare_exchange_weak(v, v + 1))
+                    continue;
+                f((int)(uint32_t)v);
+                std::unique_lock<std::mutex> lock(mMutex);
+                if(++mnDone == mnTasks)
+                    mCvDone.notify_all();
+            }
+        }
+        void Loop()
+        {
+            uint32_t seen = 0;
+            while(true)
+            {
+                const std::function<void(int)>* f;
+                int n;
+                {
+                    std::unique_lock<std::mutex> lock(mMutex);
+                    mCvWork.wait(lock, [&] { return mnGeneration != seen; });
+                    seen = mnGeneration;
+                    f = mpTask;
+                    n = mnTasks;
+                }
+                Work(*f, n, seen);
+            }
+        }
+        std::vector<std::thread> mvThreads;
+        std::mutex mMutex;
+        std::condition_variable mCvWork, mCvDone;
+        const std::function<void(int)>* mpTask = nullptr;
+        int mnTasks = 0, mnDone = 0;
+        std::atomic<uint64_t> mnNext{0};
+        uint32_t mnGeneration = 0;
+    };
+
+// web port (Web.ORB.SSC): Suppression via Square Covering (Bailo et al., "Efficient adaptive non-maximal suppression
+// algorithms for homogeneous spatial keypoint distribution", PRL 2018; BSD reference code). The strongest keypoints are
+// kept, each suppressing a square of side w around it; w is found by binary search so that N (+-10 %) survive. Instead of
+// the octree (DistributeOctTree: one best keypoint per leaf after splitting until N leaves), which favours spreading over
+// strength. Returns at most N keypoints, strongest first.
+static vector<cv::KeyPoint> WebSSC(vector<cv::KeyPoint> kps, int N, int cols, int rows)
+{
+    if((int)kps.size() <= N || N <= 1)
+        return kps;
+    std::stable_sort(kps.begin(), kps.end(), [](const cv::KeyPoint& a, const cv::KeyPoint& b) { return a.response > b.response; });
+    const double K = N, tol = 0.1;
+    const double exp1 = rows + cols + 2 * K;
+    const double exp2 = 4 * cols + 4 * K + 4 * rows * K + (double)rows * rows + (double)cols * cols - 2.0 * rows * cols +
+                        4.0 * rows * cols * K;
+    const double exp3 = std::sqrt(exp2), exp4 = K - 1;
+    const double sol1 = -std::round((exp1 + exp3) / exp4), sol2 = -std::round((exp1 - exp3) / exp4);
+    int high = (int)std::max(sol1, sol2);
+    int low = (int)std::floor(std::sqrt((double)kps.size() / K));
+    const int kMin = (int)std::round(K - K * tol), kMax = (int)std::round(K + K * tol);
+    vector<int> vResult, vBest;
+    int prevWidth = -1;
+    while(true)
+    {
+        const int width = low + (high - low) / 2;
+        if(width == prevWidth || low > high)
+            break;
+        const double c = std::max(1.0, width / 2.0);
+        const int nCellCols = (int)std::floor(cols / c), nCellRows = (int)std::floor(rows / c);
+        vector<vector<char>> covered(nCellRows + 1, vector<char>(nCellCols + 1, 0));
+        vResult.clear();
+        const int r = (int)std::floor(width / c);
+        for(size_t i = 0; i < kps.size(); i++)
+        {
+            const int row = std::min(nCellRows, std::max(0, (int)std::floor(kps[i].pt.y / c)));
+            const int col = std::min(nCellCols, std::max(0, (int)std::floor(kps[i].pt.x / c)));
+            if(covered[row][col])
+                continue;
+            vResult.push_back((int)i);
+            for(int rr = std::max(0, row - r); rr <= std::min(nCellRows, row + r); rr++)
+                for(int cc = std::max(0, col - r); cc <= std::min(nCellCols, col + r); cc++)
+                    covered[rr][cc] = 1;
+        }
+        vBest = vResult;
+        if((int)vResult.size() >= kMin && (int)vResult.size() <= kMax)
+            break;
+        if((int)vResult.size() < kMin)
+            high = width - 1;
+        else
+            low = width + 1;
+        prevWidth = width;
+    }
+    vector<cv::KeyPoint> out;
+    out.reserve(std::min((int)vBest.size(), N));
+    for(int i = 0; i < (int)vBest.size() && (int)out.size() < N; i++)
+        out.push_back(kps[vBest[i]]);
+    return out;
+}
+
+    static void WebParallelLevels(int nLevels, const std::function<void(int)>& f)
+    {
+        const int nThreads = webConfig().orbParallel == 1 ? 4 : webConfig().orbParallel;  // 1 = on (4 threads)
+        static WebLevelPool pool(std::max(0, nThreads - 1));  // threads are started once, on first use
+        pool.Run(nLevels, f);
+    }
+#endif
 #ifdef REGISTER_TIMES
     // web port (profiling builds only): per-stage ORB extraction times, printed as "ORB-PROF" every 300 frames
     namespace {
@@ -899,6 +1040,11 @@ namespace ORB_SLAM3
             vector<KeyPoint> & keypoints = allKeypoints[level];
             keypoints.reserve(nfeatures);
 
+#ifdef ORBSLAM3_WEB
+            if(webConfig().orbSSC)  // Web.ORB.SSC (coordinates are relative to the border here, as for the octree)
+                keypoints = WebSSC(vToDistributeKeys, mnFeaturesPerLevel[level], maxBorderX - minBorderX, maxBorderY - minBorderY);
+            else
+#endif
             keypoints = DistributeOctTree(vToDistributeKeys, minBorderX, maxBorderX,
                                           minBorderY, maxBorderY,mnFeaturesPerLevel[level], level);
 
@@ -918,13 +1064,10 @@ namespace ORB_SLAM3
         // web port (Web.ORB.Parallel): levels are independent (own image, own output vector)
         if(webConfig().orbParallel)
         {
-            cv::parallel_for_(cv::Range(0, nlevels), [&](const cv::Range& r) {
-                for (int level = r.start; level < r.end; ++level)
-                {
-                    levelKeys(level);
-                    computeOrientation(mvImagePyramid[level], allKeypoints[level], umax);
-                }
-            }, nlevels);
+            WebParallelLevels(nlevels, [&](int level) {
+                levelKeys(level);
+                computeOrientation(mvImagePyramid[level], allKeypoints[level], umax);
+            });
             return;
         }
 #endif
@@ -1181,17 +1324,14 @@ namespace ORB_SLAM3
         const bool bParDesc = webConfig().orbParallel && webConfig().descriptor == 0;
         vector<Mat> vLevelDesc(bParDesc ? nlevels : 0);
         if(bParDesc)
-            cv::parallel_for_(cv::Range(0, nlevels), [&](const cv::Range& r) {
-                for (int level = r.start; level < r.end; ++level)
-                {
-                    if(allKeypoints[level].empty())
-                        continue;
-                    Mat workingMat = mvImagePyramid[level].clone();
-                    GaussianBlur(workingMat, workingMat, Size(7, 7), 2, 2, BORDER_REFLECT_101);
-                    vLevelDesc[level] = Mat((int)allKeypoints[level].size(), 32, CV_8U);
-                    computeDescriptors(workingMat, allKeypoints[level], vLevelDesc[level], pattern);
-                }
-            }, nlevels);
+            WebParallelLevels(nlevels, [&](int level) {
+                if(allKeypoints[level].empty())
+                    return;
+                Mat workingMat = mvImagePyramid[level].clone();
+                GaussianBlur(workingMat, workingMat, Size(7, 7), 2, 2, BORDER_REFLECT_101);
+                vLevelDesc[level] = Mat((int)allKeypoints[level].size(), 32, CV_8U);
+                computeDescriptors(workingMat, allKeypoints[level], vLevelDesc[level], pattern);
+            });
 #endif
         //Modified for speeding up stereo fisheye matching
         int monoIndex = 0, stereoIndex = nkeypoints-1;

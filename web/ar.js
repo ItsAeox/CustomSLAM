@@ -510,7 +510,7 @@ async function start() {
       tele(`IMU: DeviceMotion ${hz.toFixed(1)} Hz` + (imuN >= 10 ? ` (measured over ${imuN} events)` : ' (assumed: too few events yet)'));
     }
     const tInit = performance.now();
-    const ready = await slam.request({ type: 'init', vocabUrl: vocabUrl(opts.desc), clahe, seed: 1, prof: params.get('prof') === '1', inertial,
+    const ready = await slam.request({ type: 'init', vocabUrl: vocabUrl(opts.desc, opts.voc), clahe, seed: 1, prof: params.get('prof') === '1', inertial,
                                        settingsText: withTracker(settingsText) });
     loadingDone = true; clearInterval(stallTimer);
     if (camStream) {  // WebCodecs: frames go straight to the worker; use it only if they match the stream we calibrated for
