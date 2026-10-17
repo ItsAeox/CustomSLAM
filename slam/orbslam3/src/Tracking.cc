@@ -3133,8 +3133,12 @@ bool Tracking::WebGyroTwoView(Sophus::SE3f& T21, vector<cv::Point3f>& vP3D, vect
     Eigen::JacobiSVD<Eigen::MatrixXf> svd(A, Eigen::ComputeFullV);
     Eigen::Vector3f t = svd.matrixV().col(2).normalized();
 
-    // joint refinement (Gauss-Newton, Huber 2 px, numeric Jacobian): R = exp(w) R21, t on its tangent plane
+    // joint refinement (Gauss-Newton, Huber 2 px, numeric Jacobian): R = exp(w) R21, t on its tangent plane, with a
+    // prior keeping R near the gyro's (sigma 0.75 deg vs 1 px per point): at small baselines a rotation change can mimic
+    // the translation's parallax, the ambiguity the gyro is there to remove; the prior only decides that direction
     {
+        const float lambdaR = std::pow((1.0f / fx) / (0.75f * (float)M_PI / 180.0f), 2);  // (sigma_e / sigma_R)^2
+        Eigen::Vector3f wAcc = Eigen::Vector3f::Zero();  // rotation moved away from the gyro so far
         vector<int> vK;
         for(int k = 0; k < n; k++)
             if(vBestIn[k])
@@ -3167,6 +3171,8 @@ bool Tracking::WebGyroTwoView(Sophus::SE3f& T21, vector<cv::Point3f>& vP3D, vect
                 H += w * J * J.transpose();
                 g += w * J * e0;
             }
+            H.topLeftCorner<3, 3>() += lambdaR * Eigen::Matrix3f::Identity();
+            g.head<3>() += lambdaR * wAcc;
             const Eigen::Matrix<float, 5, 1> dx = -(H + 1e-9f * Eigen::Matrix<float, 5, 5>::Identity()).ldlt().solve(g);
             if(!dx.allFinite())
                 break;
@@ -3175,6 +3181,7 @@ bool Tracking::WebGyroTwoView(Sophus::SE3f& T21, vector<cv::Point3f>& vP3D, vect
             model(dx, R, tt);
             R21 = Sophus::SO3f::fitToSO3(R).matrix();
             t = tt;
+            wAcc += dx.head<3>();
             if(dx.norm() < 1e-6f)
                 break;
         }

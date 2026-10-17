@@ -89,7 +89,7 @@ namespace ORB_SLAM3
         explicit WebLevelPool(int nHelpers)
         {
             for(int i = 0; i < nHelpers; i++)
-                mvThreads.emplace_back([this] { Loop(); });
+                std::thread([this] { Loop(); }).detach();  // never joined: the pool lives until the process ends
         }
         void Run(int nTasks, const std::function<void(int)>& f)
         {
@@ -141,7 +141,6 @@ namespace ORB_SLAM3
                 Work(*f, n, seen);
             }
         }
-        std::vector<std::thread> mvThreads;
         std::mutex mMutex;
         std::condition_variable mCvWork, mCvDone;
         const std::function<void(int)>* mpTask = nullptr;
@@ -211,8 +210,10 @@ static vector<cv::KeyPoint> WebSSC(vector<cv::KeyPoint> kps, int N, int cols, in
     static void WebParallelLevels(int nLevels, const std::function<void(int)>& f)
     {
         const int nThreads = webConfig().orbParallel == 1 ? 4 : webConfig().orbParallel;  // 1 = on (4 threads)
-        static WebLevelPool pool(std::max(0, nThreads - 1));  // threads are started once, on first use
-        pool.Run(nLevels, f);
+        // started once, on first use, and never destroyed: destroying it at exit (static destructor) under the waiting
+        // helpers hung the process after the run (2026-10-17)
+        static WebLevelPool* pool = new WebLevelPool(std::max(0, nThreads - 1));
+        pool->Run(nLevels, f);
     }
 #endif
 #ifdef REGISTER_TIMES
