@@ -73,6 +73,11 @@ struct WebConfig
                                // vocabulary needs L - 2 to index at the same depth (100 nodes for k = 10).
 
     // Keyframe policy (monocular, visual-only). 0 = stock. Fewer keyframes -> less mapping work and memory (G12, G14).
+    int kfBusyQueue = 0;       // Web.KF.BusyQueue: monocular, N > 0 = a keyframe that is due is queued while local mapping is
+                               // busy (up to N waiting), as stock does for stereo; stock mono refuses it, so mapping that
+                               // cannot keep up (the phone) stops the map from growing (ISSUES G22). Queued keyframes get
+                               // their points triangulated; local BA, neighbour fusion and culling wait until mapping
+                               // catches up (LocalMapping skips them while keyframes are queued)
     double kfRefRatio = 0;     // Web.KF.RefRatio: insert a keyframe when tracked map points < ratio x the reference
                                // keyframe's (Tracking::NeedNewKeyFrame; stock mono 0.9: lower = fewer keyframes)
     double cullRedundancy = 0; // Web.Mapping.CullRedundancy: cull a keyframe whose points are seen by >= 3 other
@@ -175,6 +180,7 @@ inline void loadWebConfig(const std::string& settingsFile)
     if (!kr.empty() && (kr.isInt() || kr.isReal())) c.kfRefRatio = kr.real();
     cv::FileNode cr = fs["Web.Mapping.CullRedundancy"];
     if (!cr.empty() && (cr.isInt() || cr.isReal())) c.cullRedundancy = cr.real();
+    readInt("Web.KF.BusyQueue", c.kfBusyQueue);
     readInt("Web.Gyro.Prior", c.gyroPrior);
     cv::FileNode go = fs["Web.Gyro.TimeOffset"];
     if (!go.empty() && (go.isInt() || go.isReal())) c.gyroTimeOffset = go.real();
@@ -217,6 +223,7 @@ inline void loadWebConfig(const std::string& settingsFile)
               << (c.gyroPrior ? "; gyro prior (IMU time offset " + std::to_string(c.gyroTimeOffset * 1000) + " ms)" : std::string())
               << (c.bowLevelsUp != 4 ? "; BoW levels up " + std::to_string(c.bowLevelsUp) : std::string())
               << (c.kfRefRatio > 0 ? "; KF ref ratio " + std::to_string(c.kfRefRatio) : std::string())
+              << (c.kfBusyQueue > 0 ? "; keyframes queued while mapping is busy (up to " + std::to_string(c.kfBusyQueue) + ")" : std::string())
               << (c.cullRedundancy > 0 ? "; KF cull redundancy " + std::to_string(c.cullRedundancy) : std::string())
               << (c.coast ? "; coast " + std::to_string(c.coastMaxTime) + " s, " + std::to_string(c.coastMinInliers) + " inliers"
                           : std::string())

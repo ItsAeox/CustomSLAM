@@ -4251,7 +4251,15 @@ bool Tracking::NeedNewKeyFrame()
     // Condition 1a: More than "MaxFrames" have passed from last keyframe insertion
     const bool c1a = mCurrentFrame.mnId>=mnLastKeyFrameId+mMaxFrames;
     // Condition 1b: More than "MinFrames" have passed and Local Mapping is idle
+#ifdef ORBSLAM3_WEB
+    // Web.KF.BusyQueue: monocular, also while mapping is busy if fewer than N keyframes wait (ISSUES G22)
+    const int busyQueue = (mSensor == System::MONOCULAR) ? webConfig().kfBusyQueue : 0;
+    const bool bQueueRoom = busyQueue > 0 && mpLocalMapper->KeyframesInQueue() < busyQueue;
+    const bool c1b = ((mCurrentFrame.mnId>=mnLastKeyFrameId+mMinFrames) && (bLocalMappingIdle || bQueueRoom));
+#else
     const bool c1b = ((mCurrentFrame.mnId>=mnLastKeyFrameId+mMinFrames) && bLocalMappingIdle); //mpLocalMapper->KeyframesInQueue() < 2);
+    const bool bQueueRoom = false;
+#endif
     //Condition 1c: tracking is weak
     const bool c1c = mSensor!=System::MONOCULAR && mSensor!=System::IMU_MONOCULAR && mSensor!=System::IMU_STEREO && mSensor!=System::IMU_RGBD && (mnMatchesInliers<nRefMatches*0.25 || bNeedToInsertClose) ;
     // Condition 2: Few tracked points compared to reference keyframe. Lots of visual odometry compared to map matches.
@@ -4338,7 +4346,7 @@ bool Tracking::NeedNewKeyFrame()
             else
             {
                 //std::cout << "NeedNewKeyFrame: localmap is busy" << std::endl;
-                return cCov && mpLocalMapper->KeyframesInQueue() < 2;  // web port: new area: queue it anyway
+                return (cCov && mpLocalMapper->KeyframesInQueue() < 2) || bQueueRoom;  // web port: new area / Web.KF.BusyQueue: queue it
             }
         }
     }
