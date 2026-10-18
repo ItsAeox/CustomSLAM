@@ -10,7 +10,7 @@ export const OPTIONS = [
   { key: 'reloc', label: 'Relocalise before new map', values: [['3', '3 s (stock)'], ['10', '10 s'], ['30', '30 s']], def: '3' },
   { key: 'motion', label: 'Motion model', values: [['stock', 'stock (constant velocity per frame)'], ['time', 'time-scaled (dropped frames)']], def: 'stock' },
   { key: 'imu', label: 'IMU (mono-inertial, experimental)', page: 'ar', values: [['off', 'off (visual only)'], ['on', 'on (DeviceMotion)']], def: 'off' },
-  { key: 'imudt', label: 'IMU time offset (ms, measured with "Record")', page: 'ar',
+  { key: 'imudt', label: 'IMU time offset (ms, measured with "Record")', page: 'ar', device: true,  // a property of the phone: presets keep it
     values: [['0', '0 (none)'], ['-40', '−40'], ['-20', '−20'], ['20', '+20'], ['40', '+40'], ['60', '+60'], ['80', '+80'],
              ['100', '+100'], ['120', '+120']], def: '0' },
   { key: 'gyro', label: 'Gyro rotation prior (visual-only tracking)', page: 'ar',
@@ -73,8 +73,11 @@ export const PRESETS = [
     note: 'The KLT optical flow split over 4 threads (the browser build of OpenCV runs it on one). Same tracks as one thread; less time per KLT frame.' },
   { key: 'rotate', label: 'Fastest + turning on the spot (prototype)', set: { kltmax: '4', motion: 'time', map: 'light', rot: 'far' },
     note: 'Prototype 1: when you turn without moving sideways, new points are added far away instead of none, so tracking does not run out of points. Datasets: same robustness, position error 1.66x. Prototype 2 (points at infinity) is under Algorithm options. Untested on the phone.' },
-  { key: 'light', label: 'Light ORB', set: { tracker: 'stock', features: '600', levels: '6' },
-    note: 'ORB on every frame with 600 features and 6 pyramid levels (23% less tracking time, same accuracy on EuRoC).' },
+  // round 4 (2026-10-18 evening)
+  { key: 'fastqpf', label: 'Fastest + quick solver + parallel ORB + 4-thread flow', set: { kltmax: '4', motion: 'time', map: 'light', pose: 'fast', orbpar: 'parallel', kltpar: 'parallel' },
+    note: 'The three speed-ups together (same results as "Hybrid, fastest", less time): tracking 36 % faster on MH01 in the browser build (desktop).' },
+  { key: 'gbridge', label: 'Fastest + gyro recovery + continue the map after turning', set: { kltmax: '4', motion: 'time', map: 'light', gyro: 'on', recover: 'coast', hold: 'gyro', bridge: 'gyro' },
+    note: 'Gyro recovery, plus: after turning away to an unmapped view (bed -> PC), the new view is added to the same map instead of waiting 10 s and starting a new map. Your recordings: fewer maps; with a tree placed no gain; worse on datasets.' },
   { key: 'imu', label: 'IMU (visual-inertial)', set: { imu: 'on', tracker: 'stock' },
     note: 'Visual-inertial mode with the phone IMU: real-world scale and gravity. Experimental; ORB on every frame. Needs a calibrated camera and the IMU time offset.' },
   { key: 'imufast', label: 'IMU, tuned for speed', set: { imu: 'on', tracker: 'stock', motion: 'time', features: '600', levels: '6', map: 'light' },
@@ -83,13 +86,13 @@ export const PRESETS = [
 
 // Sets every option of `page` from a preset (unlisted keys: page default, then option default)
 export function applyPreset(o, preset, pageDefaults = {}, page = '') {
-  for (const d of OPTIONS) if (!d.page || d.page === page) o[d.key] = preset.set[d.key] ?? pageDefaults[d.key] ?? d.def;
+  for (const d of OPTIONS) if ((!d.page || d.page === page) && !(d.device && !(d.key in preset.set) && d.key in o)) o[d.key] = preset.set[d.key] ?? pageDefaults[d.key] ?? d.def;
   return o;
 }
 
 // Key of the preset the options equal (options hidden by `when`, e.g. KLT knobs with stock tracking, are ignored), or 'custom'
 export function matchPreset(o, pageDefaults = {}, page = '') {
-  const p = PRESETS.find((pr) => OPTIONS.every((d) => (d.page && d.page !== page) || !(d.key in o) || (d.when && !d.when(o)) ||
+  const p = PRESETS.find((pr) => OPTIONS.every((d) => (d.page && d.page !== page) || !(d.key in o) || (d.when && !d.when(o)) || (d.device && !(d.key in pr.set)) ||
                                                       o[d.key] === (pr.set[d.key] ?? pageDefaults[d.key] ?? d.def)));
   return p ? p.key : 'custom';
 }
