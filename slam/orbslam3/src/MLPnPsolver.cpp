@@ -204,8 +204,10 @@ namespace ORB_SLAM3 {
 #ifdef ORBSLAM3_WEB
 	                // upstream sets bNoMore only when the loop runs out, never on this path: a candidate whose refined poses
 	                // keep failing the caller's check (Tracking::Relocalization: < 10 / < 50 inliers after PoseOptimization)
-	                // is then retried forever once its iteration budget is spent (ISSUES G21: 100 % CPU, tracking frozen)
-	                bNoMore = mnIterations >= mRansacMaxIts;
+	                // is then retried forever once its iteration budget is spent (ISSUES G21: 100 % CPU, tracking frozen).
+	                // Upstream's extra tries do recover some frames (discarding at 1x the budget: 60 vs 69 % of losses
+	                // recovered, g21_side), so they are kept up to 4x the budget, then the candidate is discarded
+	                bNoMore = mnIterations >= 4 * mRansacMaxIts;
 #endif
 	                return true;
 	            }
