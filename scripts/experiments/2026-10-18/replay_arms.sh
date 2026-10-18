@@ -27,7 +27,7 @@ while IFS= read -r spec; do
   done
 done < $ARMSFILE
 jobs_list=()
-for r in $RECS; do for a in "${ARMS[@]}"; do for s in 1 2; do jobs_list+=("$r $a $s"); done; done; done
+for r in $RECS; do for a in "${ARMS[@]}"; do for s in ${SEEDS:-1 2}; do jobs_list+=("$r $a $s"); done; done; done
 run_one() {
   local r=$1 a=$2 s=$3 o=$O/$1/$2/seed$3
   [ -s $o/run_info.txt ] && return

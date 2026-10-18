@@ -78,6 +78,8 @@ struct WebConfig
                                // cannot keep up (the phone) stops the map from growing (ISSUES G22). Queued keyframes get
                                // their points triangulated; local BA, neighbour fusion and culling wait until mapping
                                // catches up (LocalMapping skips them while keyframes are queued)
+    int mapFuseQueued = 0;     // Web.Mapping.FuseQueued: 1 = neighbour search / point fusion also while keyframes are queued
+                               // (stock skips it then, with local BA); only local BA waits for mapping to catch up
     double kfRefRatio = 0;     // Web.KF.RefRatio: insert a keyframe when tracked map points < ratio x the reference
                                // keyframe's (Tracking::NeedNewKeyFrame; stock mono 0.9: lower = fewer keyframes)
     double cullRedundancy = 0; // Web.Mapping.CullRedundancy: cull a keyframe whose points are seen by >= 3 other
@@ -181,6 +183,7 @@ inline void loadWebConfig(const std::string& settingsFile)
     cv::FileNode cr = fs["Web.Mapping.CullRedundancy"];
     if (!cr.empty() && (cr.isInt() || cr.isReal())) c.cullRedundancy = cr.real();
     readInt("Web.KF.BusyQueue", c.kfBusyQueue);
+    readInt("Web.Mapping.FuseQueued", c.mapFuseQueued);
     readInt("Web.Gyro.Prior", c.gyroPrior);
     cv::FileNode go = fs["Web.Gyro.TimeOffset"];
     if (!go.empty() && (go.isInt() || go.isReal())) c.gyroTimeOffset = go.real();
@@ -224,6 +227,7 @@ inline void loadWebConfig(const std::string& settingsFile)
               << (c.bowLevelsUp != 4 ? "; BoW levels up " + std::to_string(c.bowLevelsUp) : std::string())
               << (c.kfRefRatio > 0 ? "; KF ref ratio " + std::to_string(c.kfRefRatio) : std::string())
               << (c.kfBusyQueue > 0 ? "; keyframes queued while mapping is busy (up to " + std::to_string(c.kfBusyQueue) + ")" : std::string())
+              << (c.mapFuseQueued ? "; fusion also for queued keyframes" : "")
               << (c.cullRedundancy > 0 ? "; KF cull redundancy " + std::to_string(c.cullRedundancy) : std::string())
               << (c.coast ? "; coast " + std::to_string(c.coastMaxTime) + " s, " + std::to_string(c.coastMinInliers) + " inliers"
                           : std::string())

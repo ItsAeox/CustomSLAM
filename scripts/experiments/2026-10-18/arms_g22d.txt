@@ -1,0 +1,5 @@
+# replay_arms.sh arms: keyframe queue + fusion for queued keyframes (ISSUES G22)
+grecover_dt_keep|grecover|Web.Gyro.TimeOffset: -0.088;Web.Track.KeepMap: 1
+grecover_dt_keep_q2|grecover|Web.Gyro.TimeOffset: -0.088;Web.Track.KeepMap: 1;Web.KF.BusyQueue: 2
+grecover_dt_keep_q2f|grecover|Web.Gyro.TimeOffset: -0.088;Web.Track.KeepMap: 1;Web.KF.BusyQueue: 2;Web.Mapping.FuseQueued: 1
+fast_keep_q2f|fast|Web.Track.KeepMap: 1;Web.KF.BusyQueue: 2;Web.Mapping.FuseQueued: 1

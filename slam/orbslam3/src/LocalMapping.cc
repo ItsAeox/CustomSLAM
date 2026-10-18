@@ -107,7 +107,13 @@ void LocalMapping::Run()
 
             mbAbortBA = false;
 
+#ifdef ORBSLAM3_WEB
+            // Web.Mapping.FuseQueued: fuse also when keyframes are queued (only local BA waits): new points then collect
+            // the observations MapPointCulling asks for (ISSUES G22)
+            if(!CheckNewKeyFrames() || webConfig().mapFuseQueued)
+#else
             if(!CheckNewKeyFrames())
+#endif
             {
                 // Find more matches in neighbor keyframes and fuse point duplications
                 SearchInNeighbors();
