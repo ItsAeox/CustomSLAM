@@ -34,10 +34,12 @@ class OrbGpuHost {
   };
 
  public:
-  static const int CAP_CAND = 32768, CAP_KP = 4096, PATCH_SIZE = 31;
+  // candidates do not depend on nFeatures (same FAST thresholds); kept keypoints do (the initialiser extracts 5x)
+  static const int CAP_CAND = 32768, PATCH_SIZE = 31;
+  const int capKp;  // kept-keypoint capacity: the octree keeps at most a little over nFeatures
 
   OrbGpuHost(int nFeatures, float scaleFactor, int nLevels, int iniTh, int minTh, int cols, int rows)
-      : ext_(nFeatures, scaleFactor, nLevels, iniTh, minTh), cols_(cols), rows_(rows) {
+      : capKp(2 * nFeatures + 256), ext_(nFeatures, scaleFactor, nLevels, iniTh, minTh), cols_(cols), rows_(rows) {
     frame_.create(rows, cols, CV_8U);
     const int L = ext_.nlevels;
     sizes_.resize(L);
@@ -76,7 +78,7 @@ class OrbGpuHost {
     for (const cv::Point& p : ext_.pattern) { pat.push_back(p.x); pat.push_back(p.y); }
     consts_[0] = L; consts_[1] = pixels;
     consts_[2] = put(umax); consts_[3] = put(pat); consts_[4] = put(gaussTaps());
-    consts_[5] = CAP_CAND; consts_[6] = CAP_KP; consts_[7] = cells;
+    consts_[5] = CAP_CAND; consts_[6] = capKp; consts_[7] = cells;
     consts_.insert(consts_.end(), data.begin(), data.end());
   }
 
@@ -91,8 +93,10 @@ class OrbGpuHost {
     return (int)refKps_.size();
   }
 
-  // GPU pass-1 output: n candidates, 4 words each [x | y << 16, level | score << 8, m01, m10]. Returns the number of
-  // keypoints kept; fills kps_ (final keypoints, output order) and pass2_ (8 words each: x, y, level, cos, sin bits).
+  // GPU pass-1 output: n candidates, 4 words each [x | y << 16, level | score << 8, m01, m10] (all of them: when the
+  // GPU had more than CAP_CAND the caller must use CPU ORB instead). Returns the number of keypoints kept, or -1 if
+  // more than capKp (then also CPU ORB); fills kps_ (final keypoints, output order) and pass2_ (8 words each: x, y,
+  // level, cos, sin bits).
   int distribute(const uint32_t* cand, int n) {
     const int L = ext_.nlevels;
     struct C { int key, y, x, sc, m01, m10; };
@@ -125,7 +129,7 @@ class OrbGpuHost {
     }
     int total = 0;
     for (auto& v : levelKps) total += (int)v.size();
-    total = std::min(total, (int)CAP_KP);
+    if (total > capKp) return -1;
     kps_.assign(total, cv::KeyPoint());
     pass2_.assign((size_t)total * 8, 0);
     int mono = 0, stereo = total - 1;

@@ -5,6 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebGPU ORB Check</title>
 <script src="./coi.js"></script>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
 <style>
   :root { --bg: #ffffff; --fg: #1d1d1f; --muted: #6e6e73; --line: #d2d2d7; --acc: #0a66c2; }
   @media (prefers-color-scheme: dark) { :root { --bg: #111214; --fg: #f2f2f4; --muted: #a1a1a6; --line: #2c2c30; --acc: #5aa2ff; } }
@@ -21,7 +27,9 @@
 <a href="./">← index</a>
 <h1>WebGPU ORB check</h1>
 <p>Computes ORB features on the GPU and with ORB-SLAM3's own extractor for frames of a phone recording, and checks they
-are identical (keypoints and descriptors), with the time of each.</p>
+are identical (keypoints and descriptors), with the time of each. URL options: <code>rec</code>, <code>n</code>,
+<code>step</code>, <code>nf</code> (features), <code>levels</code>, <code>refevery</code> (CPU reference every Nth frame),
+<code>load</code> (render like the AR page meanwhile), <code>auto</code>.</p>
 <button id="go">Run</button>
 <pre id="out">Not run yet.</pre>
 <script type="module">
@@ -32,17 +40,28 @@ const lines = [];
 const log = (s) => { lines.push(s); out.textContent = lines.join('\n'); };
 const DEV = location.pathname.startsWith('/web/');
 const rec = params.get('rec') || 'rec_20261018_185037', n = +(params.get('n') || 30), step = +(params.get('step') || 25);
+const nf = +(params.get('nf') || 1000), levels = +(params.get('levels') || 8), refEvery = +(params.get('refevery') || 1);
+const LOAD = params.has('load');
+let load = null;
 const frames = Array.from({ length: n }, (_, i) => new URL(DEV ? `/datasets/phone/${rec}/mav0/cam0/data/frame_${i * step}.jpg`
   : `recordings/${rec}/frames/frame_${i * step}.jpg`, location.href).href);
 const finish = () => {
   document.getElementById('go').disabled = false;
+  if (load) for (const l of load.report()) log(l);
   log('end');
   if (location.hostname === 'localhost') fetch(`/api/result?name=${name}`, { method: 'POST', body: lines.join('\n') + '\n' }).catch(() => {});
 };
-document.getElementById('go').onclick = () => {
+document.getElementById('go').onclick = async () => {
   document.getElementById('go').disabled = true;
   lines.length = 0;
-  log(`${new Date().toString()} | ${navigator.userAgent} | ${navigator.hardwareConcurrency} cores | ${rec}, ${n} frames every ${step}`);
+  log(`${new Date().toString()} | ${navigator.userAgent} | ${navigator.hardwareConcurrency} cores | ${rec}, ${n} frames every ${step}${LOAD ? ', with AR-page-like rendering' : ''}`);
+  if (LOAD) {
+    try {
+      load = await (await import('./gpuload.js')).startLoad(frames[0]);
+      await new Promise((r) => setTimeout(r, 4000));  // rendering alone first
+      load.setPhase('GPU ORB check running');
+    } catch (err) { log(`render load failed: ${err.message || err}`); load = null; }
+  }
   const w = new Worker('gpuorb.worker.js', { type: 'module' });
   w.onmessage = (e) => {
     if (e.data.line) log(e.data.line);
@@ -50,7 +69,7 @@ document.getElementById('go').onclick = () => {
     if (e.data.done) { log('done'); finish(); w.terminate(); }
   };
   w.onerror = (e) => { log(`ERROR (worker) ${e.message}`); finish(); };
-  w.postMessage({ frames, build: new URL('./build/orbslam3.js', location.href).href });
+  w.postMessage({ frames, nf, levels, refEvery, build: new URL('./build/orbslam3.js', location.href).href });
 };
 if (params.has('auto')) document.getElementById('go').click();
 </script>

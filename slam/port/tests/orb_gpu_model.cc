@@ -10,7 +10,7 @@
 //            threshold 20, or 7 where no corner survives at 20; strict 3x3 non-maximum suppression inside the cell;
 //            candidates in ORB-SLAM3's order (cell by cell, then row by row)
 //   octree   the unchanged ORBextractor::DistributeOctTree; then IC_Angle and rotated BRIEF as in ORBextractor.cc
-// Usage: orb_gpu_model <image | directory of frame_*.jpg> [nFeatures=1000] [maxImages=20] [simdLanes=1]
+// Usage: orb_gpu_model <image | directory of frame_*.jpg> [nFeatures=1000] [maxImages=20] [simdLanes=1] [levels=8]
 
 #include "ORBextractor.h"
 #include "../web/WebOrbGpu.h"
@@ -310,9 +310,10 @@ bool sameKp(const cv::KeyPoint& a, const cv::KeyPoint& b) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc < 2) { std::fprintf(stderr, "usage: orb_gpu_model <image|dir> [nFeatures=1000] [maxImages=20] [simdLanes=1]\n"); return 2; }
+  if (argc < 2) { std::fprintf(stderr, "usage: orb_gpu_model <image|dir> [nFeatures=1000] [maxImages=20] [simdLanes=1] [levels=8]\n"); return 2; }
   const int nFeatures = argc > 2 ? std::stoi(argv[2]) : 1000, maxImages = argc > 3 ? std::stoi(argv[3]) : 20;
   const int simdLanes = argc > 4 ? std::stoi(argv[4]) : 1;  // 1 = every column in the SIMD form
+  const int nLevels = argc > 5 ? std::stoi(argv[5]) : 8;
   vector<std::string> files;
   if (fs::is_directory(argv[1])) {
     vector<std::pair<int, std::string>> v;
@@ -332,7 +333,7 @@ int main(int argc, char** argv) {
   for (const auto& f : files) {
     cv::Mat im = cv::imread(f, cv::IMREAD_GRAYSCALE);
     if (im.empty()) { std::printf("%s: unreadable\n", f.c_str()); continue; }
-    Probe ref(nFeatures, 1.2f, 8, 20, 7);
+    Probe ref(nFeatures, 1.2f, nLevels, 20, 7);
     vector<cv::KeyPoint> rk;
     cv::Mat rd;
     vector<int> lap = {0, 1000};  // Frame.cc monocular: ExtractORB(0, imGray, 0, 1000)
@@ -418,7 +419,7 @@ int main(int argc, char** argv) {
     imgsExact += (pyrDiff == 0 && blurDiff == 0 && candDiff == 0 && kd == 0 && dd == 0);
     // host path (WebOrbGpuHost.h, what the browser runs) with the model playing the GPU: candidate words + moments in a
     // shuffled order (the GPU's atomics give any order), then rotated BRIEF from the host's pass-2 cos / sin
-    webgpuorb::OrbGpuHost host(nFeatures, 1.2f, 8, 20, 7, im.cols, im.rows);
+    webgpuorb::OrbGpuHost host(nFeatures, 1.2f, nLevels, 20, 7, im.cols, im.rows);
     im.copyTo(host.frame());
     host.reference();
     vector<uint32_t> cand;
@@ -436,7 +437,7 @@ int main(int argc, char** argv) {
       const int j = (int)(((unsigned)i * 2654435761u) % (unsigned)(i + 1));
       for (int w = 0; w < 4; w++) std::swap(cand[4 * i + w], cand[4 * j + w]);
     }
-    const int kept = host.distribute(cand.data(), nc);
+    const int kept = std::max(0, host.distribute(cand.data(), nc));  // -1 = more kept keypoints than capKp
     vector<uint32_t> gdesc((size_t)kept * 8);
     for (int i = 0; i < kept; i++) {
       const uint32_t* q = &host.pass2_[(size_t)i * 8];
