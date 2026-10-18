@@ -218,6 +218,8 @@ public:
     void ComputeBoW();
 #ifdef ORBSLAM3_WEB
     void WebRebuildGrid();  // room map load (WebMapIO.cc v3): keypoint grid from mvKeysUn when it was not stored
+    bool mbWebAnchor = false;  // Web.Turn.Bridge: reference keyframe of a bridge; fixes the local BA gauge when nothing
+                               // else is fixed (the bridge hangs off the old part only through the spanning tree)
 #endif
 
     // Covisibility graph functions

@@ -453,7 +453,8 @@ int main(int argc, char** argv) {
          << q.x() << " " << q.y() << " " << q.z() << " " << q.w();
 #ifdef ORBSLAM3_WEB
       {  // + keypoints, flow frame, local map size, map KFs / points, mapping queue / accepting, new points so far,
-         //   textured cells (4x4, >= 3 keypoints) and those without a tracked point
+         //   textured cells (4x4, >= 3 keypoints) and those without a tracked point, turn bridges so far (Web.Turn.Bridge)
+         //   and tracked points first seen before the latest bridge (-1: none yet)
         ORB_SLAM3::Tracking* tk = SLAM.WebTracker();
         const ORB_SLAM3::Frame& F = tk->mCurrentFrame;
         int nKps[16] = {0}, nTr[16] = {0};
@@ -470,7 +471,8 @@ int main(int argc, char** argv) {
         ORB_SLAM3::LocalMapping* lm = SLAM.WebLocalMapper();
         tr << " " << F.N << " " << (tk->mbWebKLTFrame ? 1 : 0) << " " << tk->WebLocalMapSize() << " "
            << (m ? m->KeyFramesInMap() : 0) << " " << (m ? m->MapPointsInMap() : 0) << " " << lm->KeyframesInQueue() << " "
-           << (lm->AcceptKeyFrames() ? 1 : 0) << " " << lm->mnDiagNewMPs << " " << textured << " " << untracked;
+           << (lm->AcceptKeyFrames() ? 1 : 0) << " " << lm->mnDiagNewMPs << " " << textured << " " << untracked
+           << " " << tk->mnWebBridges << " " << tk->WebOldPointsTracked();  // + turn bridges so far, points from before the latest
       }
 #endif
       tr << "\n";

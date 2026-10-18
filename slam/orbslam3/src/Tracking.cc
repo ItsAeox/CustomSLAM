@@ -2084,6 +2084,8 @@ void Tracking::Track()
                             if(bOK)
                                 mnWebRelocRecoveries++;
                         }
+                        if(!bOK && webConfig().turnBridge)  // turned away: map the new view inside this map
+                            bOK = WebTurnBridge();
                         if(bOK && mbWebLoadWait)
                         {
                             mbWebLoadWait = false;
@@ -2333,7 +2335,11 @@ void Tracking::Track()
         if(bOK || mState==RECENTLY_LOST)
         {
             // Update motion model
+#ifdef ORBSLAM3_WEB
+            if(mLastFrame.isSet() && mCurrentFrame.isSet() && !(mnWebBridges && mCurrentFrame.mnId == mnWebBridgeFrame))
+#else
             if(mLastFrame.isSet() && mCurrentFrame.isSet())
+#endif
             {
                 Sophus::SE3f LastTwc = mLastFrame.GetPose().inverse();
                 mVelocity = mCurrentFrame.GetPose() * LastTwc;
@@ -3103,6 +3109,215 @@ bool Tracking::WebCoastTrack()
     mnWebCoastRecoveries++;
     cout << "Recovered by coasting: " << nBest << " inliers, " << dt << " s after the last good frame" << endl;
     return true;
+}
+
+// web port (Web.Turn.Bridge): a fast turn takes the camera off the map (turn_trace 18 Oct: tracked points ~550 -> ~80
+// within 0.3 s at gyro peaks of 60-260 deg/s), and relocalisation then waits for its timeout (10 s) facing unmapped
+// space before a new, separate map starts. Here, while lost: the pose is propagated by the gyro with the camera centre
+// held (turning on the spot); once it has turned Web.Turn.MinAngle away from the last good pose, a reference frame is
+// kept and later frames are matched to it (search positions pre-rotated by the gyro: while still turning, keypoints move
+// more than the 100 px search window). A two-view reconstruction (1: stock, accepted only if its rotation agrees with
+// the gyro's; 2: WebGyroTwoView) is scaled to the median depth of the keyframe tracked at the loss and added to the
+// CURRENT map at the propagated pose: two keyframes and their points, the reference hung off that keyframe in the
+// spanning tree (local maps reach back to it, loop closure can correct the bridge) and marked as the local-BA anchor.
+// Needs parallax like any monocular start: turning on the spot with no step gives none.
+bool Tracking::WebTurnBridge()
+{
+    const WebConfig& cfg = webConfig();
+    Map* pMap = mpAtlas->GetCurrentMap();
+    if(mSensor != System::MONOCULAR || !mbWebGood || mpWebGoodMap != pMap || mbWebLoadWait)
+        return false;
+    if(mdWebBridgeGood != mdWebGoodTime)  // a new loss episode
+    {
+        mdWebBridgeGood = mdWebGoodTime;
+        mWebBridgeTcw = mWebGoodTcw;
+        mdWebBridgeT = mdWebGoodTime;
+        mbWebBridgeOk = true;
+        mbWebBridgeRef = false;
+        mpWebBridgeGoodKF = mpReferenceKF;
+        mfWebBridgeDepth = (mpWebBridgeGoodKF && !mpWebBridgeGoodKF->isBad()) ? mpWebBridgeGoodKF->ComputeSceneMedianDepth(2) : -1.f;
+    }
+    if(!mbWebBridgeOk)
+        return false;
+
+    // propagate: the camera turned about its own centre by the gyro rotation
+    const Sophus::SO3f Rbc = Sophus::SO3f::fitToSO3(Eigen::Map<const Eigen::Matrix<float, 3, 3, Eigen::RowMajor>>(cfg.gyroRbc));
+    if(mCurrentFrame.mTimeStamp > mdWebBridgeT)
+    {
+        Eigen::Matrix3f dRb;
+        if(!WebGyroRotation(mdWebBridgeT + cfg.gyroTimeOffset, mCurrentFrame.mTimeStamp + cfg.gyroTimeOffset, dRb))
+        {
+            mbWebBridgeOk = false;  // a gap in the gyro: no propagated pose for the rest of this episode
+            return false;
+        }
+        const Sophus::SO3f dR = (Rbc.inverse() * Sophus::SO3f::fitToSO3(dRb) * Rbc).inverse();  // old camera -> new camera
+        mWebBridgeTcw = Sophus::SE3f(dR, Eigen::Vector3f::Zero()) * mWebBridgeTcw;
+        mdWebBridgeT = mCurrentFrame.mTimeStamp;
+    }
+    const float angle = (mWebBridgeTcw.so3() * mWebGoodTcw.so3().inverse()).log().norm() * 180.f / (float)M_PI;
+    if(angle < cfg.turnMinAngle)
+    {
+        mbWebBridgeRef = false;  // still facing the mapped area: left to coasting and relocalisation
+        return false;
+    }
+    if(!(mfWebBridgeDepth > 0) || !mpWebBridgeGoodKF || mpWebBridgeGoodKF->isBad() || mpWebBridgeGoodKF->GetMap() != pMap ||
+       mpLocalMapper->isStopped() || mpLocalMapper->stopRequested())
+        return false;
+
+    auto setRef = [&]() {
+        mbWebBridgeRef = false;
+        if(mCurrentFrame.mvKeys.size() <= 100)
+            return;
+        mInitialFrame = Frame(mCurrentFrame);
+        fill(mInitialFrame.mvpMapPoints.begin(), mInitialFrame.mvpMapPoints.end(), static_cast<MapPoint*>(NULL));
+        fill(mInitialFrame.mvbOutlier.begin(), mInitialFrame.mvbOutlier.end(), false);
+        mWebBridgeRefTcw = mWebBridgeTcw;
+        mWebBridgePrevR = mWebBridgeTcw.so3();
+        mvbPrevMatched.resize(mCurrentFrame.mvKeysUn.size());
+        for(size_t i = 0; i < mCurrentFrame.mvKeysUn.size(); i++)
+            mvbPrevMatched[i] = mCurrentFrame.mvKeysUn[i].pt;
+        mvIniMatches.assign(mCurrentFrame.mvKeysUn.size(), -1);
+        mbWebBridgeRef = true;
+    };
+    if(!mbWebBridgeRef)
+    {
+        setRef();
+        return false;
+    }
+    mnWebBridgeTries++;
+
+    // search positions: rotated with the camera since the last matching
+    const Sophus::SO3f Rcp = mWebBridgeTcw.so3() * mWebBridgePrevR.inverse();
+    for(cv::Point2f& p : mvbPrevMatched)
+    {
+        const Eigen::Vector3f f = Rcp * mpCamera->unprojectEig(p);
+        if(f(2) > 0.1f * f.norm())
+        {
+            const Eigen::Vector2f q = mpCamera->project(f);
+            p = cv::Point2f(q(0), q(1));
+        }
+    }
+    mWebBridgePrevR = mWebBridgeTcw.so3();
+    ORBmatcher matcher(0.9, true);
+    const int nmatches = matcher.SearchForInitialization(mInitialFrame, mCurrentFrame, mvbPrevMatched, mvIniMatches, 100);
+    if(nmatches < cfg.initMinMatches || mCurrentFrame.mvKeys.size() <= 100 || mCurrentFrame.mTimeStamp - mInitialFrame.mTimeStamp > 3.0)
+    {
+        setRef();  // too little overlap with the reference left (or it is old): start again from this frame
+        return false;
+    }
+
+    Sophus::SE3f T21;
+    vector<cv::Point3f> vP3D;
+    vector<bool> vbTri;
+    bool bTwoView;
+    if(cfg.turnBridge == 2)
+        bTwoView = WebGyroTwoView(T21, vP3D, vbTri);
+    else
+    {
+        bTwoView = mpCamera->ReconstructWithTwoViews(mInitialFrame.mvKeysUn, mCurrentFrame.mvKeysUn, mvIniMatches, T21, vP3D, vbTri);
+        if(bTwoView)
+        {
+            const Sophus::SO3f Rgyro = mWebBridgeTcw.so3() * mWebBridgeRefTcw.so3().inverse();  // reference -> current camera
+            const float dAng = (T21.so3() * Rgyro.inverse()).log().norm() * 180.f / (float)M_PI;
+            if(dAng > cfg.turnMaxRotDiff)
+            {
+                if(++mnWebBridgeRejects <= 20)
+                    cout << "TURN bridge rejected: two-view rotation " << dAng << " deg off the gyro's" << endl;
+                return false;
+            }
+        }
+    }
+    if(!bTwoView)
+        return false;
+
+    // scale: the triangulated points' median depth (unit baseline) -> the median depth seen at the loss
+    vector<float> vZ;
+    for(size_t i = 0; i < mvIniMatches.size(); i++)
+    {
+        if(mvIniMatches[i] >= 0 && !vbTri[i])
+            mvIniMatches[i] = -1;
+        if(mvIniMatches[i] >= 0)
+            vZ.push_back(vP3D[i].z);
+    }
+    if((int)vZ.size() < std::min(50, cfg.initMinTriangulated))
+        return false;
+    nth_element(vZ.begin(), vZ.begin() + vZ.size() / 2, vZ.end());
+    const float zMed = vZ[vZ.size() / 2];
+    if(!(zMed > 0))
+        return false;
+    const float s = mfWebBridgeDepth / zMed;
+    const Sophus::SE3f Tref = mWebBridgeRefTcw;
+    const Sophus::SE3f Tcur = Sophus::SE3f(T21.so3(), s * T21.translation()) * Tref;
+
+    // two keyframes and their points in the current map
+    mInitialFrame.SetPose(Tref);
+    fill(mCurrentFrame.mvpMapPoints.begin(), mCurrentFrame.mvpMapPoints.end(), static_cast<MapPoint*>(NULL));
+    fill(mCurrentFrame.mvbOutlier.begin(), mCurrentFrame.mvbOutlier.end(), false);
+    mCurrentFrame.SetPose(Tcur);
+    KeyFrame* pKFref = new KeyFrame(mInitialFrame, pMap, mpKeyFrameDB);
+    KeyFrame* pKFcur = new KeyFrame(mCurrentFrame, pMap, mpKeyFrameDB);
+    pKFref->ComputeBoW();
+    pKFcur->ComputeBoW();
+    mpAtlas->AddKeyFrame(pKFref);
+    mpAtlas->AddKeyFrame(pKFcur);
+    const Sophus::SE3f Twr = Tref.inverse();
+    vector<MapPoint*> vpNew;
+    for(size_t i = 0; i < mvIniMatches.size(); i++)
+    {
+        if(mvIniMatches[i] < 0)
+            continue;
+        const Eigen::Vector3f Xw = Twr * (s * Eigen::Vector3f(vP3D[i].x, vP3D[i].y, vP3D[i].z));
+        MapPoint* pMP = new MapPoint(Xw, pKFcur, pMap);
+        pKFref->AddMapPoint(pMP, i);
+        pKFcur->AddMapPoint(pMP, mvIniMatches[i]);
+        pMP->AddObservation(pKFref, i);
+        pMP->AddObservation(pKFcur, mvIniMatches[i]);
+        pMP->ComputeDistinctiveDescriptors();
+        pMP->UpdateNormalAndDepth();
+        mCurrentFrame.mvpMapPoints[mvIniMatches[i]] = pMP;
+        mCurrentFrame.mvbOutlier[mvIniMatches[i]] = false;
+        mpAtlas->AddMapPoint(pMP);
+        vpNew.push_back(pMP);
+    }
+    pKFref->UpdateConnections();
+    pKFcur->UpdateConnections();
+    // spanning tree: UpdateConnections made the reference a child of the current keyframe (its only covisible one);
+    // it hangs off the keyframe tracked at the loss instead, the current one off the reference
+    if(KeyFrame* pPar = pKFref->GetParent())
+        pPar->EraseChild(pKFref);
+    pKFref->ChangeParent(mpWebBridgeGoodKF);
+    pKFref->mbWebAnchor = true;
+
+    mpLocalMapper->InsertKeyFrame(pKFref);
+    mpLocalMapper->InsertKeyFrame(pKFcur);
+    mCurrentFrame.mpReferenceKF = pKFcur;
+    mpReferenceKF = pKFcur;
+    mnLastKeyFrameId = mCurrentFrame.mnId;
+    mpLastKeyFrame = pKFcur;
+    mnWebBridgeFrame = mCurrentFrame.mnId;  // no motion model from the lost frame before (next frame: ORB, reference KF)
+    mvpLocalKeyFrames = {pKFcur, pKFref};
+    mvpLocalMapPoints = vpNew;
+    mbWebBridgeRef = false;
+    mnWebBridges++;
+    mnWebBridgeAnchorKF = pKFref->mnId;
+    cout << "TURN bridge " << mnWebBridges << ": " << vpNew.size() << " points, " << nmatches << " matches, turned " << angle
+         << " deg, " << mCurrentFrame.mTimeStamp - mdWebGoodTime << " s after the last good frame, scale " << s
+         << " (median depth " << mfWebBridgeDepth << "), mode " << cfg.turnBridge << endl;
+    return true;
+}
+
+int Tracking::WebOldPointsTracked() const
+{
+    if(!mnWebBridgeAnchorKF)
+        return -1;
+    int n = 0;
+    for(int i = 0; i < mCurrentFrame.N && i < (int)mCurrentFrame.mvpMapPoints.size(); i++)
+    {
+        const MapPoint* pMP = mCurrentFrame.mvpMapPoints[i];
+        if(pMP && !mCurrentFrame.mvbOutlier[i] && pMP->mnFirstKFid < (long)mnWebBridgeAnchorKF)
+            n++;
+    }
+    return n;
 }
 
 // web port (Web.Init.Gyro): two-view initialisation with the rotation known from the gyro. With R21 given, the epipolar

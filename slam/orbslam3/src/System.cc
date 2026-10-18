@@ -549,6 +549,9 @@ void System::Shutdown()
              << " parallel_ms_mean=" << mpTracker->mdWebLKParallelMs / mpTracker->mnWebLKCalls << endl;
     if(webConfig().kfCoverage > 0)
         cout << "COV-STATS coverage_keyframes=" << mpTracker->mnWebCovKFs << endl;
+    if(webConfig().turnBridge)
+        cout << "BRIDGE-STATS bridges=" << mpTracker->mnWebBridges << " tries=" << mpTracker->mnWebBridgeTries
+             << " rejected_rotation=" << mpTracker->mnWebBridgeRejects << endl;
     if(mpTracker->mbWebLoadedMap)
         cout << "WEBMAP-STATS reloc_after_s=" << mpTracker->mdWebLoadRelocTime << endl;
 #endif

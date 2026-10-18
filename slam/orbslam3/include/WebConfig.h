@@ -92,6 +92,16 @@ struct WebConfig
     double coastMaxTime = 1.5; // Web.Track.CoastTime: seconds after the last good frame during which coasting is tried
     int coastMinInliers = 50;  // Web.Track.CoastMinInliers: pose inliers to accept the coasted pose (relocalisation: 50)
 
+    // Turn bridge (monocular, visual-only, needs Web.Gyro.Prior; see Tracking::WebTurnBridge). Off by default = stock.
+    // While lost after turning away (gyro rotation from the last good pose >= MinAngle, coasting and relocalisation
+    // failing), a two-view reconstruction of the new view is added to the CURRENT map at the gyro-propagated pose
+    // (camera centre held), scaled to the last reference keyframe's median depth, hung off that keyframe in the
+    // spanning tree: tracking resumes in the same map instead of waiting for the relocalisation timeout.
+    int turnBridge = 0;          // Web.Turn.Bridge: 1 = stock two-view reconstruction, accepted only if its rotation agrees
+                                 // with the gyro's (MaxRotDiff); 2 = the gyro two-view solve (WebGyroTwoView, Web.Init.Gyro)
+    double turnMinAngle = 20;    // Web.Turn.MinAngle: degrees turned away from the last good pose before bridging
+    double turnMaxRotDiff = 3;   // Web.Turn.MaxRotDiff: mode 1, degrees between the reconstruction's and the gyro's rotation
+
     int fastPose = 0;          // Web.Track.FastPose: motion-only pose optimisation of monocular frames (Optimizer.cc)
                                // 0 = g2o (stock), 1 = the same problem solved without a g2o graph (WebPoseOptimization),
                                // 2 = both on every call, g2o's result kept, differences and timings reported (check)
@@ -184,6 +194,15 @@ inline void loadWebConfig(const std::string& settingsFile)
     cv::FileNode ct = fs["Web.Track.CoastTime"];
     if (!ct.empty() && (ct.isInt() || ct.isReal())) c.coastMaxTime = ct.real();
     readInt("Web.Track.CoastMinInliers", c.coastMinInliers);
+    readInt("Web.Turn.Bridge", c.turnBridge);
+    for (auto [key, v] : {std::pair<const char*, double*>{"Web.Turn.MinAngle", &c.turnMinAngle}, {"Web.Turn.MaxRotDiff", &c.turnMaxRotDiff}}) {
+        cv::FileNode n = fs[key];
+        if (!n.empty() && (n.isInt() || n.isReal())) *v = n.real();
+    }
+    if (c.turnBridge && !c.gyroPrior) {
+        std::cout << "Web config: Web.Turn.Bridge needs Web.Gyro.Prior; turn bridge off" << std::endl;
+        c.turnBridge = 0;
+    }
     readInt("Web.Track.FastPose", c.fastPose);
     readInt("Web.Track.FastPoseWarm", c.fastPoseWarm);
     readInt("Web.Init.MinMatches", c.initMinMatches);
@@ -210,6 +229,10 @@ inline void loadWebConfig(const std::string& settingsFile)
                             " deg, " + std::to_string(c.initMinTriangulated) + " points"
                       : std::string())
               << (c.initGyro ? "; gyro two-view init" : "")
+              << (c.turnBridge ? std::string("; turn bridge (") + (c.turnBridge == 1 ? "two-view + gyro check " + std::to_string(c.turnMaxRotDiff) + " deg"
+                                                                                     : std::string("gyro two-view")) +
+                                     ", after " + std::to_string(c.turnMinAngle) + " deg)"
+                               : std::string())
               << "; KLT " << (c.kltEnable ? "on" : "off");
     if (c.kltEnable)
         std::cout << " (max consecutive " << c.kltMaxConsecutive << ", min tracked " << c.kltMinTracked

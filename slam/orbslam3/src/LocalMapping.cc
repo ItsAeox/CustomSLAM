@@ -1074,7 +1074,11 @@ void LocalMapping::KeyFrameCulling()
         count++;
         KeyFrame* pKF = *vit;
 
+#ifdef ORBSLAM3_WEB
+        if((pKF->mnId==pKF->GetMap()->GetInitKFid()) || pKF->isBad() || pKF->mbWebAnchor)  // a turn bridge's anchor stays
+#else
         if((pKF->mnId==pKF->GetMap()->GetInitKFid()) || pKF->isBad())
+#endif
             continue;
         const vector<MapPoint*> vpMapPoints = pKF->GetMapPointMatches();
 

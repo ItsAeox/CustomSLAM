@@ -1480,6 +1480,19 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
     }
     num_fixedKF = lFixedCameras.size() + num_fixedKF;
 
+#ifdef ORBSLAM3_WEB
+    // a turn bridge (Web.Turn.Bridge) linked to the rest of the map only through the spanning tree: its reference
+    // keyframe fixes the gauge, as the map's first keyframe does (otherwise the bridge would never be optimised)
+    KeyFrame* pWebAnchor = NULL;
+    if(num_fixedKF == 0)
+        for(KeyFrame* pKFi : lLocalKeyFrames)
+            if(pKFi->mbWebAnchor)
+            {
+                pWebAnchor = pKFi;
+                num_fixedKF = 1;
+                break;
+            }
+#endif
 
     if(num_fixedKF == 0)
     {
@@ -1519,7 +1532,11 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
         Sophus::SE3<float> Tcw = pKFi->GetPose();
         vSE3->setEstimate(g2o::SE3Quat(Tcw.unit_quaternion().cast<double>(), Tcw.translation().cast<double>()));
         vSE3->setId(pKFi->mnId);
+#ifdef ORBSLAM3_WEB
+        vSE3->setFixed(pKFi->mnId==pMap->GetInitKFid() || pKFi==pWebAnchor);
+#else
         vSE3->setFixed(pKFi->mnId==pMap->GetInitKFid());
+#endif
         optimizer.addVertex(vSE3);
         if(pKFi->mnId>maxKFid)
             maxKFid=pKFi->mnId;

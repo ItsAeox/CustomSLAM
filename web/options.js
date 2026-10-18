@@ -36,6 +36,7 @@ export const OPTIONS = [
   { key: 'kf', label: 'Keyframes', values: [['stock', 'original'], ['fewer', 'fewer (ratio 0.8)']], def: 'stock' },
   { key: 'voc', label: 'Vocabulary (download)', values: [['full', 'full (49 MB, original)'], ['small', 'small (5 MB, own k10L5)']], def: 'full', when: (o) => o.desc !== 'teblid' },
   { key: 'rot', label: 'Turning on the spot', values: [['off', 'original (no new points without sideways motion)'], ['far', 'far points (prototype 1: made-up depth)'], ['inf', 'points at infinity (prototype 2)'], ['inf3', 'points at infinity, kept out of relocalisation (prototype 3)']], def: 'off' },
+  { key: 'bridge', label: 'After turning away (gyro)', values: [['off', 'original (relocalise until the timeout, then a new map)'], ['tv', 'continue this map: two-view start checked by the gyro'], ['gyro', 'continue this map: gyro two-view start']], def: 'off' },
   { key: 'newarea', label: 'New areas when turning', values: [['stock', 'original (keyframes by tracked-point count)'], ['cov', 'extra keyframes for new textured areas'], ['cov2', 'extra keyframes + new points from smaller baselines']], def: 'stock' },
   { key: 'hold', label: 'Tree during brief tracking losses', page: 'ar', values: [['hide', 'hidden (original)'], ['gyro', 'held by the gyro for up to 0.4 s']], def: 'hide' },
 ];
@@ -129,7 +130,7 @@ export function applyOptions(yaml, o) {
   if (o.desc === 'teblid') extra.push('Web.Descriptor: 1');  // the page also loads the TEBLID vocabulary (vocabUrl)
   if (o.motion === 'time') extra.push('Web.Track.TimeScaledMotion: 1');  // live camera: prediction scaled to the frame interval
   if (o.map === 'light') extra.push('Web.LBA.MaxOptKFs: 20', 'Web.LBA.MaxFixedKFs: 20', 'Web.Mapping.Neighbors: 15');
-  if ((o.gyro === 'on' || o.init === 'gyro') && o.imu !== 'on') extra.push('Web.Gyro.Prior: 1');  // + IMU.T_b_c1 (ar.js adds the phone IMU block)
+  if ((o.gyro === 'on' || o.init === 'gyro' || (o.bridge && o.bridge !== 'off')) && o.imu !== 'on') extra.push('Web.Gyro.Prior: 1');  // + IMU.T_b_c1 (ar.js adds the phone IMU block)
   if (o.tracker === 'klt' && o.kltnorm === 'on') extra.push('Web.KLT.Normalize: 1');
   if (o.tracker === 'klt' && o.kltpar === 'parallel') extra.push('Web.KLT.Parallel: 1');  // LK points split over 4 threads
   if (o.newarea === 'cov' || o.newarea === 'cov2') extra.push('Web.KF.Coverage: 0.4');  // keyframes for new textured areas
@@ -143,6 +144,8 @@ export function applyOptions(yaml, o) {
   if (o.init === 'quick') extra.push('Web.Init.MinMatches: 60', 'Web.Init.MinParallax: 0.5', 'Web.Init.MinTriangulated: 40');
   if (o.init === 'gyro' && o.imu !== 'on') extra.push('Web.Init.Gyro: 1');
   if (o.kf === 'fewer') extra.push('Web.KF.RefRatio: 0.8');
+  if (o.bridge === 'tv' && o.imu !== 'on') extra.push('Web.Turn.Bridge: 1');  // lost after turning: map the new view in this map
+  if (o.bridge === 'gyro' && o.imu !== 'on') extra.push('Web.Turn.Bridge: 2');
   if (o.voc === 'small' && o.desc !== 'teblid') extra.push('Web.BoW.LevelsUp: 3');  // L5 tree: BoW index at the stock depth
   return extra.length ? `${y.replace(/\s*$/, '\n')}\n# web options (web/options.js)\n${extra.join('\n')}\n` : y;
 }

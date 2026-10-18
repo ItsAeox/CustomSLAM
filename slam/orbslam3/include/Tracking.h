@@ -376,6 +376,23 @@ protected:
     double mdWebGoodVelDt = 0;
     bool WebCoastTrack();
     bool WebGyroTwoView(Sophus::SE3f& T21, vector<cv::Point3f>& vP3D, vector<bool>& vbTriangulated);  // Web.Init.Gyro
+    // Web.Turn.Bridge (WebTurnBridge): state of the current loss episode
+    bool WebTurnBridge();
+    double mdWebBridgeGood = -1;          // mdWebGoodTime of the episode this state belongs to
+    Sophus::SE3f mWebBridgeTcw;           // gyro-propagated pose (rotation from the gyro, camera centre held)
+    double mdWebBridgeT = 0;              // its time
+    bool mbWebBridgeOk = false;           // gyro coverage so far, same map
+    bool mbWebBridgeRef = false;          // a reference frame is set (mInitialFrame, mvbPrevMatched)
+    Sophus::SE3f mWebBridgeRefTcw;        // the reference frame's propagated pose
+    Sophus::SO3f mWebBridgePrevR;         // propagated rotation at the last matching (search positions pre-rotated from it)
+    KeyFrame* mpWebBridgeGoodKF = nullptr;  // reference keyframe at the loss: parent of the bridge in the spanning tree
+    float mfWebBridgeDepth = 0;           // its median scene depth: the scale of the bridge
+    unsigned long mnWebBridgeFrame = 0;   // frame of the last bridge: no motion model from the lost frame before it
+public:
+    long mnWebBridges = 0, mnWebBridgeTries = 0, mnWebBridgeRejects = 0;  // Web.Turn.Bridge statistics
+    unsigned long mnWebBridgeAnchorKF = 0;  // reference keyframe id of the latest bridge (0: none yet)
+    int WebOldPointsTracked() const;      // tracked points first seen before the latest bridge (-1: no bridge yet)
+protected:
 public:
     void WebGrabGyro(const std::vector<IMU::Point>& v);  // visual-only modes: IMU samples for the gyro prior
 protected:

@@ -1,0 +1,8 @@
+# replay_arms.sh arms: turn bridge (Web.Turn.Bridge) on the gyro-recovery preset, with and without KeepMap (the page's
+# setting once a tree is placed: no relocalisation timeout, never a new map); measured -88 ms phone time offset
+grecover_dt|grecover|Web.Gyro.TimeOffset: -0.088
+grecover_dt_br1|grecover|Web.Gyro.TimeOffset: -0.088;Web.Turn.Bridge: 1
+grecover_dt_br2|grecover|Web.Gyro.TimeOffset: -0.088;Web.Turn.Bridge: 2
+grecover_dt_keep|grecover|Web.Gyro.TimeOffset: -0.088;Web.Track.KeepMap: 1
+grecover_dt_keep_br1|grecover|Web.Gyro.TimeOffset: -0.088;Web.Track.KeepMap: 1;Web.Turn.Bridge: 1
+grecover_dt_keep_br2|grecover|Web.Gyro.TimeOffset: -0.088;Web.Track.KeepMap: 1;Web.Turn.Bridge: 2
