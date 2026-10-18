@@ -19,7 +19,7 @@ for (const name of recBase ? [recName || 'rec'] : ['EuRoC_mono', 'TUM-VI_mono'])
   for (const p of PRESETS) {
     if (only.length && !only.includes(p.key)) continue;
     const o = applyPreset({}, p, AR_DEFAULTS, 'ar');
-    if (o.imu === 'on') continue;
+    if (o.imu === 'on' && !recBase) continue;  // IMU presets need a recording's phone IMU block (run with --mode mono_inertial)
     let y = applyOptions(base, o);
     if (tbc && /Web\.Gyro\.Prior: 1/.test(y)) y += `\n# camera -> IMU (dataset; the AR page appends the phone's)\n${tbc}\n`;
     writeFileSync(`${out}/${name}_page-${p.key}.yaml`, y);

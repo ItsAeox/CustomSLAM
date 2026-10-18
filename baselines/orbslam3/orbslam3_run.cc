@@ -323,6 +323,7 @@ int main(int argc, char** argv) {
   bool trace = false;       // diagnostic: per-frame trace (state, tracked points, live Twc) -> trace.txt
   int seed = -1;  // -1: ORB-SLAM3 default (TwoViewReconstruction seeds with 0)
   string saveMap, loadMap;  // room map save / reload (WebMapIO.cc): the largest map at the end / a map loaded first
+  double imuDtMs = 0;       // --imu-dt: IMU time = recorded IMU stamp - imu-dt (the AR page's option imudt; phone -88 ms)
   for (int i = 1; i < argc; ++i) {
     string a = argv[i];
     auto next = [&]() { if (i + 1 >= argc) { std::cerr << "missing value for " << a << "\n"; std::exit(2); } return string(argv[++i]); };
@@ -344,6 +345,7 @@ int main(int argc, char** argv) {
     else if (a == "--trace") trace = true;
     else if (a == "--save-map") saveMap = next();
     else if (a == "--load-map") loadMap = next();
+    else if (a == "--imu-dt") imuDtMs = std::stod(next());
     else { std::cerr << "unknown arg " << a << "\n"; return 2; }
   }
   if (dataset.empty() || mode.empty() || seq.empty() || vocab.empty() || settings.empty() || out.empty()) {
@@ -360,6 +362,8 @@ int main(int argc, char** argv) {
   Data d = (dataset == "kitti") ? loadKitti(seq)
          : (dataset == "tumvie") ? loadTumvie(seq)
          : loadAsl(seq);  // "euroc", "tumvi" (EuRoC-format export), "asl"
+  if (imuDtMs != 0)
+    for (auto& m : d.imu) m.t -= imuDtMs * 1e-3;
   int N = (int)std::min(d.images.size(), d.t.size());
   if (maxFrames > 0) N = std::min(N, maxFrames);
   fs::create_directories(out);

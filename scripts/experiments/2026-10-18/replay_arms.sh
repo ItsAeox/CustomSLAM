@@ -5,6 +5,7 @@
 #   TRACE=1: per-frame trace (--trace), eval/loss_anatomy.py and eval/map_growth.py per run (anatomy.txt, growth.txt)
 #   RECS="rec_a rec_b": only these recordings (default: all in labels.txt)
 #   e.g. "fast_cov|fast|Web.KF.Coverage: 0.4"   "grecover_dt|grecover|Web.Gyro.TimeOffset: -0.088"
+#   items starting with "--" are runner arguments for that arm (later ones win), e.g. "imu|imu|--mode mono_inertial;--imu-dt -88"
 set -uo pipefail
 cd /mnt/h/Research/CustomSLAM
 TAG=$1 O=$2 ARMSFILE=$3
@@ -21,9 +22,10 @@ while IFS= read -r spec; do
     mkdir -p $O/$r/settings
     [ -s $O/$r/settings/${r}_page-$preset.yaml ] || $NODE scripts/page_presets.mjs --base $PH/$r/settings.yaml --name $r $O/$r/settings $preset > /dev/null
     # extra items: "Key: value" lines are appended; "-Key" removes the preset's Key line (OpenCV rejects duplicate keys)
-    drop=$(echo "$extra" | tr ';' '\n' | sed 's/^ *//' | grep '^-' | sed 's/^-//; s/[.]/\\./g' | paste -sd'|')
+    drop=$(echo "$extra" | tr ';' '\n' | sed 's/^ *//' | grep '^-[^-]' | sed 's/^-//; s/[.]/\\./g' | paste -sd'|')
     { if [ -n "$drop" ]; then grep -Ev "^($drop):" $O/$r/settings/${r}_page-$preset.yaml; else cat $O/$r/settings/${r}_page-$preset.yaml; fi
       echo; echo "# replay_arms.sh: $name"; echo "$extra" | tr ';' '\n' | sed 's/^ *//' | grep -v '^-'; } > $O/$r/settings/${r}_arm-$name.yaml
+    echo "$extra" | tr ';' '\n' | sed 's/^ *//' | grep '^--' | tr '\n' ' ' > $O/$r/settings/${r}_arm-$name.args
   done
 done < $ARMSFILE
 jobs_list=()
@@ -35,7 +37,8 @@ run_one() {
   local st=$O/$r/settings/${r}_arm-$a.yaml voc=$V/ORBvoc.bin g=""
   grep -q "Web.BoW.LevelsUp: 3" $st && voc=$V/ORBvoc_own_k10L5.bin
   grep -q "Web.Gyro.Prior: 1" $st && g="--gyro"
-  timeout 1800 $NODE $JS --dataset euroc --mode mono --seq $PH/$r --vocab $voc --settings $st --seed $s ${MODE:---live --rate-scale 1.0} $g ${TRACE:+--trace} \
+  local aa=$(cat $O/$r/settings/${r}_arm-$a.args 2>/dev/null)
+  timeout 1800 $NODE $JS --dataset euroc --mode mono --seq $PH/$r --vocab $voc --settings $st --seed $s ${MODE:---live --rate-scale 1.0} $g ${TRACE:+--trace} $aa \
     --out $o > $o/run.log 2>&1 || echo "  $r $a seed $s: exit $?"
   if [ -n "${TRACE:-}" ]; then /opt/slam/venv/bin/python eval/loss_anatomy.py $o $PH/$r > $o/anatomy.txt 2>&1; fi
   if [ -n "${TRACE:-}" ]; then /opt/slam/venv/bin/python eval/map_growth.py $o $PH/$r > $o/growth.txt 2>&1; fi
