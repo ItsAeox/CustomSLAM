@@ -4065,7 +4065,41 @@ bool Tracking::NeedNewKeyFrame()
     else
         c4=false;
 
-    if(((c1a||c1b||c1c) && c2)||c3 ||c4)
+#ifdef ORBSLAM3_WEB
+    // Web.KF.Coverage: textured image cells without a tracked map point (new area coming into view while turning). The
+    // stock rule (tracked points vs the reference keyframe) waits too long there, and a busy local mapping blocks
+    // monocular keyframes altogether, so the mapped points leave the view before new ones exist.
+    bool cCov = false;
+    if(webConfig().kfCoverage > 0 && !mbWebKLTFrame && mnMatchesInliers > 15 && mCurrentFrame.mnId >= mnLastKeyFrameId + 3 &&
+       (mSensor == System::MONOCULAR || mSensor == System::IMU_MONOCULAR))
+    {
+        int nKps[16] = {0}, nTracked[16] = {0};
+        const float w = Frame::mnMaxX - Frame::mnMinX, h = Frame::mnMaxY - Frame::mnMinY;
+        for(int i = 0; i < mCurrentFrame.N; i++)
+        {
+            const cv::KeyPoint& kp = mCurrentFrame.mvKeysUn[i];
+            const int cx = std::min(3, std::max(0, (int)(4 * (kp.pt.x - Frame::mnMinX) / w)));
+            const int cy = std::min(3, std::max(0, (int)(4 * (kp.pt.y - Frame::mnMinY) / h)));
+            nKps[4 * cy + cx]++;
+            if(mCurrentFrame.mvpMapPoints[i] && !mCurrentFrame.mvbOutlier[i])
+                nTracked[4 * cy + cx]++;
+        }
+        int textured = 0, untracked = 0;
+        for(int c = 0; c < 16; c++)
+            if(nKps[c] >= 3)
+            {
+                textured++;
+                if(nTracked[c] == 0)
+                    untracked++;
+            }
+        cCov = textured >= 4 && untracked > webConfig().kfCoverage * textured;
+        if(cCov)
+            mnWebCovKFs++;
+    }
+#else
+    const bool cCov = false;
+#endif
+    if(((c1a||c1b||c1c) && c2)||c3 ||c4 || cCov)
     {
         // If the mapping accepts keyframes, insert keyframe.
         // Otherwise send a signal to interrupt BA
@@ -4086,7 +4120,7 @@ bool Tracking::NeedNewKeyFrame()
             else
             {
                 //std::cout << "NeedNewKeyFrame: localmap is busy" << std::endl;
-                return false;
+                return cCov && mpLocalMapper->KeyframesInQueue() < 2;  // web port: new area: queue it anyway
             }
         }
     }

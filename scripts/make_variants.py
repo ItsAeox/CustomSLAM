@@ -114,6 +114,8 @@ FAST_MODS = {
     "rot": ["Web.Rot.FarPoints: 1"],
     "rot2": ["Web.Rot.FarPoints: 2"],
     "rot3": ["Web.Rot.FarPoints: 3"],
+    "cov": ["Web.KF.Coverage: 0.4"],
+    "cov2": ["Web.KF.Coverage: 0.4", "Web.Map.MinBaseline: 0.005", "Web.Map.MaxCosParallax: 0.99995"],
 }
 def focal(text, k):  # wrong focal length (uncalibrated phone): Camera1.fx / fy scaled by k
     return re.sub(r"(Camera1\.f[xy]:\s*)([0-9.eE+-]+)", lambda m: f"{m.group(1)}{float(m.group(2)) * k:.6f}", text)

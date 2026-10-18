@@ -36,6 +36,11 @@ struct WebConfig
     double rotFarDepth = 10.0; // Web.Rot.FarDepth: far-point depth in scene median depths
     int rotFarLife = 6;        // Web.Rot.FarLife: keyframes a far point lives (it constrains rotation only while the camera
                                // stays near where it was made)
+    double kfCoverage = 0;     // Web.KF.Coverage: > 0 = also insert a keyframe (even while local mapping is busy, queue < 2)
+                               // when this share of the textured image cells (4x4 grid, >= 3 keypoints) holds no tracked map
+                               // point: new textured area coming into view (turning toward unmapped parts). 0 = stock
+    double triMinBaseline = 0.01;  // Web.Map.MinBaseline: monocular triangulation needs baseline / scene depth >= this (stock 0.01)
+    double triMaxCosParallax = 0.9998;  // Web.Map.MaxCosParallax: and the rays' cos(parallax) below this (stock 0.9998, ~1.1 deg)
     double mapLoadWait = 20.0; // Web.Map.LoadWait: after a room map is loaded (System::WebLoadMap), seconds of relocalisation
                                // into it before a new map is started; < 0 = wait until relocalised
     int timeScaledMotion = 0;  // Web.Track.TimeScaledMotion: 1 = the constant-velocity prediction is rescaled to the
@@ -142,6 +147,11 @@ inline void loadWebConfig(const std::string& settingsFile)
     readInt("Web.Rot.FarLife", c.rotFarLife);
     cv::FileNode fd = fs["Web.Rot.FarDepth"];
     if (!fd.empty() && (fd.isInt() || fd.isReal())) c.rotFarDepth = fd.real();
+    for (auto [key, v] : {std::pair<const char*, double*>{"Web.KF.Coverage", &c.kfCoverage}, {"Web.Map.MinBaseline", &c.triMinBaseline},
+                           {"Web.Map.MaxCosParallax", &c.triMaxCosParallax}}) {
+        cv::FileNode n = fs[key];
+        if (!n.empty() && (n.isInt() || n.isReal())) *v = n.real();
+    }
     cv::FileNode lw = fs["Web.Map.LoadWait"];
     if (!lw.empty() && (lw.isInt() || lw.isReal())) c.mapLoadWait = lw.real();
     cv::FileNode mf = fs["Web.KLT.MaxFlow"];

@@ -146,6 +146,7 @@ public:
     double mdWebKLTFlowMs = 0, mdWebKLTCopyMs = 0, mdWebKLTPoseMs = 0;  // accepted KLT frames: LK, frame build, pose
     long mnWebCoastTries = 0, mnWebCoastRecoveries = 0, mnWebRelocRecoveries = 0;  // Web.Track.Coast statistics
     long mnWebLKCalls = 0, mnWebLKPoints = 0, mnWebLKMismatch = 0;  // Web.KLT.Parallel compare mode
+    long mnWebCovKFs = 0;  // keyframes requested by Web.KF.Coverage
     double mdWebLKSerialMs = 0, mdWebLKParallelMs = 0;
     // room map reload (System::WebLoadMap): the first frames relocalise into the loaded map instead of initialising
     void WebAdoptLoadedMap(Map* pMap);

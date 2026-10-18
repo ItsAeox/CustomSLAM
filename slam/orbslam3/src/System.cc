@@ -547,6 +547,8 @@ void System::Shutdown()
         cout << "KLTPAR-STATS calls=" << mpTracker->mnWebLKCalls << " points=" << mpTracker->mnWebLKPoints
              << " mismatches=" << mpTracker->mnWebLKMismatch << " serial_ms_mean=" << mpTracker->mdWebLKSerialMs / mpTracker->mnWebLKCalls
              << " parallel_ms_mean=" << mpTracker->mdWebLKParallelMs / mpTracker->mnWebLKCalls << endl;
+    if(webConfig().kfCoverage > 0)
+        cout << "COV-STATS coverage_keyframes=" << mpTracker->mnWebCovKFs << endl;
     if(mpTracker->mbWebLoadedMap)
         cout << "WEBMAP-STATS reloc_after_s=" << mpTracker->mdWebLoadRelocTime << endl;
 #endif

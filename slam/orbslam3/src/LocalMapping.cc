@@ -546,7 +546,11 @@ void LocalMapping::CreateNewMapPoints()
             const float medianDepthKF2 = pKF2->ComputeSceneMedianDepth(2);
             const float ratioBaselineDepth = baseline/medianDepthKF2;
 
+#ifdef ORBSLAM3_WEB
+            if(ratioBaselineDepth<webConfig().triMinBaseline)  // Web.Map.MinBaseline (stock 0.01)
+#else
             if(ratioBaselineDepth<0.01)
+#endif
             {
 #ifdef ORBSLAM3_WEB
                 if(webConfig().rotFar && !mbInertial && medianDepthKF2 > 0)
@@ -677,7 +681,12 @@ void LocalMapping::CreateNewMapPoints()
             bool goodProj = false;
             bool bPointStereo = false;
             if(cosParallaxRays<cosParallaxStereo && cosParallaxRays>0 && (bStereo1 || bStereo2 ||
-                                                                          (cosParallaxRays<0.9996 && mbInertial) || (cosParallaxRays<0.9998 && !mbInertial)))
+                                                                          (cosParallaxRays<0.9996 && mbInertial) ||
+#ifdef ORBSLAM3_WEB
+                                                                          (cosParallaxRays<webConfig().triMaxCosParallax && !mbInertial)))  // Web.Map.MaxCosParallax
+#else
+                                                                          (cosParallaxRays<0.9998 && !mbInertial)))
+#endif
             {
                 goodProj = GeometricTools::Triangulate(xn1, xn2, eigTcw1, eigTcw2, x3D);
                 if(!goodProj)
