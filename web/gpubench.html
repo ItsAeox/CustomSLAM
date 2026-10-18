@@ -15,6 +15,12 @@
   pre { white-space: pre-wrap; word-break: break-word; border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-top: 14px; font-size: 13px; }
   a { color: var(--acc); }
 </style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
 </head>
 <body>
 <a href="./">← index</a>
@@ -45,16 +51,28 @@ const start = (where) => {
 const FRAME = location.pathname.startsWith('/web/') ? '/datasets/phone/rec_20261018_185037/mav0/cam0/data/frame_300.jpg'
   : 'recordings/rec_20261018_185037/frames/frame_300.jpg';
 const frameUrl = new URL(new URLSearchParams(location.search).get('frame') || FRAME, location.href).href;
+const LOAD = new URLSearchParams(location.search).has('load');  // ?load: AR-page-like rendering meanwhile (gpuload.js)
+let load = null;
 const finish = () => {
   document.getElementById('go').disabled = document.getElementById('go2').disabled = false;
+  if (load) for (const l of load.report()) log(l);
+  log('end');
   // the whole log once more in one request (per-line beacons can arrive out of order or overlap)
   if (location.hostname === 'localhost') fetch(`/api/result?name=${name}`, { method: 'POST', body: lines.join('\n') + '\n' }).catch(() => {});
 };
-document.getElementById('go').onclick = () => {
-  start('worker');
+document.getElementById('go').onclick = async () => {
+  start(LOAD ? 'worker, with AR-page-like rendering on the main thread' : 'worker');
+  if (LOAD) {
+    try {
+      load = await (await import('./gpuload.js')).startLoad(frameUrl);
+      await new Promise((r) => setTimeout(r, 6000));  // rendering alone first (baseline frame times)
+      load.setPhase('tests 1-3 (single pass)');
+    } catch (err) { log(`render load failed: ${err.message || err}`); load = null; }
+  }
   const w = new Worker('gpubench.worker.js', { type: 'module' });
   w.onmessage = (e) => {
     if (e.data.line) log(e.data.line);
+    if (load && e.data.line && e.data.line.startsWith('--- ')) load.setPhase(`two passes + stage breakdown, ${e.data.line.slice(4, 34)}`);
     if (e.data.error) { log(`ERROR ${e.data.error}`); finish(); w.terminate(); }
     if (e.data.done) { log('done'); finish(); w.terminate(); }
   };
