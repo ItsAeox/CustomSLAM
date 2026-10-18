@@ -65,6 +65,280 @@ struct WebLBAScope  // declared before the g2o optimizer: its destructor runs af
             webLBAProfile().totalMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     }
 };
+
+// web port (Web.LBA.Fast): Optimizer::LocalBundleAdjustment for monocular, visual-only maps without a g2o graph. Same
+// problem: local keyframes (the map's first keyframe / a turn-bridge anchor fixed) and fixed keyframes, local points
+// eliminated first (Schur complement, as g2o's marginalised points), octave-weighted reprojection errors with a Huber
+// kernel (delta sqrt(5.991), weights rho' as g2o), Levenberg-Marquardt as g2o's (lambda0 = 1e-5 x the largest Hessian
+// diagonal over cameras and points, gain-ratio update, up to 10 trials, ORB-SLAM3's stop rule; stop flag checked every
+// iteration), left-multiplicative SE(3) updates as VertexSE3Expmap. The reduced camera system is dense (6 x optimised
+// keyframes, LDLT). Outliers (chi2 > 5.991 or behind the camera) at the final estimate (g2o: at its last trial).
+struct WebBAObs
+{
+    int c, p;              // camera (window index), point
+    Eigen::Vector2d uv;    // undistorted keypoint
+    double w;              // inverse sigma^2 of the keypoint octave
+    GeometricCamera* cam;
+};
+struct WebBAProblem
+{
+    std::vector<KeyFrame*> vKF;     // local keyframes, then fixed ones
+    std::vector<int> row;           // optimised camera row (-1 = fixed)
+    int nOpt = 0;
+    std::vector<MapPoint*> vMP;
+    std::vector<WebBAObs> obs;      // grouped by point
+    std::vector<int> start;         // observations of point p: [start[p], start[p + 1])
+    std::vector<Sophus::SE3d> T;    // estimates
+    std::vector<Eigen::Vector3d> X;
+};
+
+// false: not a monocular visual-only problem (stereo / fisheye pair observations): g2o is used
+bool WebBABuild(const list<KeyFrame*>& lLocal, const list<KeyFrame*>& lFixed, const list<MapPoint*>& lMP,
+                KeyFrame* pAnchor, Map* pMap, Map* pCurrentMap, WebBAProblem& P)
+{
+    std::unordered_map<KeyFrame*, int> idx;
+    auto addKF = [&](KeyFrame* k, bool fixed) {
+        if(idx.count(k))
+            return;
+        idx[k] = (int)P.vKF.size();
+        P.vKF.push_back(k);
+        P.row.push_back(fixed ? -1 : P.nOpt++);
+        P.T.push_back(k->GetPose().cast<double>());
+    };
+    for(KeyFrame* k : lLocal)
+        addKF(k, k->mnId == pMap->GetInitKFid() || k == pAnchor);
+    for(KeyFrame* k : lFixed)
+        addKF(k, true);
+    P.start.push_back(0);
+    for(MapPoint* pMP : lMP)
+    {
+        P.vMP.push_back(pMP);
+        P.X.push_back(pMP->GetWorldPos().cast<double>());
+        const int p = (int)P.vMP.size() - 1;
+        const map<KeyFrame*, tuple<int, int>> observations = pMP->GetObservations();
+        for(const auto& ob : observations)
+        {
+            KeyFrame* k = ob.first;
+            if(k->isBad() || k->GetMap() != pCurrentMap)
+                continue;
+            const auto it = idx.find(k);
+            if(it == idx.end())  // not in the window (Web.LBA caps), as the g2o path skips it
+                continue;
+            const int left = get<0>(ob.second);
+            if(left == -1 || get<1>(ob.second) != -1 || k->mvuRight[left] >= 0 || k->mpCamera2)
+                return false;
+            const cv::KeyPoint& kp = k->mvKeysUn[left];
+            P.obs.push_back({it->second, p, Eigen::Vector2d(kp.pt.x, kp.pt.y), (double)k->mvInvLevelSigma2[kp.octave], k->mpCamera});
+        }
+        P.start.push_back((int)P.obs.size());
+    }
+    return true;
+}
+
+inline Eigen::Matrix<double, 3, 6> WebBADpose(const Eigen::Vector3d& Xc)  // d Xc / d [omega, upsilon] (left perturbation)
+{
+    Eigen::Matrix<double, 3, 6> D;
+    D << 0, Xc(2), -Xc(1), 1, 0, 0,
+         -Xc(2), 0, Xc(0), 0, 1, 0,
+         Xc(1), -Xc(0), 0, 0, 0, 1;
+    return D;
+}
+
+inline void WebBAHuber(double c2, double& rho0, double& rho1)
+{
+    const double delta2 = 5.991, delta = std::sqrt(5.991);
+    rho0 = c2;
+    rho1 = 1.0;
+    if(c2 > delta2)
+    {
+        const double s = std::sqrt(c2);
+        rho0 = 2 * delta * s - delta2;
+        rho1 = delta / s;
+    }
+}
+
+double WebBACost(const WebBAProblem& P, const std::vector<Sophus::SE3d>& T, const std::vector<Eigen::Vector3d>& X)
+{
+    double chi = 0;
+    for(const WebBAObs& o : P.obs)
+    {
+        const Eigen::Vector2d e = o.uv - o.cam->project(Eigen::Vector3d(T[o.c] * X[o.p]));
+        double rho0, rho1;
+        WebBAHuber(o.w * e.squaredNorm(), rho0, rho1);
+        chi += rho0;
+    }
+    return chi;
+}
+
+// Levenberg-Marquardt over the problem; T / X updated in place. Returns the iterations done.
+int WebBASolveLM(WebBAProblem& P, int iterations, bool* pbStopFlag)
+{
+    const int nC = P.nOpt, nP = (int)P.X.size(), nO = (int)P.obs.size();
+    std::vector<Eigen::Matrix<double, 6, 6>> Hcc(nC);
+    std::vector<Eigen::Matrix<double, 6, 1>> bc(nC), dc(nC);
+    std::vector<Eigen::Matrix3d> Hpp(nP), Hinv(nP);
+    std::vector<Eigen::Vector3d> bp(nP), dp(nP);
+    std::vector<Eigen::Matrix<double, 6, 3>> Hcp(nO), Y(nO);
+    Eigen::MatrixXd S(6 * nC, 6 * nC);
+    Eigen::VectorXd rhs(6 * nC);
+    double lambda = 0, ni = 2;
+    int nBad = 0, it = 0;
+    for(; it < iterations; it++)
+    {
+        if(pbStopFlag && *pbStopFlag)
+            break;
+        // linearise at the current estimate (robust weights rho' x octave weight, as g2o)
+        for(auto& m : Hcc) m.setZero();
+        for(auto& v : bc) v.setZero();
+        for(auto& m : Hpp) m.setZero();
+        for(auto& v : bp) v.setZero();
+        double currentChi = 0;
+        for(int i = 0; i < nO; i++)
+        {
+            const WebBAObs& o = P.obs[i];
+            const Eigen::Vector3d Xc = P.T[o.c] * P.X[o.p];
+            const Eigen::Vector2d e = o.uv - o.cam->project(Xc);
+            double rho0, rho1;
+            WebBAHuber(o.w * e.squaredNorm(), rho0, rho1);
+            currentChi += rho0;
+            const double w = rho1 * o.w;
+            const Eigen::Matrix<double, 2, 3> J = o.cam->projectJac(Xc);
+            const Eigen::Matrix<double, 2, 3> Jp = -J * P.T[o.c].rotationMatrix();
+            Hpp[o.p].noalias() += w * Jp.transpose() * Jp;
+            bp[o.p].noalias() -= w * Jp.transpose() * e;
+            const int r = P.row[o.c];
+            if(r >= 0)
+            {
+                const Eigen::Matrix<double, 2, 6> Jc = -J * WebBADpose(Xc);
+                Hcc[r].noalias() += w * Jc.transpose() * Jc;
+                bc[r].noalias() -= w * Jc.transpose() * e;
+                Hcp[i].noalias() = w * Jc.transpose() * Jp;
+            }
+        }
+        const double iniChi = currentChi;
+        if(it == 0)
+        {
+            double mx = 0;
+            for(const auto& m : Hcc) mx = std::max(mx, m.diagonal().cwiseAbs().maxCoeff());
+            for(const auto& m : Hpp) mx = std::max(mx, m.diagonal().cwiseAbs().maxCoeff());
+            lambda = 1e-5 * mx;
+            ni = 2;
+        }
+        double rho = 0;
+        int q = 0;
+        do
+        {
+            // damped normal equations, points eliminated (Schur complement)
+            S.setZero();
+            for(int r = 0; r < nC; r++)
+            {
+                S.block<6, 6>(6 * r, 6 * r) = Hcc[r];
+                S.block<6, 6>(6 * r, 6 * r).diagonal().array() += lambda;
+                rhs.segment<6>(6 * r) = bc[r];
+            }
+            bool ok = true;
+            for(int p = 0; p < nP && ok; p++)
+            {
+                Eigen::Matrix3d A = Hpp[p];
+                A.diagonal().array() += lambda;
+                Hinv[p] = A.inverse();
+                ok = Hinv[p].allFinite();
+                for(int i = P.start[p]; i < P.start[p + 1]; i++)
+                {
+                    const int ri = P.row[P.obs[i].c];
+                    if(ri < 0)
+                        continue;
+                    Y[i].noalias() = Hcp[i] * Hinv[p];
+                    rhs.segment<6>(6 * ri).noalias() -= Y[i] * bp[p];
+                    for(int j = P.start[p]; j < P.start[p + 1]; j++)
+                    {
+                        const int rj = P.row[P.obs[j].c];
+                        if(rj >= 0)
+                            S.block<6, 6>(6 * ri, 6 * rj).noalias() -= Y[i] * Hcp[j].transpose();
+                    }
+                }
+            }
+            Eigen::VectorXd x;
+            if(ok && nC > 0)
+            {
+                Eigen::LDLT<Eigen::MatrixXd> ldlt(S);
+                x = ldlt.solve(rhs);
+                ok = ldlt.info() == Eigen::Success && x.allFinite();
+            }
+            double tempChi = std::numeric_limits<double>::max(), scale = 1e-3;
+            std::vector<Sophus::SE3d> Tn = P.T;
+            std::vector<Eigen::Vector3d> Xn = P.X;
+            if(ok)
+            {
+                for(int c = 0; c < (int)P.vKF.size(); c++)
+                {
+                    const int r = P.row[c];
+                    if(r < 0)
+                        continue;
+                    dc[r] = x.segment<6>(6 * r);
+                    Eigen::Matrix<double, 6, 1> v;
+                    v << dc[r].tail<3>(), dc[r].head<3>();  // Sophus tangent order: [upsilon, omega]
+                    Tn[c] = Sophus::SE3d::exp(v) * P.T[c];
+                    scale += dc[r].dot(lambda * dc[r] + bc[r]);
+                }
+                for(int p = 0; p < nP; p++)
+                {
+                    Eigen::Vector3d v = bp[p];
+                    for(int i = P.start[p]; i < P.start[p + 1]; i++)
+                    {
+                        const int ri = P.row[P.obs[i].c];
+                        if(ri >= 0)
+                            v.noalias() -= Hcp[i].transpose() * dc[ri];
+                    }
+                    dp[p] = Hinv[p] * v;
+                    Xn[p] = P.X[p] + dp[p];
+                    scale += dp[p].dot(lambda * dp[p] + bp[p]);
+                }
+                ok = std::isfinite(scale);
+                if(ok)
+                    tempChi = WebBACost(P, Tn, Xn);
+            }
+            rho = ok ? (currentChi - tempChi) / scale : -1;
+            if(rho > 0 && std::isfinite(tempChi))
+            {
+                const double alpha = std::min(1.0 - std::pow(2 * rho - 1, 3), 2.0 / 3.0);
+                lambda *= std::max(1.0 / 3.0, alpha);
+                ni = 2;
+                currentChi = tempChi;
+                P.T.swap(Tn);
+                P.X.swap(Xn);
+            }
+            else
+            {
+                lambda *= ni;
+                ni *= 2;
+            }
+            q++;
+        } while(rho < 0 && q < 10);
+        if(q == 10 || rho == 0)
+            break;
+        if((iniChi - currentChi) * 1e3 < iniChi)
+            nBad++;
+        else
+            nBad = 0;
+        if(nBad >= 3)
+            break;
+    }
+    return it;
+}
+
+struct WebLBAFastStats
+{
+    long runs = 0, compared = 0, fallback = 0, outlierMismatch = 0, outliersFast = 0, outliersG2o = 0;
+    double msFast = 0, msG2o = 0, maxRotDeg = 0, sumRotDeg = 0, maxCenterRel = 0, sumCenterRel = 0, sumPointRel = 0,
+           maxPointRel = 0;
+    long nPointsCompared = 0, nCamsCompared = 0;
+};
+WebLBAFastStats& webLBAFastStats()
+{
+    static WebLBAFastStats s;
+    return s;
+}
 }
 #endif
 bool sortByVal(const pair<MapPoint*, int> &a, const pair<MapPoint*, int> &b)
@@ -1522,6 +1796,73 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
         return;
     }
 
+#ifdef ORBSLAM3_WEB
+    // Web.LBA.Fast: 1 = solved without g2o (WebBASolveLM above); 2 = both on the same input, g2o's result kept, the
+    // differences reported (LBAFAST-STATS). Inertial maps and stereo observations always use g2o.
+    const int lbaFast = pMap->IsInertial() ? 0 : webConfig().lbaFast;
+    WebBAProblem webP;
+    bool webFastOk = false;
+    double webFastMs = 0;
+    std::chrono::steady_clock::time_point webG2oStart;
+    if(lbaFast)
+    {
+        if(pbStopFlag && *pbStopFlag)
+            return;
+        const auto tf0 = std::chrono::steady_clock::now();
+        webFastOk = WebBABuild(lLocalKeyFrames, lFixedCameras, lLocalMapPoints, pWebAnchor, pMap, pCurrentMap, webP);
+        const auto tf1 = std::chrono::steady_clock::now();
+        if(webFastOk)
+            WebBASolveLM(webP, webConfig().lbaIterations, lbaFast == 1 ? pbStopFlag : nullptr);
+        const auto tf2 = std::chrono::steady_clock::now();
+        webFastMs = std::chrono::duration<double, std::milli>(tf2 - tf0).count();
+        WebLBAFastStats& fs = webLBAFastStats();
+        if(!webFastOk)
+            fs.fallback++;
+        if(webFastOk && lbaFast == 1)
+        {
+            vector<pair<KeyFrame*, MapPoint*>> vErase;  // outliers at the final estimate (as the g2o path below)
+            for(const WebBAObs& o : webP.obs)
+            {
+                const Eigen::Vector3d Xc = webP.T[o.c] * webP.X[o.p];
+                if(o.w * (o.uv - o.cam->project(Xc)).squaredNorm() > 5.991 || Xc(2) <= 0)
+                    vErase.push_back(make_pair(webP.vKF[o.c], webP.vMP[o.p]));
+            }
+            {
+                unique_lock<mutex> lock(pMap->mMutexMapUpdate);
+                for(const auto& kp : vErase)
+                {
+                    kp.first->EraseMapPointMatch(kp.second);
+                    kp.second->EraseObservation(kp.first);
+                }
+                for(size_t c = 0; c < lLocalKeyFrames.size(); c++)
+                    webP.vKF[c]->SetPose(webP.T[c].cast<float>());
+                for(size_t p = 0; p < webP.vMP.size(); p++)
+                {
+                    webP.vMP[p]->SetWorldPos(webP.X[p].cast<float>());
+                    webP.vMP[p]->UpdateNormalAndDepth();
+                }
+                pMap->IncreaseChangeIndex();
+            }
+            fs.runs++;
+            fs.msFast += webFastMs;
+            fs.outliersFast += (long)vErase.size();
+            webScope.ran = true;
+            WebLBAProfile& pr = webLBAProfile();
+            pr.runs++;
+            pr.buildMs += std::chrono::duration<double, std::milli>(tf1 - webScope.t0).count();
+            pr.optMs += std::chrono::duration<double, std::milli>(tf2 - tf1).count();
+            pr.edges += (long)webP.obs.size();
+            pr.points += (long)webP.vMP.size();
+            pr.kfs += (long)webP.vKF.size();
+            num_OptKF = (int)lLocalKeyFrames.size();
+            num_MPs = (int)webP.vMP.size();
+            num_edges = (int)webP.obs.size();
+            return;
+        }
+        webG2oStart = std::chrono::steady_clock::now();
+    }
+#endif
+
     // Setup optimizer
     g2o::SparseOptimizer optimizer;
     g2o::BlockSolver_6_3::LinearSolverType * linearSolver;
@@ -1860,7 +2201,63 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
     }
 
     pMap->IncreaseChangeIndex();
+#ifdef ORBSLAM3_WEB
+    if(lbaFast == 2 && webFastOk)
+    {
+        // compare mode: the fast solver's estimate (webP) against g2o's (just applied)
+        WebLBAFastStats& fs = webLBAFastStats();
+        fs.compared++;
+        fs.msFast += webFastMs;
+        fs.msG2o += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - webG2oStart).count();
+        const double depth = std::max(1e-6f, pKF->ComputeSceneMedianDepth(2));
+        for(size_t c = 0; c < lLocalKeyFrames.size(); c++)
+        {
+            if(webP.row[c] < 0)
+                continue;
+            const Sophus::SE3d TG = webP.vKF[c]->GetPose().cast<double>();
+            const double rot = (TG.so3().inverse() * webP.T[c].so3()).log().norm() * 180.0 / M_PI;
+            const double cen = (TG.inverse().translation() - webP.T[c].inverse().translation()).norm() / depth;
+            fs.sumRotDeg += rot; fs.maxRotDeg = std::max(fs.maxRotDeg, rot);
+            fs.sumCenterRel += cen; fs.maxCenterRel = std::max(fs.maxCenterRel, cen);
+            fs.nCamsCompared++;
+        }
+        for(size_t p = 0; p < webP.vMP.size(); p++)
+        {
+            const double d = (webP.vMP[p]->GetWorldPos().cast<double>() - webP.X[p]).norm() / depth;
+            fs.sumPointRel += d; fs.maxPointRel = std::max(fs.maxPointRel, d);
+            fs.nPointsCompared++;
+        }
+        std::set<pair<KeyFrame*, MapPoint*>> sG2o(vToErase.begin(), vToErase.end());
+        long nFast = 0;
+        for(const WebBAObs& o : webP.obs)
+        {
+            const Eigen::Vector3d Xc = webP.T[o.c] * webP.X[o.p];
+            const bool out = o.w * (o.uv - o.cam->project(Xc)).squaredNorm() > 5.991 || Xc(2) <= 0;
+            nFast += out;
+            if(out != (sG2o.count(make_pair(webP.vKF[o.c], webP.vMP[o.p])) > 0))
+                fs.outlierMismatch++;
+        }
+        fs.outliersFast += nFast;
+        fs.outliersG2o += (long)sG2o.size();
+    }
+#endif
 }
+
+#ifdef ORBSLAM3_WEB
+void webPrintLBAFastStats()
+{
+    const WebLBAFastStats& s = webLBAFastStats();
+    const long n = s.runs + s.compared;
+    if(!n && !s.fallback)
+        return;
+    cout << "LBAFAST-STATS runs=" << s.runs << " compared=" << s.compared << " fallback_g2o=" << s.fallback
+         << " fast_ms_mean=" << (n ? s.msFast / n : 0.0) << " g2o_ms_mean=" << (s.compared ? s.msG2o / s.compared : 0.0)
+         << " rot_deg_mean=" << (s.nCamsCompared ? s.sumRotDeg / s.nCamsCompared : 0.0) << " rot_deg_max=" << s.maxRotDeg
+         << " center_rel_mean=" << (s.nCamsCompared ? s.sumCenterRel / s.nCamsCompared : 0.0) << " center_rel_max=" << s.maxCenterRel
+         << " point_rel_mean=" << (s.nPointsCompared ? s.sumPointRel / s.nPointsCompared : 0.0) << " point_rel_max=" << s.maxPointRel
+         << " outliers_fast=" << s.outliersFast << " outliers_g2o=" << s.outliersG2o << " outlier_mismatch=" << s.outlierMismatch << endl;
+}
+#endif
 
 
 void Optimizer::OptimizeEssentialGraph(Map* pMap, KeyFrame* pLoopKF, KeyFrame* pCurKF,

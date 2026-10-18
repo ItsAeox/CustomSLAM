@@ -537,6 +537,7 @@ void System::Shutdown()
                  << " rest_ms=" << (p.totalMs - p.buildMs - p.optMs) / p.runs << " total_ms=" << p.totalMs / p.runs
                  << " edges=" << p.edges / p.runs << " points=" << p.points / p.runs << " kfs=" << p.kfs / p.runs << endl;
     }
+    webPrintLBAFastStats();
     if(webConfig().rotFar)
         cout << "ROT-STATS far_created=" << mpLocalMapper->mnWebFarCreated << " far_culled=" << mpLocalMapper->mnWebFarCulled << endl;
     if(webConfig().kltEnable)

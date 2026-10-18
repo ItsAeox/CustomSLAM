@@ -46,6 +46,7 @@ namespace ORB_SLAM3
 // update and the graph teardown. Mapping thread only.
 struct WebLBAProfile { long runs = 0; double buildMs = 0, optMs = 0, totalMs = 0; long edges = 0, points = 0, kfs = 0; };
 WebLBAProfile& webLBAProfile();
+void webPrintLBAFastStats();  // Web.LBA.Fast statistics (LBAFAST-STATS at shutdown)
 #endif
 
 class LoopClosing;

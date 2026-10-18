@@ -18,6 +18,8 @@ struct WebConfig
     int lbaMaxOptKFs = 0;      // Web.LBA.MaxOptKFs: optimised keyframes in local BA, best-covisible first (0 = all, stock)
     int lbaMaxFixedKFs = 0;    // Web.LBA.MaxFixedKFs: fixed keyframes, most observations of local points first (0 = all, stock)
     int lbaIterations = 10;    // Web.LBA.Iterations: Levenberg-Marquardt iterations of local BA (stock 10)
+    int lbaFast = 0;           // Web.LBA.Fast: local BA of monocular visual-only maps without a g2o graph (Optimizer.cc
+                               // WebBASolveLM): 1 = used, 2 = both solved, g2o kept, differences reported (check)
     int mappingNeighbors = 0;  // Web.Mapping.Neighbors: covisible keyframes for triangulation / fusion (0 = stock: 30 mono)
     int descriptor = 0;        // Web.Descriptor: 0 = ORB (rotated BRIEF, stock), 1 = TEBLID-256 (needs a TEBLID vocabulary)
     int orbParallel = 0;       // Web.ORB.Parallel: the pyramid levels of ORB extraction (FAST + octree + orientation,
@@ -143,6 +145,7 @@ inline void loadWebConfig(const std::string& settingsFile)
     readInt("Web.LBA.MaxOptKFs", c.lbaMaxOptKFs);
     readInt("Web.LBA.MaxFixedKFs", c.lbaMaxFixedKFs);
     readInt("Web.LBA.Iterations", c.lbaIterations);
+    readInt("Web.LBA.Fast", c.lbaFast);
     readInt("Web.Mapping.Neighbors", c.mappingNeighbors);
     readInt("Web.Descriptor", c.descriptor);
     readInt("Web.ORB.Parallel", c.orbParallel);
@@ -228,6 +231,7 @@ inline void loadWebConfig(const std::string& settingsFile)
               << (c.kfRefRatio > 0 ? "; KF ref ratio " + std::to_string(c.kfRefRatio) : std::string())
               << (c.kfBusyQueue > 0 ? "; keyframes queued while mapping is busy (up to " + std::to_string(c.kfBusyQueue) + ")" : std::string())
               << (c.mapFuseQueued ? "; fusion also for queued keyframes" : "")
+              << (c.lbaFast ? (c.lbaFast == 1 ? "; fast local BA" : "; fast local BA (compare with g2o)") : "")
               << (c.cullRedundancy > 0 ? "; KF cull redundancy " + std::to_string(c.cullRedundancy) : std::string())
               << (c.coast ? "; coast " + std::to_string(c.coastMaxTime) + " s, " + std::to_string(c.coastMinInliers) + " inliers"
                           : std::string())
