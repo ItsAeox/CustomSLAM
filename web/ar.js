@@ -513,7 +513,7 @@ async function start() {
   inertial = opts.imu === 'on';  // the options may have changed since the page loaded
   rec = opts.rec === 'on';
   replay = !!params.get('seq');
-  gyroOn = (opts.gyro === 'on' || opts.init === 'gyro') && !inertial;  // dataset / recording: its own IMU (seq branch)
+  gyroOn = (opts.gyro === 'on' || opts.init === 'gyro' || (opts.bridge && opts.bridge !== 'off')) && !inertial;  // dataset / recording: its own IMU (seq branch)
   holdOn = opts.hold === 'gyro' && (!params.get('seq') || params.get('holdtest') === '1');  // holdtest: run the code on a dataset (no gyro: held = last pose)
   try {
     if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
@@ -701,7 +701,7 @@ async function start() {
     }, 3000);
     const slam = createSlamWorker((s) => {
       console.log(s);
-      if (!/Web config|ERROR|Map|map|Loading|loaded|[Rr]eloc|[Ll]ost|[Rr]eset|[Mm]erg|[Ll]oop|Fail|Not enough|initiali|IMU|scale too small|[Tt]imestamp|VIBA|Bundle/.test(s)) return;
+      if (!/Web config|ERROR|Map|map|Loading|loaded|[Rr]eloc|[Ll]ost|[Rr]eset|[Mm]erg|[Ll]oop|Fail|Not enough|initiali|IMU|scale too small|[Tt]imestamp|VIBA|Bundle|TURN bridge|Recovered by coasting/.test(s)) return;
       if (s === lastSlamLine) { slamRepeats++; return; }  // e.g. "Lost for a short time" on every frame
       if (slamRepeats) tele(`slam: (previous line ${slamRepeats} more times)`);
       lastSlamLine = s; slamRepeats = 0;
