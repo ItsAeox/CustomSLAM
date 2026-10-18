@@ -1,0 +1,4 @@
+# Phone recordings exported to GitHub Pages by scripts/build_pages.sh (gray frames, ~22 KB each; all 13 = ~410 MB)
+rec_20261018_184922
+rec_20261018_185037
+rec_20261018_185134

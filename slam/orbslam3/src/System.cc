@@ -530,6 +530,13 @@ void System::Shutdown()
 #ifdef ORBSLAM3_WEB
     cout << "LM-STATS keyframes=" << mpLocalMapper->mnDiagKFs << " lba_done=" << mpLocalMapper->mnDiagLBADone
          << " lba_aborted=" << mpLocalMapper->mnDiagLBAAborted << " lba_skipped_newkf=" << mpLocalMapper->mnDiagLBASkipped << endl;
+    {
+        const WebLBAProfile& p = webLBAProfile();
+        if(p.runs)
+            cout << "LBA-PROFILE runs=" << p.runs << " build_ms=" << p.buildMs / p.runs << " opt_ms=" << p.optMs / p.runs
+                 << " rest_ms=" << (p.totalMs - p.buildMs - p.optMs) / p.runs << " total_ms=" << p.totalMs / p.runs
+                 << " edges=" << p.edges / p.runs << " points=" << p.points / p.runs << " kfs=" << p.kfs / p.runs << endl;
+    }
     if(webConfig().rotFar)
         cout << "ROT-STATS far_created=" << mpLocalMapper->mnWebFarCreated << " far_culled=" << mpLocalMapper->mnWebFarCulled << endl;
     if(webConfig().kltEnable)

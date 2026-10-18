@@ -48,6 +48,25 @@
 
 namespace ORB_SLAM3
 {
+#ifdef ORBSLAM3_WEB
+WebLBAProfile& webLBAProfile()
+{
+    static WebLBAProfile p;
+    return p;
+}
+namespace {
+struct WebLBAScope  // declared before the g2o optimizer: its destructor runs after the graph teardown
+{
+    std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+    bool ran = false;
+    ~WebLBAScope()
+    {
+        if(ran)
+            webLBAProfile().totalMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    }
+};
+}
+#endif
 bool sortByVal(const pair<MapPoint*, int> &a, const pair<MapPoint*, int> &b)
 {
     return (a.second < b.second);
@@ -1376,6 +1395,9 @@ int Optimizer::PoseOptimization(Frame *pFrame)
 
 void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap, int& num_fixedKF, int& num_OptKF, int& num_MPs, int& num_edges)
 {
+#ifdef ORBSLAM3_WEB
+    WebLBAScope webScope;
+#endif
     // Local KeyFrames: First Breath Search from Current Keyframe
     list<KeyFrame*> lLocalKeyFrames;
 
@@ -1733,9 +1755,22 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
         if(*pbStopFlag)
             return;
 
+#ifdef ORBSLAM3_WEB
+    const auto webBuilt = std::chrono::steady_clock::now();
+    webScope.ran = true;
+    {
+        WebLBAProfile& pr = webLBAProfile();
+        pr.runs++;
+        pr.buildMs += std::chrono::duration<double, std::milli>(webBuilt - webScope.t0).count();
+        pr.edges += nEdges;
+        pr.points += (long)lLocalMapPoints.size();
+        pr.kfs += (long)(lLocalKeyFrames.size() + lFixedCameras.size());
+    }
+#endif
     optimizer.initializeOptimization();
 #ifdef ORBSLAM3_WEB
     optimizer.optimize(webConfig().lbaIterations);  // stock: 10
+    webLBAProfile().optMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - webBuilt).count();
 #else
     optimizer.optimize(10);
 #endif

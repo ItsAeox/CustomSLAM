@@ -40,6 +40,13 @@
 
 namespace ORB_SLAM3
 {
+#ifdef ORBSLAM3_WEB
+// web port diagnostics: where local BA time goes (Optimizer::LocalBundleAdjustment; LBA-PROFILE at shutdown).
+// build = local window + g2o graph, opt = initializeOptimization + optimize, total includes the outlier pass, the map
+// update and the graph teardown. Mapping thread only.
+struct WebLBAProfile { long runs = 0; double buildMs = 0, optMs = 0, totalMs = 0; long edges = 0, points = 0, kfs = 0; };
+WebLBAProfile& webLBAProfile();
+#endif
 
 class LoopClosing;
 
