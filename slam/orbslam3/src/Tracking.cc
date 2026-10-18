@@ -4325,6 +4325,9 @@ bool Tracking::NeedNewKeyFrame()
         else
         {
             mpLocalMapper->InterruptBA();
+#ifdef ORBSLAM3_WEB
+            mnWebKFBusy++;  // a keyframe was due but local mapping was busy
+#endif
             if(mSensor!=System::MONOCULAR  && mSensor!=System::IMU_MONOCULAR)
             {
                 if(mpLocalMapper->KeyframesInQueue()<3)

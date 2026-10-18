@@ -376,11 +376,17 @@ void LocalMapping::MapPointCulling()
         {
             pMP->SetBadFlag();
             lit = mlpRecentAddedMapPoints.erase(lit);
+#ifdef ORBSLAM3_WEB
+            mnDiagCulledRatio++;
+#endif
         }
         else if(((int)nCurrentKFid-(int)pMP->mnFirstKFid)>=2 && pMP->Observations()<=cnThObs)
         {
             pMP->SetBadFlag();
             lit = mlpRecentAddedMapPoints.erase(lit);
+#ifdef ORBSLAM3_WEB
+            mnDiagCulledObs++;
+#endif
         }
         else if(((int)nCurrentKFid-(int)pMP->mnFirstKFid)>=3)
             lit = mlpRecentAddedMapPoints.erase(lit);
@@ -1185,6 +1191,9 @@ void LocalMapping::KeyFrameCulling()
             else
             {
                 pKF->SetBadFlag();
+#ifdef ORBSLAM3_WEB
+                mnDiagCulledKFs++;
+#endif
             }
         }
         if((count > 20 && mbAbortBA) || count>100)

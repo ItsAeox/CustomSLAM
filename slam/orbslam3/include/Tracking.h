@@ -147,6 +147,7 @@ public:
     long mnWebCoastTries = 0, mnWebCoastRecoveries = 0, mnWebRelocRecoveries = 0;  // Web.Track.Coast statistics
     long mnWebLKCalls = 0, mnWebLKPoints = 0, mnWebLKMismatch = 0;  // Web.KLT.Parallel compare mode
     long mnWebCovKFs = 0;  // keyframes requested by Web.KF.Coverage
+    long mnWebKFBusy = 0;  // NeedNewKeyFrame: a keyframe was due while local mapping was busy (diagnostics, --trace)
     size_t WebLocalMapSize() const { return mvpLocalMapPoints.size(); }  // diagnostics (orbslam3_run --trace)
     double mdWebLKSerialMs = 0, mdWebLKParallelMs = 0;
     // room map reload (System::WebLoadMap): the first frames relocalise into the loaded map instead of initialising

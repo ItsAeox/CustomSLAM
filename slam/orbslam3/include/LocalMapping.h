@@ -68,6 +68,8 @@ public:
     // web port diagnostics: local-mapping activity counters (read at shutdown)
     int mnDiagKFs = 0, mnDiagLBADone = 0, mnDiagLBAAborted = 0, mnDiagLBASkipped = 0;
     long mnDiagNewMPs = 0;  // map points triangulated by CreateNewMapPoints (cumulative; --trace)
+    long mnDiagCulledRatio = 0, mnDiagCulledObs = 0;  // new points culled: found ratio < 0.25 / too few observations
+    long mnDiagCulledKFs = 0;  // keyframes culled as redundant (visual KeyFrameCulling)
     long mnWebFarCreated = 0, mnWebFarCulled = 0;  // Web.Rot.FarPoints statistics
 #endif
     void SetAcceptKeyFrames(bool flag);

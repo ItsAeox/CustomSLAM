@@ -472,7 +472,9 @@ int main(int argc, char** argv) {
         tr << " " << F.N << " " << (tk->mbWebKLTFrame ? 1 : 0) << " " << tk->WebLocalMapSize() << " "
            << (m ? m->KeyFramesInMap() : 0) << " " << (m ? m->MapPointsInMap() : 0) << " " << lm->KeyframesInQueue() << " "
            << (lm->AcceptKeyFrames() ? 1 : 0) << " " << lm->mnDiagNewMPs << " " << textured << " " << untracked
-           << " " << tk->mnWebBridges << " " << tk->WebOldPointsTracked();  // + turn bridges so far, points from before the latest
+           << " " << tk->mnWebBridges << " " << tk->WebOldPointsTracked()  // + turn bridges so far, points from before the latest
+           << " " << lm->mnDiagCulledRatio << " " << lm->mnDiagCulledObs << " " << lm->mnDiagCulledKFs << " " << tk->mnWebKFBusy;
+           // + new points culled (found ratio / observations), keyframes culled, keyframes due while mapping was busy
       }
 #endif
       tr << "\n";
