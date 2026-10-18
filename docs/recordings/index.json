@@ -1,0 +1,29 @@
+[
+ {
+  "dataset": "phone",
+  "name": "rec_20261018_184922",
+  "settings": "recordings/rec_20261018_184922/settings.yaml",
+  "clahe": false,
+  "gt": null,
+  "label": "walkaround: tap, walk around the tree, look back, return",
+  "frames": 1770
+ },
+ {
+  "dataset": "phone",
+  "name": "rec_20261018_185037",
+  "settings": "recordings/rec_20261018_185037/settings.yaml",
+  "clahe": false,
+  "gt": null,
+  "label": "pan: tap on the bed, slow pan to the PC and back",
+  "frames": 997
+ },
+ {
+  "dataset": "phone",
+  "name": "rec_20261018_185134",
+  "settings": "recordings/rec_20261018_185134/settings.yaml",
+  "clahe": false,
+  "gt": null,
+  "label": "roll: rolls",
+  "frames": 885
+ }
+]

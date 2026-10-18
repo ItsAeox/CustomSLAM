@@ -525,17 +525,21 @@ async function start() {
     const hfov = Number($('fov').value);
     if (seq) {
       const [dataset, name] = seq.split('/');
-      const info = (await (await fetch('/api/sequences')).json()).find((s) => s.dataset === dataset && s.name === name);
-      const man = await (await fetch(`/api/sequence?dataset=${dataset}&name=${encodeURIComponent(name)}`)).json();
+      // GitHub Pages (no local server): recordings exported as static files (scripts/export_recordings.py)
+      const rec = !location.pathname.startsWith('/web/') && dataset === 'phone' ? `recordings/${encodeURIComponent(name)}` : null;
+      const info = rec ? (await (await fetch('recordings/index.json')).json()).find((s) => s.name === name)
+        : (await (await fetch('/api/sequences')).json()).find((s) => s.dataset === dataset && s.name === name);
+      if (!info) throw new Error(`recording ${name} is not available here`);
+      const man = await (await fetch(rec ? `${rec}/manifest.json` : `/api/sequence?dataset=${dataset}&name=${encodeURIComponent(name)}`)).json();
       // gravity from the dataset IMU (EuRoC / TUM-VI): the accelerometer averaged over +-0.25 s around the frame,
       // rotated into the camera frame (R_cb). At rest it is the reaction to gravity, so "down" = -a. noimu=1: none.
-      const imu = params.get('noimu') ? null : await fetch(`/api/imu?dataset=${dataset}&name=${encodeURIComponent(name)}`)
+      const imu = params.get('noimu') ? null : await fetch(rec ? `${rec}/imu.json` : `/api/imu?dataset=${dataset}&name=${encodeURIComponent(name)}`)
         .then((r) => (r.ok ? r.json() : null)).catch(() => null);
-      const imuRaw = (inertial || gyroOn) ? await fetch(`/api/imu?dataset=${dataset}&name=${encodeURIComponent(name)}&raw=1`)
+      const imuRaw = (inertial || gyroOn) ? await fetch(rec ? `${rec}/imu_raw.json` : `/api/imu?dataset=${dataset}&name=${encodeURIComponent(name)}&raw=1`)
         .then((r) => (r.ok ? r.json() : null)).catch(() => null) : null;  // gyro presets: the gyro prior needs IMU.T_b_c1 in the settings (recordings have it)
       // recordings (record.html): the taps, replayed at their time and image position (same tree placement for every preset)
       if (dataset === 'phone') {
-        const txt = await fetch(`/datasets/phone/${encodeURIComponent(name)}/touches.csv`).then((r) => (r.ok ? r.text() : '')).catch(() => '');
+        const txt = await fetch(rec ? `${rec}/touches.csv` : `/datasets/phone/${encodeURIComponent(name)}/touches.csv`).then((r) => (r.ok ? r.text() : '')).catch(() => '');
         replayTaps = txt.split(/\r?\n/).filter((l) => l && !l.startsWith('#')).map((l) => {
           const [t, u, v] = l.split(','); return { t: Number(BigInt(t) - BigInt(Math.round(man.tBase * 1e9))) * 1e-9, u: Number(u), v: Number(v) };
         });

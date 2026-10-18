@@ -45,7 +45,7 @@
 
   <section class="dev" hidden>
     <h2>Your recordings in the AR page</h2>
-    <p class="note">Plays a recording as the camera, with its gyro and taps ("Hybrid, fastest" preset; change it on the start screen).</p>
+    <p class="note" id="recsNote">Plays a recording as the camera, with its gyro and taps ("Fastest + gyro recovery" preset; change it on the start screen).</p>
     <div class="recs" id="recs"></div>
   </section>
 
@@ -67,6 +67,26 @@
     ? 'Local development server: datasets, recordings and result uploads available.'
     : 'GitHub Pages: phone pages and the viewer with the device camera. Recording and datasets need the local server.';
   if (!DEV) document.getElementById('viewerNote').textContent = '3D map, current frame and tracking time with the device camera.';
+  const REC_OPTS = 'kltmax=4&motion=time&map=light&gyro=on&recover=coast&hold=gyro';  // "Fastest + gyro recovery"
+  if (!DEV) {
+    (async () => {  // GitHub Pages: recordings exported as static files (scripts/export_recordings.py)
+      const r = await fetch('recordings/index.json').catch(() => null);
+      if (!r || !r.ok) return;
+      const recs = await r.json();
+      const box = document.getElementById('recs');
+      for (const s of recs) {
+        const a = document.createElement('a');
+        a.className = 'card';
+        a.href = `ar.html?seq=phone/${encodeURIComponent(s.name)}&${REC_OPTS}`;
+        a.innerHTML = `<b>${s.name.replace('rec_', '')}</b><span>${s.label} (${s.frames} frames)</span>`;
+        box.append(a);
+      }
+      if (box.children.length) {
+        box.closest('section').hidden = false;
+        document.getElementById('recsNote').textContent += ' The frames load from GitHub while it plays; gray images.';
+      }
+    })();
+  }
   if (DEV) {
     for (const el of document.querySelectorAll('.dev')) el.hidden = false;
     (async () => {  // recordings (datasets/phone) with their labels (labels.txt: name level scenario ...)
@@ -84,7 +104,7 @@
       for (const s of seqs.filter((x) => x.dataset === 'phone' && x.name.startsWith('rec_'))) {
         const a = document.createElement('a');
         a.className = 'card';
-        a.href = `ar.html?seq=phone/${encodeURIComponent(s.name)}&kltmax=4&motion=time&map=light`;
+        a.href = `ar.html?seq=phone/${encodeURIComponent(s.name)}&${REC_OPTS}`;
         a.innerHTML = `<b>${s.name.replace('rec_', '')}</b><span>${labels[s.name] || 'recording'}</span>`;
         box.append(a);
       }
