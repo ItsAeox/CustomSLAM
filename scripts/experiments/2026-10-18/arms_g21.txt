@@ -1,0 +1,3 @@
+# replay_arms.sh arms: before/after check of the relocalisation fix (cb0e24d) against replays_1018_arms (e87bf6c)
+fast|fast|
+grecover_dt|grecover|Web.Gyro.TimeOffset: -0.088
