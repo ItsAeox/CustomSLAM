@@ -189,7 +189,11 @@ let sequences = [];
 let run = null;  // { worker, stop, paused, resume }
 
 async function loadSequences() {
-  sequences = await (await fetch('/api/sequences')).json();
+  try {  // the dev server (web/serve.py) lists datasets; on GitHub Pages there is none: device camera only
+    const r = await fetch('/api/sequences');
+    sequences = r.ok ? await r.json() : [];
+  } catch { sequences = []; }
+  if (!sequences.length) { $('save').checked = false; $('save').disabled = true; }
   const sel = $('seq');
   const groups = {};
   for (const s of sequences) {
@@ -498,10 +502,12 @@ async function start() {
     }
     if ($('save').checked) {
       const base = `${name}_viewer_seed${seed}`;
-      await upload(`${base}_final.txt`, '# t tx ty tz qx qy qz qw\n' + finalTum);
-      await upload(`${base}_live.txt`, liveAll.join('\n') + '\n');
-      await upload(`${base}_timing.csv`, timing.join('\n') + '\n');
-      log(`saved results/browser/${base}_{final,live,timing}`);
+      try {
+        await upload(`${base}_final.txt`, '# t tx ty tz qx qy qz qw\n' + finalTum);
+        await upload(`${base}_live.txt`, liveAll.join('\n') + '\n');
+        await upload(`${base}_timing.csv`, timing.join('\n') + '\n');
+        log(`saved results/browser/${base}_{final,live,timing}`);
+      } catch (e) { log(`not saved (needs the dev server): ${e.message}`); }
     }
   }
   setStatus(run.stop ? 'stopped' : `done: ${tracked} tracked frames, median track ${pct(trackMs, 0.5).toFixed(1)} ms`);

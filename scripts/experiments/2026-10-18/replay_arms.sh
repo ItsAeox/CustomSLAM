@@ -1,25 +1,26 @@
 #!/usr/bin/env bash
 # Phone recordings (datasets/phone/labels.txt) through settings variants made from a page preset plus extra lines, WASM
 # runner, live@1.0, seeds 1-2, 4 at a time; then summary_presets.py. Each arm: name|preset|extra lines separated by ';'.
-# Usage: replay_arms.sh <snapshot tag> <out dir> "<arm>" ...
+# Usage: replay_arms.sh <snapshot tag> <out dir> <arms file>   (one arm per line; # comments)
 #   e.g. "fast_cov|fast|Web.KF.Coverage: 0.4"   "grecover_dt|grecover|Web.Gyro.TimeOffset: -0.088"
 set -uo pipefail
 cd /mnt/h/Research/CustomSLAM
-TAG=$1 O=$2; shift 2
+TAG=$1 O=$2 ARMSFILE=$3
 NODE=/opt/slam/emsdk/node/24.19.0_64bit/bin/node; JS=/root/build/snap-$TAG/wasm/orbslam3_run.js
 PH=/mnt/h/Research/datasets/phone; V=/mnt/h/Research/vocab
 RECS=$(awk '!/^#/ && NF {print $1}' $PH/labels.txt)
 mkdir -p $O
 echo "=== start $(date +%T) binary $JS"
 ARMS=()
-for spec in "$@"; do
+while IFS= read -r spec; do
+  [[ -z "$spec" || "$spec" == \#* ]] && continue
   IFS='|' read -r name preset extra <<< "$spec"; ARMS+=("$name")
   for r in $RECS; do
     mkdir -p $O/$r/settings
     [ -s $O/$r/settings/${r}_page-$preset.yaml ] || $NODE scripts/page_presets.mjs --base $PH/$r/settings.yaml --name $r $O/$r/settings $preset > /dev/null
     { cat $O/$r/settings/${r}_page-$preset.yaml; echo; echo "# replay_arms.sh: $name"; echo "$extra" | tr ';' '\n' | sed 's/^ *//'; } > $O/$r/settings/${r}_arm-$name.yaml
   done
-done
+done < $ARMSFILE
 jobs_list=()
 for r in $RECS; do for a in "${ARMS[@]}"; do for s in 1 2; do jobs_list+=("$r $a $s"); done; done; done
 run_one() {
