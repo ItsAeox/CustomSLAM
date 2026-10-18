@@ -31,6 +31,7 @@ export const OPTIONS = [
   { key: 'kltnorm', label: 'KLT exposure normalisation', values: [['off', 'off'], ['on', 'on (cancels exposure changes)']], def: 'off', when: (o) => o.tracker === 'klt' },
   { key: 'pose', label: 'Pose solver', values: [['g2o', 'g2o (original)'], ['fast', 'fast (same result, no g2o graph)']], def: 'g2o' },
   { key: 'orbpar', label: 'ORB extraction', values: [['serial', 'one thread (original)'], ['parallel', 'pyramid levels in parallel']], def: 'serial' },
+  { key: 'orbspread', label: 'ORB keypoint spreading', values: [['octree', 'octree (original)'], ['ssc', 'square covering (SSC: strongest corners, evenly spaced)']], def: 'octree' },
   { key: 'recover', label: 'Recovery when lost', values: [['bow', 'bag-of-words relocalisation (original)'], ['coast', 'local-map search first, then bag of words']], def: 'bow' },
   { key: 'init', label: 'Map start', values: [['stock', 'original thresholds'], ['quick', 'quicker (60 matches, 0.5°, 40 points)'], ['gyro', 'gyro two-view (+ gyro prior)']], def: 'stock' },
   { key: 'kf', label: 'Keyframes', values: [['stock', 'original'], ['fewer', 'fewer (ratio 0.8)']], def: 'stock' },
@@ -139,6 +140,7 @@ export function applyOptions(yaml, o) {
   if (o.rot === 'inf3') extra.push('Web.Rot.FarPoints: 3');  // + kept out of relocalisation, Sim3 and keyframe culling
   if (o.pose === 'fast') extra.push('Web.Track.FastPose: 1');
   if (o.orbpar === 'parallel') extra.push('Web.ORB.Parallel: 1');
+  if (o.orbspread === 'ssc') extra.push('Web.ORB.SSC: 1');  // ORBextractor.cc WebSSC instead of DistributeOctTree
   if (o.recover === 'coast') extra.push('Web.Track.Coast: 2', 'Web.Track.CoastTime: 3');  // 3 s: looking away and back (gyro)
   if (o.init === 'quick') extra.push('Web.Init.MinMatches: 60', 'Web.Init.MinParallax: 0.5', 'Web.Init.MinTriangulated: 40');
   if (o.init === 'gyro' && o.imu !== 'on') extra.push('Web.Init.Gyro: 1');

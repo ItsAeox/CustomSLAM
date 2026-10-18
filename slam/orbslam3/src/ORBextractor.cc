@@ -148,7 +148,7 @@ static vector<cv::KeyPoint> WebSSC(vector<cv::KeyPoint> kps, int N, int cols, in
 #ifdef REGISTER_TIMES
     // web port (profiling builds only): per-stage ORB extraction times, printed as "ORB-PROF" every 300 frames
     namespace {
-        struct OrbProf { double pyramid = 0, fast = 0, orient = 0, blur = 0, desc = 0; long n = 0; };
+        struct OrbProf { double pyramid = 0, fast = 0, orient = 0, blur = 0, desc = 0, distrib = 0; long n = 0, cands = 0, kept = 0; };
         OrbProf gOrbProf;
         inline double orbMsSince(const std::chrono::steady_clock::time_point& t)
         {
@@ -880,6 +880,10 @@ static vector<cv::KeyPoint> WebSSC(vector<cv::KeyPoint> kps, int N, int cols, in
 
         const float W = 35;
 
+#ifdef REGISTER_TIMES
+        vector<double> vDistribMs(nlevels, 0.0);  // per level, so the parallel-levels path needs no locking
+        vector<long> vCands(nlevels, 0);
+#endif
         auto levelKeys = [&](int level)
         {
             const int minBorderX = EDGE_THRESHOLD-3;
@@ -969,6 +973,10 @@ static vector<cv::KeyPoint> WebSSC(vector<cv::KeyPoint> kps, int N, int cols, in
 
             vector<KeyPoint> & keypoints = allKeypoints[level];
             keypoints.reserve(nfeatures);
+#ifdef REGISTER_TIMES
+            const auto tDist = std::chrono::steady_clock::now();
+            vCands[level] = (long)vToDistributeKeys.size();
+#endif
 
 #ifdef ORBSLAM3_WEB
             if(webConfig().orbSSC)  // Web.ORB.SSC (coordinates are relative to the border here, as for the octree)
@@ -977,6 +985,9 @@ static vector<cv::KeyPoint> WebSSC(vector<cv::KeyPoint> kps, int N, int cols, in
 #endif
             keypoints = DistributeOctTree(vToDistributeKeys, minBorderX, maxBorderX,
                                           minBorderY, maxBorderY,mnFeaturesPerLevel[level], level);
+#ifdef REGISTER_TIMES
+            vDistribMs[level] = orbMsSince(tDist);
+#endif
 
             const int scaledPatchSize = PATCH_SIZE*mvScaleFactor[level];
 
@@ -990,6 +1001,11 @@ static vector<cv::KeyPoint> WebSSC(vector<cv::KeyPoint> kps, int N, int cols, in
                 keypoints[i].size = scaledPatchSize;
             }
         };
+#ifdef REGISTER_TIMES
+        auto addDistrib = [&]() {  // octree (or SSC) share of "fast+octree"; summed over levels, so CPU time when parallel
+            for (int level = 0; level < nlevels; ++level) { gOrbProf.distrib += vDistribMs[level]; gOrbProf.cands += vCands[level]; }
+        };
+#endif
 #ifdef ORBSLAM3_WEB
         // web port (Web.ORB.Parallel): levels are independent (own image, own output vector)
         if(webConfig().orbParallel)
@@ -998,11 +1014,17 @@ static vector<cv::KeyPoint> WebSSC(vector<cv::KeyPoint> kps, int N, int cols, in
                 levelKeys(level);
                 computeOrientation(mvImagePyramid[level], allKeypoints[level], umax);
             });
+#ifdef REGISTER_TIMES
+            addDistrib();
+#endif
             return;
         }
 #endif
         for (int level = 0; level < nlevels; ++level)
             levelKeys(level);
+#ifdef REGISTER_TIMES
+        addDistrib();
+#endif
 
         // compute orientations
 #ifdef REGISTER_TIMES
@@ -1236,6 +1258,9 @@ static vector<cv::KeyPoint> WebSSC(vector<cv::KeyPoint> kps, int N, int cols, in
         int nkeypoints = 0;
         for (int level = 0; level < nlevels; ++level)
             nkeypoints += (int)allKeypoints[level].size();
+#ifdef REGISTER_TIMES
+        gOrbProf.kept += nkeypoints;
+#endif
         if( nkeypoints == 0 )
             _descriptors.release();
         else
@@ -1349,7 +1374,9 @@ static vector<cv::KeyPoint> WebSSC(vector<cv::KeyPoint> kps, int N, int cols, in
         {
             const double n = (double)gOrbProf.n;
             cout << "ORB-PROF frames=" << gOrbProf.n << " ms/frame: pyramid=" << gOrbProf.pyramid / n
-                 << " fast+octree=" << gOrbProf.fast / n << " orientation=" << gOrbProf.orient / n
+                 << " fast+octree=" << gOrbProf.fast / n << " (spread=" << gOrbProf.distrib / n
+                 << " candidates=" << (long)(gOrbProf.cands / n) << " kept=" << (long)(gOrbProf.kept / n)
+                 << ") orientation=" << gOrbProf.orient / n
                  << " blur=" << gOrbProf.blur / n << " descriptors=" << gOrbProf.desc / n << endl;
         }
 #endif
