@@ -70,7 +70,7 @@ export const PRESETS = [
   { key: 'fastflow', label: 'Fastest + 4-thread optical flow', set: { kltmax: '4', motion: 'time', map: 'light', kltpar: 'parallel' },
     note: 'The KLT optical flow split over 4 threads (the browser build of OpenCV runs it on one). Same tracks as one thread; less time per KLT frame.' },
   { key: 'rotate', label: 'Fastest + turning on the spot (prototype)', set: { kltmax: '4', motion: 'time', map: 'light', rot: 'far' },
-    note: 'Prototype: when you turn without moving sideways, new points are added far away (rotation only) instead of none, so tracking does not run out of points. Untested on the phone.' },
+    note: 'Prototype 1: when you turn without moving sideways, new points are added far away instead of none, so tracking does not run out of points. Datasets: same robustness, position error 1.66x. Prototype 2 (points at infinity) is under Algorithm options. Untested on the phone.' },
   { key: 'light', label: 'Light ORB', set: { tracker: 'stock', features: '600', levels: '6' },
     note: 'ORB on every frame with 600 features and 6 pyramid levels (23% less tracking time, same accuracy on EuRoC).' },
   { key: 'imu', label: 'IMU (visual-inertial)', set: { imu: 'on', tracker: 'stock' },
