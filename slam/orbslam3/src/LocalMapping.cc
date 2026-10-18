@@ -1369,6 +1369,10 @@ void LocalMapping::InitializeIMU(float priorG, float priorA, bool bFIBA)
         const float cosg = gI.dot(dirG);
         const float ang = acos(cosg);
         Eigen::Vector3f vzg = v*ang/nv;
+#ifdef ORBSLAM3_WEB
+        if(!vzg.allFinite())  // gravity already along -z (nv = 0) or a zero direction: 0/0 -> NaN -> Sophus abort
+            vzg = (cosg > 0.f || !std::isfinite(cosg)) ? Eigen::Vector3f::Zero() : Eigen::Vector3f(static_cast<float>(M_PI), 0.f, 0.f);  // aligned: identity; opposite: 180°
+#endif
         Rwg = Sophus::SO3f::exp(vzg).matrix();
         mRwg = Rwg.cast<double>();
         mTinit = mpCurrentKeyFrame->mTimeStamp-mFirstTs;

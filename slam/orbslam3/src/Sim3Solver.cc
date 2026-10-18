@@ -364,7 +364,17 @@ void Sim3Solver::ComputeSim3(Eigen::Matrix3f &P1, Eigen::Matrix3f &P2)
     // Rotation angle. sin is the norm of the imaginary part, cos is the real part
     double ang=atan2(vec.norm(),evec(0,maxIndex));
 
+#ifdef ORBSLAM3_WEB
+    // web port: an identity rotation (|vec| = 0) gave 0/0 = NaN here, and Sophus aborts on a NaN rotation (vocab_eval_r2
+    // own-L5 V1_03 seed 3, merge detection right after a new map). Identity / degenerate hypotheses become the identity.
+    const float vecNorm = vec.norm();
+    if(!std::isfinite(vecNorm) || !std::isfinite(ang) || vecNorm < 1e-12f)
+        vec.setZero();
+    else
+        vec = 2*ang*vec/vecNorm;
+#else
     vec = 2*ang*vec/vec.norm(); //Angle-axis representation. quaternion angle is the half
+#endif
     mR12i = Sophus::SO3f::exp(vec).matrix();
 
     // Step 5: Rotate set 2
@@ -409,6 +419,16 @@ void Sim3Solver::ComputeSim3(Eigen::Matrix3f &P1, Eigen::Matrix3f &P2)
 
     Eigen::Vector3f tinv = -sRinv * mt12i;
     mT21i.block<3,1>(0,3) = tinv;
+#ifdef ORBSLAM3_WEB
+    if(!mT12i.allFinite() || !mT21i.allFinite())  // degenerate points (zero spread, scale 0/0): an identity hypothesis,
+    {                                             // which the inlier check then rejects
+        mR12i.setIdentity();
+        mt12i.setZero();
+        ms12i = 1.0f;
+        mT12i.setIdentity();
+        mT21i.setIdentity();
+    }
+#endif
 }
 
 

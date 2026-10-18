@@ -194,6 +194,12 @@ void ImuCamPose::Update(const double *pu)
     Eigen::Vector3d ur, ut;
     ur << pu[0], pu[1], pu[2];
     ut << pu[3], pu[4], pu[5];
+#ifdef ORBSLAM3_WEB
+    // web port: a diverging Gauss-Newton step (harsh phone-like IMU, ISSUES G13) can be NaN; applying it made the pose
+    // NaN and Sophus aborted later. Skip the step: the pose keeps its last finite value.
+    if(!ur.allFinite() || !ut.allFinite())
+        return;
+#endif
 
     // Update body pose
     twb += Rwb * ut;
@@ -224,6 +230,10 @@ void ImuCamPose::UpdateW(const double *pu)
     Eigen::Vector3d ur, ut;
     ur << pu[0], pu[1], pu[2];
     ut << pu[3], pu[4], pu[5];
+#ifdef ORBSLAM3_WEB
+    if(!ur.allFinite() || !ut.allFinite())  // see Update
+        return;
+#endif
 
 
     const Eigen::Matrix3d dR = ExpSO3(ur);

@@ -5192,6 +5192,18 @@ int Optimizer::PoseInertialOptimizationLastKeyFrame(Frame *pFrame, bool bRecInit
 
 int Optimizer::PoseInertialOptimizationLastFrame(Frame *pFrame, bool bRecInit)
 {
+#ifdef ORBSLAM3_WEB
+    // web port: upstream builds the prior edge from the previous frame's IMU constraint (mpcpi) even when it does not
+    // exist (that frame was not optimised inertially, e.g. right after a rejected IMU initialisation: "scale too small",
+    // then "pFp->mpcpi does not exist!!!" and a null dereference; ISSUES G18, ~10-17 % of TUM-VI room runs). Then use
+    // the other branch of Tracking::TrackLocalMap (optimise against the last keyframe), or the visual pose solve.
+    if(!pFrame->mpPrevFrame || !pFrame->mpPrevFrame->mpcpi || !pFrame->mpImuPreintegratedFrame || !pFrame->mpImuPreintegrated)
+    {
+        if(pFrame->mpLastKeyFrame && pFrame->mpImuPreintegrated)
+            return PoseInertialOptimizationLastKeyFrame(pFrame, bRecInit);
+        return PoseOptimization(pFrame);
+    }
+#endif
     g2o::SparseOptimizer optimizer;
     g2o::BlockSolverX::LinearSolverType * linearSolver;
 
