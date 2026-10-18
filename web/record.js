@@ -12,6 +12,17 @@ const now = () => performance.timeOrigin + performance.now();
 const ns = (ms) => { const w = Math.floor(ms); return BigInt(w) * 1000000n + BigInt(Math.round((ms - w) * 1e6)); };
 
 let stream = null, track = null, worker = null, recording = false, t0 = 0, W = 0, H = 0, name = '';
+// DeviceMotionEvent.rotationRate -> device-axis rates (x, y, z; rad/s). The W3C spec says alpha = z, beta = x, gamma = y,
+// but Chrome on Android reports alpha = x, beta = y, gamma = z: on the Pixel 9 (2026-10-18) the Generic Sensor Gyroscope
+// x, y, z equal rotationRate alpha, beta, gamma sample for sample, and the camera rotation fits only that order. Until
+// then every phone gyro feature had its axes permuted. ?rr=spec|chrome overrides the choice by browser.
+const RR_ORDER = new URLSearchParams(location.search).get('rr') ||
+  (/Chrome\//.test(navigator.userAgent) && !/Firefox|FxiOS/.test(navigator.userAgent) ? 'chrome' : 'spec');
+function rateXYZ(r) {
+  const k = Math.PI / 180;
+  return RR_ORDER === 'chrome' ? [r.alpha * k, r.beta * k, r.gamma * k] : [r.beta * k, r.gamma * k, r.alpha * k];
+}
+
 let motion = [], gsGyro = [], gsAcc = [], touches = [], gsSensors = [];
 let motionN = 0, motionT0 = 0, motionT1 = 0;
 
@@ -33,7 +44,7 @@ function onMotion(e) {
   const r = e.rotationRate, a = e.accelerationIncludingGravity;
   if (!r || r.alpha == null || !a || a.x == null) return;
   const d = Math.PI / 180;  // device axes = IMU body; rotationRate alpha/beta/gamma = z/x/y in deg/s (as ar.js)
-  motion.push([performance.timeOrigin + e.timeStamp, r.beta * d, r.gamma * d, r.alpha * d, a.x, a.y, a.z]);
+  motion.push([performance.timeOrigin + e.timeStamp, ...rateXYZ(r), a.x, a.y, a.z]);
   if (!motionN) motionT0 = e.timeStamp;
   motionN++; motionT1 = e.timeStamp;
 }
@@ -154,7 +165,7 @@ async function finish(m) {
       name, notes: $('notes').value, recorded: new Date(t0).toISOString(), userAgent: navigator.userAgent, cores: navigator.hardwareConcurrency,
       image: { width: W, height: H }, fps: +fps.toFixed(2), frames: frames.length, droppedByRecorder: m.dropped, jpegQuality: Number($('quality').value),
       intrinsics: intrinsics(W, H, hfov, calib), hfovAssumed: calib ? null : hfov, calibrated: !!calib,
-      imu: { source: 'DeviceMotion (rotationRate, accelerationIncludingGravity; device axes)', samples: motion.length, hz: +hz.toFixed(1),
+      imu: { source: 'DeviceMotion (rotationRate, accelerationIncludingGravity; device axes)', rotationRateOrder: RR_ORDER, samples: motion.length, hz: +hz.toFixed(1),
              genericSensor: { gyroscope: gsGyro.length, accelerometer: gsAcc.length } },
       cameraClock: { offsetMs: +off.toFixed(3), note: 'frame t = VideoFrame.timestamp/1000 + offset (min receipt - capture), page clock' },
       cameraToImu: 'IMU.T_b_c1 = diag(1, -1, -1) (rear camera, portrait), as slamclient.js phoneImuSettings',

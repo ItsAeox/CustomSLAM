@@ -16,7 +16,7 @@ from scipy.spatial.transform import Rotation as Rot
 
 
 def run_metrics(d: Path):
-    tt = [l.split() for l in (d / "track_times.txt").read_text().splitlines() if l.strip()] if (d / "track_times.txt").exists() else []
+    tt = [l.split() for l in (d / "track_times.txt").read_text().splitlines() if len(l.split()) >= 3] if (d / "track_times.txt").exists() else []  # a killed run can leave a half-written line
     st = np.array([int(x[2]) for x in tt]) if tt else np.array([])
     ms = np.array([float(x[1]) for x in tt]) if tt else np.array([])
     ok = np.isin(st, [2, 5])

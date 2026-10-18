@@ -106,6 +106,10 @@ let replayTaps = [], replayT = -1;               // recording taps still to repl
 let stash = null;          // anchors of a map that went inactive (tracking lost -> new map); restored on map merge
 let resetRequested = false;  // Reset button: sent to the worker between frames (one request at a time)
 let saveRequested = false;   // Save room button: also between frames
+// Instant placement (ARCore-style): a tap before tracking is kept and shown as a marker; once the map and the floor
+// exist the tree goes there. The tap direction is carried across the wait by the gyro attitude (qDev).
+let pendingTap = null;       // { u, v (image px at the tap), q0 (device attitude then), t (ms) }
+let trackingSince = 0;       // when tracking (re)started, ms
 let pendingRoom = null;      // a loaded room's tree and floor, restored once the tree model is loaded
 let mapWait = -1;            // room map: 1 = loaded, not relocalised into yet; 0 = relocalised; -1 = no room loaded
 const tracking = () => state === 2 || state === 5;  // 5: tracked by a KLT frame
@@ -128,6 +132,17 @@ function layout() {  // cover-fit the processed image into the window; the GL ca
 addEventListener('resize', layout);
 
 // ---------------------------------------------------------------- gravity (DeviceMotion, any rate is fine)
+// DeviceMotionEvent.rotationRate -> device-axis rates (x, y, z; rad/s). The W3C spec says alpha = z, beta = x, gamma = y,
+// but Chrome on Android reports alpha = x, beta = y, gamma = z: on the Pixel 9 (2026-10-18) the Generic Sensor Gyroscope
+// x, y, z equal rotationRate alpha, beta, gamma sample for sample, and the camera rotation fits only that order. Until
+// then every phone gyro feature had its axes permuted. ?rr=spec|chrome overrides the choice by browser.
+const RR_ORDER = new URLSearchParams(location.search).get('rr') ||
+  (/Chrome\//.test(navigator.userAgent) && !/Firefox|FxiOS/.test(navigator.userAgent) ? 'chrome' : 'spec');
+function rateXYZ(r) {
+  const k = Math.PI / 180;
+  return RR_ORDER === 'chrome' ? [r.alpha * k, r.beta * k, r.gamma * k] : [r.beta * k, r.gamma * k, r.alpha * k];
+}
+
 function onMotion(e) {
   const a = e.accelerationIncludingGravity;
   if (!a || a.x == null) return;
@@ -138,20 +153,21 @@ function onMotion(e) {
   if ((inertial || gyroOn) && !replay && r && r.alpha != null && a.x != null) {  // device axes = IMU body; rotationRate alpha/beta/gamma = z/x/y (deg/s)
     const d = Math.PI / 180;
     // IMU time = reported time - the measured offset (option imudt; reported = true + offset, see estimate_time_offset.py)
-    imuPending.push((performance.timeOrigin + e.timeStamp) / 1000 - Number(opts.imudt) / 1000, a.x, a.y, a.z, r.beta * d, r.gamma * d, r.alpha * d);
+    imuPending.push((performance.timeOrigin + e.timeStamp) / 1000 - Number(opts.imudt) / 1000, a.x, a.y, a.z, ...rateXYZ(r));
   }
   if (rec && r && r.alpha != null) {  // diagnostic: raw gyro (rad/s, device axes) on the frames' absolute clock
     const d = Math.PI / 180;
-    tele(`imu ${((performance.timeOrigin + e.timeStamp) / 1000).toFixed(4)} ${(r.beta * d).toFixed(5)} ${(r.gamma * d).toFixed(5)} ${(r.alpha * d).toFixed(5)}`);
-    recGyro.push([(performance.timeOrigin + e.timeStamp) / 1000, r.beta * d, r.gamma * d, r.alpha * d]);
+    const w = rateXYZ(r);
+    tele(`imu ${((performance.timeOrigin + e.timeStamp) / 1000).toFixed(4)} ${w[0].toFixed(5)} ${w[1].toFixed(5)} ${w[2].toFixed(5)}`);
+    recGyro.push([(performance.timeOrigin + e.timeStamp) / 1000, ...w]);
     while (recGyro.length && recGyro[0][0] < recGyro[recGyro.length - 1][0] - 90) recGyro.shift();
     recAcc.push([(performance.timeOrigin + e.timeStamp) / 1000 - Number(opts.imudt) / 1000, a.x, a.y, a.z]);
     while (recAcc.length && recAcc[0][0] < recAcc[recAcc.length - 1][0] - 90) recAcc.shift();
   }
-  if (holdOn && r && r.alpha != null) {  // attitude for the hold: q <- q * exp(w dt), w in device axes (rad/s)
+  if ((holdOn || pendingTap) && r && r.alpha != null) {  // attitude for the hold / a pending tap: q <- q * exp(w dt), device axes
     if (qDevT != null) {
       const dt = Math.min((e.timeStamp - qDevT) / 1000, 0.1), d = Math.PI / 180;
-      const w = [r.beta * d, r.gamma * d, r.alpha * d], th = Math.hypot(...w) * dt;
+      const w = rateXYZ(r), th = Math.hypot(...w) * dt;
       if (th > 0) {
         const s = Math.sin(th / 2) / (th / dt), dq = [w[0] * s, w[1] * s, w[2] * s, Math.cos(th / 2)];
         const [x, y, z, ww] = qDev;
@@ -328,8 +344,59 @@ function restoreRoom(room) {  // the saved tree and floor (hidden until tracking
   tele(`room restored: tree ${room.tree ? `at ${room.tree.p.map((x) => x.toFixed(4)).join(' ')}` : 'none'}, floor ${room.floor ? 'yes' : 'no'}`);
 }
 
+function quatMulA(a, b) {
+  return [a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1], a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+          a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3], a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]];
+}
+function quatRot(q, v) {  // rotate v by unit quaternion q (x, y, z, w)
+  const r = quatMulA(quatMulA(q, [v[0], v[1], v[2], 0]), [-q[0], -q[1], -q[2], q[3]]);
+  return [r[0], r[1], r[2]];
+}
+// image pixel where the pending tap's direction is now (gyro rotation since the tap; rear camera = device diag(1,-1,-1))
+function pendingPixel() {
+  const d0 = [(pendingTap.u - K.cx) / K.fx, -(pendingTap.v - K.cy) / K.fy, -1];  // camera ray in device axes
+  const qRel = quatMulA([-pendingTap.q0[0], -pendingTap.q0[1], -pendingTap.q0[2], pendingTap.q0[3]], qDev);
+  const dn = quatRot([-qRel[0], -qRel[1], -qRel[2], qRel[3]], d0);  // the same world direction in today's device axes
+  const c = [dn[0], -dn[1], -dn[2]];                                // back to camera axes
+  if (c[2] <= 0.05) return null;                                    // behind the camera now
+  return [K.fx * c[0] / c[2] + K.cx, K.fy * c[1] / c[2] + K.cy];
+}
+function showGhost() {  // marker at the pending tap (follows the gyro until the tree can be placed)
+  const g = $('ghost');
+  const px = pendingTap && pendingPixel();
+  if (!px || px[0] < 0 || px[1] < 0 || px[0] >= W || px[1] >= H) { g.hidden = true; return; }
+  g.hidden = false;
+  g.style.left = `${rect.x + px[0] * rect.s}px`;
+  g.style.top = `${rect.y + px[1] * rect.s}px`;
+}
+function resolvePendingTap() {  // per frame: place the pending tree once tracking + a floor (or 3 s of tracking) exist
+  if (!pendingTap) return;
+  if (performance.now() - pendingTap.t > 30000) {
+    tele('instant placement: gave up after 30 s without a map');
+    pendingTap = null; showGhost(); hint('Could not place the tree yet: move the phone slowly sideways, then tap again.', 3000);
+    return;
+  }
+  showGhost();
+  if (!tracking() || !(floor || performance.now() - trackingSince > 3000)) return;
+  const px = pendingPixel();
+  if (!px || px[0] < 0 || px[1] < 0 || px[0] >= W || px[1] >= H) return;  // the spot is out of view: wait
+  const tap = pendingTap;
+  pendingTap = null;
+  showGhost();
+  tele(`instant placement: tap from ${((performance.now() - tap.t) / 1000).toFixed(1)} s ago at ${tap.u.toFixed(0)}, ${tap.v.toFixed(0)} px -> now ${px[0].toFixed(0)}, ${px[1].toFixed(0)} px`);
+  placeCactus(rect.x + px[0] * rect.s, rect.y + px[1] * rect.s);
+}
+
 function placeCactus(clientX, clientY) {
-  if (!twc || !tracking()) return;
+  if (!twc || !tracking()) {  // no map yet: remember the tap (instant placement)
+    if (cactus || !rect) return;
+    pendingTap = { u: (clientX - rect.x) / rect.s, v: (clientY - rect.y) / rect.s, q0: qDev.slice(), t: performance.now() };
+    qDevT = null;  // start integrating from this tap
+    tele(`instant placement: tap kept at ${pendingTap.u.toFixed(0)}, ${pendingTap.v.toFixed(0)} px (not tracking yet)`);
+    hint('The tree will go here once tracking starts. Move the phone slowly sideways.', 4000);
+    showGhost();
+    return;
+  }
   if (inertial && !(stats[4] && stats[5])) {  // the IMU initialisation rotates and rescales the map: place afterwards
     hint(stats[4] ? 'IMU almost ready (refining). Keep moving a few more seconds.' : 'IMU initialising: move the phone around (walk, turn).', 2500);
     return;
@@ -577,7 +644,7 @@ async function start() {
     tele(`start: ${navigator.userAgent} | cores ${navigator.hardwareConcurrency} | image ${W}x${H} | ` +
          `fx ${K.fx.toFixed(1)} fy ${K.fy.toFixed(1)} cx ${K.cx.toFixed(1)} cy ${K.cy.toFixed(1)} px | ` +
          (seq ? 'dataset intrinsics' : calib ? `calibrated ${calib.date.slice(0, 10)} (rms ${calib.rms.toFixed(2)} px, k1 ${calib.k1.toFixed(3)} k2 ${calib.k2.toFixed(3)})` : `hfov ${hfov} (assumed)`) +
-         ` | preset ${presetKey()} | options ${describeOptions(opts)} | source ${seq || 'camera'} | frame clock ${frameClock}`);
+         ` | preset ${presetKey()} | options ${describeOptions(opts)} | source ${seq || 'camera'} | frame clock ${frameClock} | gyro axes: rotationRate order ${RR_ORDER}`);
     let lastSlamLine = '', slamRepeats = 0;
     // loading progress: vocabulary download %, then building; a stall (no data for 15 s) is reported
     let lastProgress = performance.now(), loadingDone = false;
@@ -796,6 +863,9 @@ async function start() {
         for (let i = 0; i < r.viz.mps.length; i += 4) if (r.viz.mps[i + 3] > 0) localPts.push([r.viz.mps[i], r.viz.mps[i + 1], r.viz.mps[i + 2]]);
         if (tracking()) detectFloor();
       }
+      if (tracking() && !trackingSince) trackingSince = performance.now();
+      if (!tracking()) trackingSince = 0;
+      resolvePendingTap();  // instant placement
       drawFrame(r.bmp);
       while (replayTaps.length && replayTaps[0].t <= replayT) {  // recorded tap: same image point as on the phone
         const p = replayTaps.shift();
