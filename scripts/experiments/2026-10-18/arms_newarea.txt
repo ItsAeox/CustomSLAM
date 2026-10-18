@@ -1,0 +1,5 @@
+# replay_arms.sh arms: new areas at speed with the fast local BA (beta preset), tree placed (KeepMap)
+beta_keep|beta|Web.Gyro.TimeOffset: -0.088;Web.Track.KeepMap: 1
+beta_keep_cov|beta|Web.Gyro.TimeOffset: -0.088;Web.Track.KeepMap: 1;Web.KF.Coverage: 0.4
+beta_keep_cov2|beta|Web.Gyro.TimeOffset: -0.088;Web.Track.KeepMap: 1;Web.KF.Coverage: 0.4;Web.Map.MinBaseline: 0.005;Web.Map.MaxCosParallax: 0.99995
+beta_keep_klt2|beta|Web.Gyro.TimeOffset: -0.088;Web.Track.KeepMap: 1;-Web.KLT.MaxConsecutive;Web.KLT.MaxConsecutive: 2
