@@ -27,88 +27,53 @@
 <body>
 <main>
   <h1>WebVIO</h1>
-  <p>Markerless SLAM in the web browser. Pick a page:</p>
+  <p>Markerless SLAM in the web browser</p>
 
   <h2>On the phone</h2>
-  <a class="card" href="ar.html"><b>AR: place a tree</b><span>Live camera tracking with the algorithm presets (start screen),
-    a tree on the floor, room save / reload, 3D map view.</span></a>
-  <a class="card" href="calib.html"><b>Camera calibration</b><span>Chessboard calibration; the AR page uses it automatically
-    for the same resolution.</span></a>
-  <a class="card dev" href="record.html" hidden><b>Recorder</b><span>Record camera frames, gyro, accelerometer and taps to
-    this PC, to replay the same movement through every preset.</span></a>
+  <a class="card" href="ar.html"><b>AR test</b></a>
+  <a class="card" href="calib.html"><b>Camera calibration</b></a>
+  <a class="card dev" href="record.html" hidden><b>Recorder</b></a>
 
-  <h2>Viewer and tests</h2>
-  <a class="card" href="viewer.html"><b>SLAM viewer</b><span id="viewerNote">3D map, current frame, tracking time; datasets
-    (with live accuracy) or the device camera.</span></a>
-  <a class="card" href="selftest.html"><b>Device self-test</b><span>Can this browser run the WebAssembly SLAM (threads, SIMD,
-    memory)?</span></a>
-
-  <section class="dev" hidden>
-    <h2>Your recordings in the AR page</h2>
-    <p class="note" id="recsNote">Plays a recording as the camera, with its gyro and taps ("Fastest + gyro recovery" preset; change it on the start screen).</p>
+  <section hidden>
+    <h2>Recordings</h2>
     <div class="recs" id="recs"></div>
   </section>
 
-  <h2>Developer</h2>
-  <a class="card" href="xfeat.html"><b>XFeat benchmark</b><span>Learned features in the browser (ONNX Runtime Web): timing only.</span></a>
-  <a class="card" href="gpubench.html"><b>WebGPU ORB benchmark</b><span>How long a GPU version of ORB would take per frame, including reading the results back.</span></a>
+  <h2>Viewer and tests</h2>
+  <a class="card" href="viewer.html"><b>SLAM viewer</b></a>
+  <a class="card" href="selftest.html"><b>Device self-test</b></a>
 
-  <p class="note" id="iso"></p>
-  <p class="note" id="where"></p>
-  <p class="note">The first visit installs a small service worker and reloads once (WebAssembly threads need it on static hosting).</p>
-  <p class="note">WebVIO builds on parts of ORB-SLAM3 (GPL-3.0); credits and licence in the repository.</p>
+  <h2>Developer</h2>
+  <a class="card" href="xfeat.html"><b>XFeat benchmark</b></a>
+  <a class="card" href="gpubench.html"><b>WebGPU ORB benchmark</b></a>
 </main>
 <script>
   const DEV = location.pathname.startsWith('/web/');  // web/serve.py on this PC (GitHub Pages serves docs/ at the root)
-  document.getElementById('iso').textContent = crossOriginIsolated
-    ? `Cross-origin isolated: yes (threads available, ${navigator.hardwareConcurrency} cores)`
-    : 'Cross-origin isolated: not yet (reload once if the pages say so)';
-  document.getElementById('where').textContent = DEV
-    ? 'Local development server: datasets, recordings and result uploads available.'
-    : 'GitHub Pages: phone pages and the viewer with the device camera. Recording and datasets need the local server.';
-  if (!DEV) document.getElementById('viewerNote').textContent = '3D map, current frame and tracking time with the device camera.';
   const REC_OPTS = 'kltmax=4&motion=time&map=light&gyro=on&recover=coast&hold=gyro';  // "Fastest + gyro recovery"
-  if (!DEV) {
-    (async () => {  // GitHub Pages: recordings exported as static files (scripts/export_recordings.py)
-      const r = await fetch('recordings/index.json').catch(() => null);
-      if (!r || !r.ok) return;
-      const recs = await r.json();
-      const box = document.getElementById('recs');
-      for (const s of recs) {
-        const a = document.createElement('a');
-        a.className = 'card';
-        a.href = `ar.html?seq=phone/${encodeURIComponent(s.name)}&${REC_OPTS}`;
-        a.innerHTML = `<b>${s.name.replace('rec_', '')}</b><span>${s.label} (${s.frames} frames)</span>`;
-        box.append(a);
-      }
-      if (box.children.length) {
-        box.closest('section').hidden = false;
-        document.getElementById('recsNote').textContent += ' The frames load from GitHub while it plays; gray images.';
-      }
-    })();
-  }
+  const box = document.getElementById('recs');
+  const addRec = (name, label) => {
+    const a = document.createElement('a');
+    a.className = 'card';
+    a.href = `ar.html?seq=phone/${encodeURIComponent(name)}&${REC_OPTS}`;
+    a.innerHTML = `<b>${label}</b><span>${name.replace('rec_', '')}</span>`;
+    box.append(a);
+    box.closest('section').hidden = false;
+  };
   if (DEV) {
     for (const el of document.querySelectorAll('.dev')) el.hidden = false;
-    (async () => {  // recordings (datasets/phone) with their labels (labels.txt: name level scenario ...)
+    (async () => {  // recordings (datasets/phone) with their level from labels.txt (name level scenario ...)
       const seqs = await (await fetch('/api/sequences')).json();
-      const labels = {};
+      const level = {};
       try {
-        const t = await (await fetch('/datasets/phone/labels.txt')).text();
-        for (const l of t.split('\n')) {
-          if (!l.trim() || l.startsWith('#')) continue;
-          const f = l.trim().split(/\s+/);
-          labels[f[0]] = `${f[1]}: ${f.slice(2).join(' ').replace(/\s+\d+ \/.*$/, '')}`;
-        }
+        for (const l of (await (await fetch('/datasets/phone/labels.txt')).text()).split('\n'))
+          if (l.trim() && !l.startsWith('#')) { const f = l.trim().split(/\s+/); level[f[0]] = f[1]; }
       } catch { /* no labels */ }
-      const box = document.getElementById('recs');
-      for (const s of seqs.filter((x) => x.dataset === 'phone' && x.name.startsWith('rec_'))) {
-        const a = document.createElement('a');
-        a.className = 'card';
-        a.href = `ar.html?seq=phone/${encodeURIComponent(s.name)}&${REC_OPTS}`;
-        a.innerHTML = `<b>${s.name.replace('rec_', '')}</b><span>${labels[s.name] || 'recording'}</span>`;
-        box.append(a);
-      }
-      if (!box.children.length) box.textContent = 'No recordings yet (use the Recorder).';
+      for (const s of seqs.filter((x) => x.dataset === 'phone' && x.name.startsWith('rec_'))) addRec(s.name, level[s.name] || 'recording');
+    })();
+  } else {
+    (async () => {  // GitHub Pages: recordings exported as static files (scripts/export_recordings.py)
+      const r = await fetch('recordings/index.json').catch(() => null);
+      if (r && r.ok) for (const s of await r.json()) addRec(s.name, s.label.split(':')[0]);
     })();
   }
 </script>
