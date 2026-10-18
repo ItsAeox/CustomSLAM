@@ -128,6 +128,10 @@ void KeyFrame::SetPose(const Sophus::SE3f &Tcw)
 
 void KeyFrame::SetVelocity(const Eigen::Vector3f &Vw)
 {
+#ifdef ORBSLAM3_WEB
+    if(!Vw.allFinite())
+        IMU::WebNanTrap("KeyFrame::SetVelocity");
+#endif
     unique_lock<mutex> lock(mMutexPose);
     mVw = Vw;
     mbHasVelocity = true;
@@ -821,6 +825,10 @@ float KeyFrame::ComputeSceneMedianDepth(const int q)
 
 void KeyFrame::SetNewBias(const IMU::Bias &b)
 {
+#ifdef ORBSLAM3_WEB
+    if(!IMU::WebFinite(b))
+        IMU::WebNanTrap("KeyFrame::SetNewBias");
+#endif
     unique_lock<mutex> lock(mMutexPose);
     mImuBias = b;
     if(mpImuPreintegrated)

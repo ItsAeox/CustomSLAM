@@ -441,6 +441,10 @@ void Frame::SetPose(const Sophus::SE3<float> &Tcw) {
 
 void Frame::SetNewBias(const IMU::Bias &b)
 {
+#ifdef ORBSLAM3_WEB
+    if(!IMU::WebFinite(b))
+        IMU::WebNanTrap("Frame::SetNewBias");
+#endif
     mImuBias = b;
     if(mpImuPreintegrated)
         mpImuPreintegrated->SetNewBias(b);
@@ -448,6 +452,10 @@ void Frame::SetNewBias(const IMU::Bias &b)
 
 void Frame::SetVelocity(Eigen::Vector3f Vwb)
 {
+#ifdef ORBSLAM3_WEB
+    if(!Vwb.allFinite())
+        IMU::WebNanTrap("Frame::SetVelocity");
+#endif
     mVw = Vwb;
     mbHasVelocity = true;
 }
@@ -459,6 +467,10 @@ Eigen::Vector3f Frame::GetVelocity() const
 
 void Frame::SetImuPoseVelocity(const Eigen::Matrix3f &Rwb, const Eigen::Vector3f &twb, const Eigen::Vector3f &Vwb)
 {
+#ifdef ORBSLAM3_WEB
+    if(!Rwb.allFinite() || !twb.allFinite() || !Vwb.allFinite())
+        IMU::WebNanTrap("Frame::SetImuPoseVelocity");
+#endif
     mVw = Vwb;
     mbHasVelocity = true;
 

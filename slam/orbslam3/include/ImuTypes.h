@@ -259,6 +259,17 @@ Eigen::Matrix3f InverseRightJacobianSO3(const Eigen::Vector3f &v);
 
 Eigen::Matrix3f NormalizeRotation(const Eigen::Matrix3f &R);
 
+#ifdef ORBSLAM3_WEB
+// web port diagnostic (ISSUES G24): called where an IMU quantity is first seen non-finite; prints the place (first few
+// times). gdb: break ORB_SLAM3::IMU::WebNanTrap, then bt.
+void WebNanTrap(const char* where);
+inline bool WebFinite(const Bias& b)
+{
+    return std::isfinite(b.bax) && std::isfinite(b.bay) && std::isfinite(b.baz) && std::isfinite(b.bwx) &&
+           std::isfinite(b.bwy) && std::isfinite(b.bwz);
+}
+#endif
+
 }
 
 } //namespace ORB_SLAM2

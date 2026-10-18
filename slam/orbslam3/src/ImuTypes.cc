@@ -22,6 +22,7 @@
 #include "GeometricTools.h"
 
 #include<iostream>
+#include<atomic>
 
 namespace ORB_SLAM3
 {
@@ -35,6 +36,15 @@ Eigen::Matrix3f NormalizeRotation(const Eigen::Matrix3f &R){
     Eigen::JacobiSVD<Eigen::Matrix3f> svd(R, Eigen::ComputeFullU | Eigen::ComputeFullV);
     return svd.matrixU() * svd.matrixV().transpose();
 }
+
+#ifdef ORBSLAM3_WEB
+__attribute__((noinline)) void WebNanTrap(const char* where)
+{
+    static std::atomic<int> n{0};
+    if(n++ < 10)
+        std::cerr << "IMU-NAN first seen in " << where << std::endl;
+}
+#endif
 
 Eigen::Matrix3f RightJacobianSO3(const float &x, const float &y, const float &z)
 {
@@ -285,6 +295,17 @@ Eigen::Matrix3f Preintegrated::GetDeltaRotation(const Bias &b_)
     std::unique_lock<std::mutex> lock(mMutex);
     Eigen::Vector3f dbg;
     dbg << b_.bwx-b.bwx,b_.bwy-b.bwy,b_.bwz-b.bwz;
+#ifdef ORBSLAM3_WEB
+    if(!(JRg * dbg).allFinite())  // web port diagnostic (ISSUES G24): which input is already non-finite
+    {
+        static int nReported = 0;
+        WebNanTrap("Preintegrated::GetDeltaRotation");
+        if(nReported++ < 5)
+            std::cerr << "IMU-NAN GetDeltaRotation: eval gyro bias " << b_.bwx << " " << b_.bwy << " " << b_.bwz
+                      << " | preint gyro bias " << b.bwx << " " << b.bwy << " " << b.bwz << " | JRg finite " << JRg.allFinite()
+                      << " | dR finite " << dR.allFinite() << " | dT " << dT << std::endl;
+    }
+#endif
     return NormalizeRotation(dR * Sophus::SO3f::exp(JRg * dbg).matrix());
 }
 

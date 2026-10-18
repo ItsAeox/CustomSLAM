@@ -205,6 +205,10 @@ public:
     virtual void oplusImpl(const double* update_){
         Eigen::Vector3d uv;
         uv << update_[0], update_[1], update_[2];
+#ifdef ORBSLAM3_WEB
+        if(!uv.allFinite())  // web port: skip a non-finite Gauss-Newton step, as ImuCamPose::Update (ISSUES G24)
+            return;
+#endif
         setEstimate(estimate()+uv);
     }
 };
@@ -226,6 +230,10 @@ public:
     virtual void oplusImpl(const double* update_){
         Eigen::Vector3d ubg;
         ubg << update_[0], update_[1], update_[2];
+#ifdef ORBSLAM3_WEB
+        if(!ubg.allFinite())  // see VertexVelocity (a NaN gyro bias aborted in Preintegrated::GetDeltaRotation, G24)
+            return;
+#endif
         setEstimate(estimate()+ubg);
     }
 };
@@ -248,6 +256,10 @@ public:
     virtual void oplusImpl(const double* update_){
         Eigen::Vector3d uba;
         uba << update_[0], update_[1], update_[2];
+#ifdef ORBSLAM3_WEB
+        if(!uba.allFinite())  // see VertexVelocity
+            return;
+#endif
         setEstimate(estimate()+uba);
     }
 };
@@ -263,6 +275,10 @@ public:
 
     void Update(const double *pu)
     {
+#ifdef ORBSLAM3_WEB
+        if(!std::isfinite(pu[0]) || !std::isfinite(pu[1]))  // see VertexVelocity
+            return;
+#endif
         Rwg=Rwg*ExpSO3(pu[0],pu[1],0.0);
     }
 
@@ -312,6 +328,10 @@ public:
     }
 
     virtual void oplusImpl(const double *update_){
+#ifdef ORBSLAM3_WEB
+        if(!std::isfinite(*update_))  // see VertexVelocity
+            return;
+#endif
         setEstimate(estimate()*exp(*update_));
     }
 };
