@@ -970,7 +970,7 @@ int WebPoseOptimization(Frame* pFrame)
             const cv::KeyPoint& kp = pFrame->mvKeysUn[i];
             vObs.push_back({pMP->GetWorldPos().cast<double>(), Eigen::Vector2d(kp.pt.x, kp.pt.y),
                             (double)pFrame->mvInvLevelSigma2[kp.octave], i});
-            if(pMP->mbWebFar && webConfig().rotFar == 2)  // point at infinity: its mean viewing direction
+            if(pMP->mbWebFar && webConfig().rotFar >= 2)  // point at infinity: its mean viewing direction
             {
                 vObs.back().inf = true;
                 vObs.back().Xw = pMP->GetNormal().cast<double>().normalized();
@@ -1140,7 +1140,7 @@ int Optimizer::PoseOptimization(Frame *pFrame)
                     e->pCamera = pFrame->mpCamera;
                     e->Xw = pMP->GetWorldPos().cast<double>();
 #ifdef ORBSLAM3_WEB
-                    if(pMP->mbWebFar && webConfig().rotFar == 2)  // point at infinity: its mean viewing direction
+                    if(pMP->mbWebFar && webConfig().rotFar >= 2)  // point at infinity: its mean viewing direction
                     {
                         e->bInf = true;
                         e->Xw = pMP->GetNormal().cast<double>().normalized();

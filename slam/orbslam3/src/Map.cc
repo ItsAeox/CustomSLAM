@@ -489,6 +489,10 @@ void Map::PostLoad(KeyFrameDatabase* pKFDB, ORBVocabulary* pORBVoc/*, map<long u
             continue;
 
         pKFi->PostLoad(mpKeyFrameId, mpMapPointId, mpCams);
+#ifdef ORBSLAM3_WEB
+        pKFi->WebRebuildGrid();  // room maps v3 store neither (WebMapIO.cc); no-ops when present
+        pKFi->ComputeBoW();
+#endif
         pKFDB->add(pKFi);
     }
 

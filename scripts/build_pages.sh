@@ -11,7 +11,7 @@ OUT="$REPO/docs"
 W="$REPO/web"
 rm -rf "$OUT"
 mkdir -p "$OUT/build" "$OUT/assets" "$OUT/vocab" "$OUT/models"
-cp "$W/ar.html" "$W/ar.js" "$W/calib.html" "$W/calib.js" "$W/slamclient.js" "$W/options.js" "$W/plane.js" "$W/imucalib.js" "$W/imuscale.js" "$W/slam.worker.js" "$W/coi.js" "$W/coi-sw.js" \
+cp "$W/ar.html" "$W/ar.js" "$W/calib.html" "$W/calib.js" "$W/slamclient.js" "$W/options.js" "$W/plane.js" "$W/imucalib.js" "$W/imuscale.js" "$W/minimap.js" "$W/slam.worker.js" "$W/coi.js" "$W/coi-sw.js" \
    "$W/selftest.html" "$W/xfeat.html" "$OUT/"
 cp "$W/build/orbslam3.js" "$W/build/orbslam3.wasm" "$W/build/orbslam3.worker.mjs" "$OUT/build/"
 if [ -f "$W/build-prof/orbslam3.wasm" ]; then  # profiling build (REGISTER_TIMES), loaded by ar.html?prof=1

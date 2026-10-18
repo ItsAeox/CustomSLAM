@@ -857,6 +857,23 @@ void KeyFrame::UpdateMap(Map* pMap)
     mpMap = pMap;
 }
 
+#ifdef ORBSLAM3_WEB
+void KeyFrame::WebRebuildGrid()
+{
+    if(!mGrid.empty() || NLeft != -1)
+        return;
+    mGrid.assign(mnGridCols, std::vector<std::vector<size_t>>(mnGridRows));
+    for(int i = 0; i < N; i++)  // as Frame::AssignFeaturesToGrid / PosInGrid (monocular: undistorted keypoints)
+    {
+        const cv::KeyPoint& kp = mvKeysUn[i];
+        const int x = (int)std::round((kp.pt.x - mnMinX) * mfGridElementWidthInv);
+        const int y = (int)std::round((kp.pt.y - mnMinY) * mfGridElementHeightInv);
+        if(x >= 0 && x < mnGridCols && y >= 0 && y < mnGridRows)
+            mGrid[x][y].push_back(i);
+    }
+}
+#endif
+
 void KeyFrame::PreSave(set<KeyFrame*>& spKF,set<MapPoint*>& spMP, set<GeometricCamera*>& spCam)
 {
     // Save the id of each MapPoint in this KF, there can be null pointer in the vector

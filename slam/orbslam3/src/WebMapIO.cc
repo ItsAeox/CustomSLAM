@@ -40,7 +40,7 @@ namespace
 {
 
 const char kMagic[8] = {'W', 'E', 'B', 'V', 'I', 'O', 'M', 'P'};
-const int64_t kVersion = 2;  // 1: 64-bit integers (still read); 2: varints
+const int64_t kVersion = 3;  // 1: 64-bit integers; 2: varints; 3: + no grid / BoW (rebuilt on load), compact keypoints
 
 class WebOArchive
 {
@@ -98,8 +98,10 @@ private:
             Save(kv.second);
         }
     }
-    void Save(DBoW2::BowVector& b) { Save(static_cast<std::map<DBoW2::WordId, DBoW2::WordValue>&>(b)); }
-    void Save(DBoW2::FeatureVector& f) { Save(static_cast<std::map<DBoW2::NodeId, std::vector<unsigned int>>&>(f)); }
+    // version 3: the BoW vectors and the keypoint grid are rebuilt on load (Map::PostLoad: ComputeBoW, WebRebuildGrid)
+    void Save(DBoW2::BowVector&) { PutInt(0); }
+    void Save(DBoW2::FeatureVector&) { PutInt(0); }
+    void Save(std::vector<std::vector<std::vector<size_t>>>&) { PutInt(0); }
     // objects owned through pointers (Map::mvpBackupKeyFrames / mvpBackupMapPoints): stored inline
     template<class T> void Save(T*& p)
     {
@@ -117,6 +119,7 @@ public:
     typedef std::true_type is_loading;
     explicit WebIArchive(std::istream& is) : mIs(is) {}
     bool mVarint = true;  // false: a version-1 file (64-bit integers)
+    int64_t mVersion = kVersion;
     template<class T> WebIArchive& operator&(T& t) { Load(t); return *this; }
     template<class T> WebIArchive& operator&(const boost::serialization::array_wrapper<T>& a)
     {
@@ -220,6 +223,38 @@ private:
 
 }  // namespace
 
+// version 3 keypoints (KeyFrame::serialize calls serializeVectorKeyPoints<Archive> for mvKeys and mvKeysUn)
+template<>
+void serializeVectorKeyPoints<WebOArchive>(WebOArchive& ar, const std::vector<cv::KeyPoint>& vKP, const unsigned int)
+{
+    int n = (int)vKP.size();
+    ar & n;
+    for(const cv::KeyPoint& kp : vKP)
+    {
+        float x = kp.pt.x, y = kp.pt.y, angle = kp.angle;
+        int octave = kp.octave;
+        ar & x & y & angle & octave;
+    }
+}
+template<>
+void serializeVectorKeyPoints<WebIArchive>(WebIArchive& ar, const std::vector<cv::KeyPoint>& vKP, const unsigned int)
+{
+    int n = 0;
+    ar & n;
+    std::vector<cv::KeyPoint> v(std::max(n, 0));
+    for(cv::KeyPoint& kp : v)
+    {
+        if(ar.mVersion >= 3)
+        {
+            ar & kp.pt.x & kp.pt.y & kp.angle & kp.octave;
+            kp.size = 31.f;  // ORB patch size (not used by keyframes)
+        }
+        else  // versions 1-2: every cv::KeyPoint field, in upstream's order
+            ar & kp.angle & kp.response & kp.size & kp.pt.x & kp.pt.y & kp.class_id & kp.octave;
+    }
+    const_cast<std::vector<cv::KeyPoint>&>(vKP) = v;
+}
+
 // The vocabulary a map was built with: its BoW vectors and the keyframe database are only valid with the same one
 std::string Atlas::WebVocabularyTag(ORBVocabulary* pVoc)
 {
@@ -282,12 +317,13 @@ Map* Atlas::WebLoadMap(std::istream& is, std::string& err)
     std::string vocTag;
     unsigned int camId = 0;
     std::vector<float> camParams;
-    if(version != 1 && version != 2)
+    if(version < 1 || version > kVersion)
     {
         err = "unsupported map file version";
         return nullptr;
     }
     ar.mVarint = version >= 2;
+    ar.mVersion = version;
     ar & vocTag & camId & camParams;
     if(!ar.Good())
     {

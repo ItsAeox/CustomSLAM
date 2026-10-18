@@ -30,7 +30,9 @@ struct WebConfig
                                // pairs too close to triangulate give far points (on the ray at FarDepth x the scene median
                                // depth), kept out of local BA, fusion and the AR plane fits. 2 = the same, but in the
                                // pose solves (g2o + fast) a far point is a point at infinity: its mean viewing direction,
-                               // moved by the rotation only (mode 1 kept the made-up depth: rot_screen ATE x1.66). 0 = stock
+                               // moved by the rotation only (mode 1 kept the made-up depth: rot_screen ATE x1.66). 3 = mode 2
+                               // and far points also kept out of relocalisation PnP, Sim3 (loop / merge) and keyframe-culling
+                               // counts (mode 2 still broke room1 / MH04 there). 0 = stock
     double rotFarDepth = 10.0; // Web.Rot.FarDepth: far-point depth in scene median depths
     int rotFarLife = 6;        // Web.Rot.FarLife: keyframes a far point lives (it constrains rotation only while the camera
                                // stays near where it was made)

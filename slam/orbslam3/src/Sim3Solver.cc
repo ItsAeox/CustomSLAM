@@ -25,6 +25,7 @@
 
 #include "KeyFrame.h"
 #include "ORBmatcher.h"
+#include "WebConfig.h"
 
 #include "Thirdparty/DBoW2/DUtils/Random.h"
 
@@ -80,6 +81,10 @@ Sim3Solver::Sim3Solver(KeyFrame *pKF1, KeyFrame *pKF2, const vector<MapPoint *> 
 
             if(pMP1->isBad() || pMP2->isBad())
                 continue;
+#ifdef ORBSLAM3_WEB
+            if((pMP1->mbWebFar || pMP2->mbWebFar) && webConfig().rotFar >= 3)  // Web.Rot.FarPoints 3: made-up depth, no use for a 3D alignment
+                continue;
+#endif
 
             if(bDifferentKFs)
                 pKFm = vpKeyFrameMatchedMP[i1];

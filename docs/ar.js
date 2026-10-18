@@ -10,6 +10,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { createSlamWorker, cameraSettings, intrinsics, loadCalibration, phoneImuSettings, savedCalibrations, STATE, vocabUrl } from './slamclient.js';
 import { estimateImuCalib } from './imucalib.js';
 import { estimateScale } from './imuscale.js';
+import { createMiniMap } from './minimap.js';
 import { dot, fitPlaneRansac, normalize, rayPlane } from './plane.js';
 import { applyOptions, applyPreset, buildOptionsUI, describeOptions, matchPreset, OPTIONS, optionsFromParams, optionsToParams, PRESETS } from './options.js';
 
@@ -290,6 +291,37 @@ function placeFloorMesh() {
   floorMesh.position.set(floor.centroid[0] - floor.n[0] * k, floor.centroid[1] - floor.n[1] * k, floor.centroid[2] - floor.n[2] * k);
   floorMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(...floor.n));
   floorMesh.scale.setScalar(floor.height * 2);
+}
+
+// ---------------------------------------------------------------- panels and the 3D map view
+let mini = null, miniFloor = null, miniTree = null, miniMaps = -1;
+function setupPanels() {
+  const toggle = (btn, els, labels) => {
+    btn.onclick = () => {
+      const open = els[0].hidden;
+      for (const e of els) e.hidden = !open;
+      btn.setAttribute('aria-expanded', String(open));
+      if (labels) btn.textContent = open ? labels[1] : labels[0];
+    };
+  };
+  toggle($('menuBtn'), [$('bar')], ['☰', '✕']);
+  toggle($('infoBtn'), [$('hud'), $('usage')]);
+  toggle($('miniTab'), [$('miniOpts')], ['3D view ▴', '3D view ▾']);
+  mini = createMiniMap($('mini'));
+  const ticks = { mvPoints: 'points', mvKF: 'keyframes', mvGraph: 'graph', mvTraj: 'trajectory', mvGrid: 'grid', mvTree: 'tree', mvFollow: 'follow' };
+  for (const [id, key] of Object.entries(ticks)) {
+    mini.show[key] = $(id).checked;
+    $(id).onchange = () => { mini.show[key] = $(id).checked; if (key === 'follow' && $(id).checked) mini.resetView(); };
+  }
+  $('mvShow').onchange = () => { $('mini').hidden = !$('mvShow').checked; mini.setVisible($('mvShow').checked); };
+}
+function updateMini(r) {  // per frame: map (every 10th frame), camera, floor, tree, trajectory reset on a map change
+  if (!mini) return;
+  if (r.viz && r.viz.mps) mini.updateMap(r.viz);
+  if (tracking() && twc) mini.updateCamera(twc);
+  if (floor !== miniFloor) { miniFloor = floor; mini.setFloor(floor); }
+  if (cactus !== miniTree) { miniTree = cactus; mini.setTree(cactus ? cactus.position.toArray() : null, objBase * sizeFactor()); }
+  if (stats[3] !== miniMaps) { miniMaps = stats[3]; mini.clearTrajectory(); }
 }
 
 // ---------------------------------------------------------------- room map save and reload
@@ -624,7 +656,10 @@ async function start() {
       }
     }
     layout();
-    $('start').hidden = true; $('hud').hidden = $('bar').hidden = $('topRow').hidden = false;
+    $('start').hidden = true; $('topRow').hidden = false;
+    $('menuBtn').hidden = $('infoBtn').hidden = $('miniWrap').hidden = false;  // panels start collapsed
+    $('usage').hidden = true;
+    setupPanels();
     // Back / Options return to the start screen (options kept in the URL): reload ends the camera and the worker
     history.pushState({ running: true }, '');
     addEventListener('popstate', () => location.reload());
@@ -866,6 +901,7 @@ async function start() {
       if (tracking() && !trackingSince) trackingSince = performance.now();
       if (!tracking()) trackingSince = 0;
       resolvePendingTap();  // instant placement
+      updateMini(r);
       drawFrame(r.bmp);
       while (replayTaps.length && replayTaps[0].t <= replayT) {  // recorded tap: same image point as on the phone
         const p = replayTaps.shift();

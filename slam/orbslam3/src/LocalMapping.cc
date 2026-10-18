@@ -1082,6 +1082,10 @@ void LocalMapping::KeyFrameCulling()
                         if(pKF->mvDepth[i]>pKF->mThDepth || pKF->mvDepth[i]<0)
                             continue;
                     }
+#ifdef ORBSLAM3_WEB
+                    if(pMP->mbWebFar && webConfig().rotFar >= 3)  // far points say nothing about redundancy
+                        continue;
+#endif
 
                     nMPs++;
                     if(pMP->Observations()>thObs)

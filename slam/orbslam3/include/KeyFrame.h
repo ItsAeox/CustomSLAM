@@ -216,6 +216,9 @@ public:
 
     // Bag of Words Representation
     void ComputeBoW();
+#ifdef ORBSLAM3_WEB
+    void WebRebuildGrid();  // room map load (WebMapIO.cc v3): keypoint grid from mvKeysUn when it was not stored
+#endif
 
     // Covisibility graph functions
     void AddConnection(KeyFrame* pKF, const int &weight);

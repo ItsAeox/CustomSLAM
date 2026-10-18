@@ -4527,6 +4527,15 @@ bool Tracking::Relocalization()
         else
         {
             int nmatches = matcher.SearchByBoW(pKF,mCurrentFrame,vvpMapPointMatches[i]);
+#ifdef ORBSLAM3_WEB
+            if(webConfig().rotFar >= 3)  // Web.Rot.FarPoints 3: no far points in the PnP (made-up position)
+                for(MapPoint*& pMP : vvpMapPointMatches[i])
+                    if(pMP && pMP->mbWebFar)
+                    {
+                        pMP = static_cast<MapPoint*>(NULL);
+                        nmatches--;
+                    }
+#endif
             if(nmatches<15)
             {
                 vbDiscarded[i] = true;
