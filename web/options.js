@@ -35,7 +35,7 @@ export const OPTIONS = [
   { key: 'init', label: 'Map start', values: [['stock', 'original thresholds'], ['quick', 'quicker (60 matches, 0.5°, 40 points)'], ['gyro', 'gyro two-view (+ gyro prior)']], def: 'stock' },
   { key: 'kf', label: 'Keyframes', values: [['stock', 'original'], ['fewer', 'fewer (ratio 0.8)']], def: 'stock' },
   { key: 'voc', label: 'Vocabulary (download)', values: [['full', 'full (49 MB, original)'], ['small', 'small (5 MB, own k10L5)']], def: 'full', when: (o) => o.desc !== 'teblid' },
-  { key: 'rot', label: 'Turning on the spot', values: [['off', 'original (no new points without sideways motion)'], ['far', 'far points (prototype)']], def: 'off' },
+  { key: 'rot', label: 'Turning on the spot', values: [['off', 'original (no new points without sideways motion)'], ['far', 'far points (prototype 1: made-up depth)'], ['inf', 'points at infinity (prototype 2)']], def: 'off' },
   { key: 'hold', label: 'Tree during brief tracking losses', page: 'ar', values: [['hide', 'hidden (original)'], ['gyro', 'held by the gyro for up to 0.4 s']], def: 'hide' },
 ];
 
@@ -132,6 +132,7 @@ export function applyOptions(yaml, o) {
   if (o.tracker === 'klt' && o.kltnorm === 'on') extra.push('Web.KLT.Normalize: 1');
   if (o.tracker === 'klt' && o.kltpar === 'parallel') extra.push('Web.KLT.Parallel: 1');  // LK points split over 4 threads
   if (o.rot === 'far') extra.push('Web.Rot.FarPoints: 1');  // pure-rotation prototype (LocalMapping::WebCreateFarPoints)
+  if (o.rot === 'inf') extra.push('Web.Rot.FarPoints: 2');  // the same far points as points at infinity in the pose solve
   if (o.pose === 'fast') extra.push('Web.Track.FastPose: 1');
   if (o.orbpar === 'parallel') extra.push('Web.ORB.Parallel: 1');
   if (o.recover === 'coast') extra.push('Web.Track.Coast: 2', 'Web.Track.CoastTime: 3');  // 3 s: looking away and back (gyro)

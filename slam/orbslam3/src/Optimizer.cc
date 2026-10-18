@@ -832,6 +832,8 @@ struct WebPoseObs
     Eigen::Vector2d uv;
     double w;   // inverse sigma^2 of the keypoint octave
     int idx;    // keypoint index in the frame
+    bool inf = false;  // Web.Rot.FarPoints 2: Xw is a viewing direction (point at infinity: rotation only)
+    Eigen::Vector3d Cam(const Sophus::SE3d& T) const { return inf ? Eigen::Vector3d(T.so3() * Xw) : Eigen::Vector3d(T * Xw); }
 };
 
 // robust chi2 at T over the active observations; with H/b also the normal equations (b = -J^T W e, as g2o)
@@ -846,7 +848,7 @@ double WebPoseCost(const std::vector<WebPoseObs>& vObs, const std::vector<char>&
         if(!vActive[k])
             continue;
         const WebPoseObs& o = vObs[k];
-        const Eigen::Vector3d Xc = T * o.Xw;
+        const Eigen::Vector3d Xc = o.Cam(T);
         const Eigen::Vector2d e = o.uv - cam->project(Xc);
         const double c2 = o.w * e.squaredNorm();
         double rho0 = c2, rho1 = 1.0;
@@ -863,6 +865,8 @@ double WebPoseCost(const std::vector<WebPoseObs>& vObs, const std::vector<char>&
             D << 0, Xc(2), -Xc(1), 1, 0, 0,
                  -Xc(2), 0, Xc(0), 0, 1, 0,
                  Xc(1), -Xc(0), 0, 0, 0, 1;
+            if(o.inf)
+                D.rightCols<3>().setZero();
             const Eigen::Matrix<double, 2, 6> J = -cam->projectJac(Xc) * D;
             const double w = rho1 * o.w;
             H->noalias() += w * J.transpose() * J;
@@ -966,6 +970,11 @@ int WebPoseOptimization(Frame* pFrame)
             const cv::KeyPoint& kp = pFrame->mvKeysUn[i];
             vObs.push_back({pMP->GetWorldPos().cast<double>(), Eigen::Vector2d(kp.pt.x, kp.pt.y),
                             (double)pFrame->mvInvLevelSigma2[kp.octave], i});
+            if(pMP->mbWebFar && webConfig().rotFar == 2)  // point at infinity: its mean viewing direction
+            {
+                vObs.back().inf = true;
+                vObs.back().Xw = pMP->GetNormal().cast<double>().normalized();
+            }
         }
     }
     const int n = (int)vObs.size();
@@ -983,7 +992,7 @@ int WebPoseOptimization(Frame* pFrame)
         for(int k = 0; k < n; k++)
         {
             const WebPoseObs& o = vObs[k];
-            const Eigen::Vector2d e = o.uv - cam->project(T * o.Xw);
+            const Eigen::Vector2d e = o.uv - cam->project(o.Cam(T));
             const bool bOut = o.w * e.squaredNorm() > 5.991;
             pFrame->mvbOutlier[o.idx] = bOut;
             vActive[k] = !bOut;
@@ -1130,6 +1139,13 @@ int Optimizer::PoseOptimization(Frame *pFrame)
 
                     e->pCamera = pFrame->mpCamera;
                     e->Xw = pMP->GetWorldPos().cast<double>();
+#ifdef ORBSLAM3_WEB
+                    if(pMP->mbWebFar && webConfig().rotFar == 2)  // point at infinity: its mean viewing direction
+                    {
+                        e->bInf = true;
+                        e->Xw = pMP->GetNormal().cast<double>().normalized();
+                    }
+#endif
 
                     optimizer.addEdge(e);
 

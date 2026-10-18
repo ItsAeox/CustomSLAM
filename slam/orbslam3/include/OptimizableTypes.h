@@ -41,12 +41,12 @@ public:
     void computeError()  {
         const g2o::VertexSE3Expmap* v1 = static_cast<const g2o::VertexSE3Expmap*>(_vertices[0]);
         Eigen::Vector2d obs(_measurement);
-        _error = obs-pCamera->project(v1->estimate().map(Xw));
+        _error = obs-pCamera->project(CameraPoint(v1));
     }
 
     bool isDepthPositive() {
         const g2o::VertexSE3Expmap* v1 = static_cast<const g2o::VertexSE3Expmap*>(_vertices[0]);
-        return (v1->estimate().map(Xw))(2)>0.0;
+        return CameraPoint(v1)(2)>0.0;
     }
 
 
@@ -54,6 +54,12 @@ public:
 
     Eigen::Vector3d Xw;
     GeometricCamera* pCamera;
+    // web port (Web.Rot.FarPoints 2): Xw is a viewing direction (a point at infinity): only the rotation moves it
+    bool bInf = false;
+    Eigen::Vector3d CameraPoint(const g2o::VertexSE3Expmap* v) const
+    {
+        return bInf ? Eigen::Vector3d(v->estimate().rotation() * Xw) : v->estimate().map(Xw);
+    }
 };
 
 class  EdgeSE3ProjectXYZOnlyPoseToBody: public  g2o::BaseUnaryEdge<2, Eigen::Vector2d, g2o::VertexSE3Expmap>{

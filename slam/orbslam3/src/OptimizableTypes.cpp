@@ -48,7 +48,7 @@ namespace ORB_SLAM3 {
 
     void EdgeSE3ProjectXYZOnlyPose::linearizeOplus() {
         g2o::VertexSE3Expmap * vi = static_cast<g2o::VertexSE3Expmap *>(_vertices[0]);
-        Eigen::Vector3d xyz_trans = vi->estimate().map(Xw);
+        Eigen::Vector3d xyz_trans = CameraPoint(vi);
 
         double x = xyz_trans[0];
         double y = xyz_trans[1];
@@ -58,6 +58,8 @@ namespace ORB_SLAM3 {
         SE3deriv << 0.f, z,   -y, 1.f, 0.f, 0.f,
                      -z , 0.f, x, 0.f, 1.f, 0.f,
                      y ,  -x , 0.f, 0.f, 0.f, 1.f;
+        if(bInf)
+            SE3deriv.rightCols<3>().setZero();  // a point at infinity does not move with the translation
 
         _jacobianOplusXi = -pCamera->projectJac(xyz_trans) * SE3deriv;
     }
