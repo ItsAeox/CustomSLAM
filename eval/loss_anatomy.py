@@ -31,7 +31,11 @@ ok = np.isin(st, [2, 5])
 tracked, klt, lmap, kfs, mps, queue, accept, newmp, tex, untr = (tr[:, 2], tr[:, 11], tr[:, 12], tr[:, 13], tr[:, 14], tr[:, 15],
                                                                  tr[:, 16], tr[:, 17], tr[:, 18], tr[:, 19])
 losses = [i for i in range(1, len(ok)) if ok[i - 1] and not ok[i]]
-print(f"{run}: {len(tr)} frames, {len(losses)} losses, maps at the end {int(kfs[-1])} KFs")
+# a map ends when the current map's keyframe count drops to 0 (culling only removes a few): kept in the atlas if it had
+# >= 10 keyframes (new map started), else discarded (reset, e.g. a failed start)
+ends = [i for i in range(1, len(kfs)) if kfs[i] == 0 and kfs[i - 1] > 0]
+kept = sum(1 for i in ends if kfs[i - 1] >= 10)
+print(f"{run}: {len(tr)} frames, {len(losses)} losses, new maps {kept} (+ {len(ends) - kept} resets), current map at the end {int(kfs[-1])} KFs")
 for i in losses:
     w = (t >= t[i] - 2.0) & (np.arange(len(t)) < i)
     def at(dt):
@@ -46,3 +50,16 @@ for i in losses:
           f" | KFs added {kf_add} (last {last_kf:.1f} s before) | new points {int(new)} | mapping busy {100 * np.mean(accept[w] == 0):.0f}%"
           f" (queue max {int(queue[w].max()) if w.any() else 0}) | untracked textured cells {int(untr[i - 1])}/{int(tex[i - 1])}"
           f" | gyro median {np.median(g):.0f} max {np.max(g):.0f} deg/s | flow frames {100 * np.mean(klt[w]):.0f}%")
+    j = i
+    while j < len(ok) and not ok[j]:
+        j += 1
+    end = [e for e in ends if i <= e <= j]
+    how = "end of recording" if j == len(ok) else ("tracking again in a new map" if any(kfs[e - 1] >= 10 for e in end) else
+                                                   "tracking again after a reset" if end else "tracking again in the same map")
+    print(f"    lost {t[min(j, len(t) - 1)] - t[i]:.1f} s, then {how}")
+lost_s = np.sum(np.diff(t)[~ok[1:]])
+print(f"  lost {lost_s:.1f} s of {t[-1] - t[0]:.1f} s; tracked {100 * ok.mean():.0f}% of frames")
+if tr.shape[1] >= 22:  # turn bridge columns (Web.Turn.Bridge, 18 Oct): bridges so far, tracked points from before the latest bridge
+    nb, old = tr[:, 20], tr[:, 21]
+    print(f"  turn bridges {int(nb[-1])}; frames after a bridge tracking mostly points from before it: "
+          f"{int(np.sum((nb > 0) & (old > 0.5 * tracked)))}")
