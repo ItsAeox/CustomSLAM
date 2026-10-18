@@ -688,6 +688,9 @@ void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<M
 
 void Optimizer::FullInertialBA(Map *pMap, int its, const bool bFixLocal, const long unsigned int nLoopId, bool *pbStopFlag, bool bInit, float priorG, float priorA, Eigen::VectorXd *vSingVal, bool *bHess)
 {
+#ifdef ORBSLAM3_WEB
+    IMU::gWebImuWhere = "FullInertialBA";  // ISSUES G24 diagnostic
+#endif
     long unsigned int maxKFid = pMap->GetMaxKFid();
     const vector<KeyFrame*> vpKFs = pMap->GetAllKeyFrames();
     const vector<MapPoint*> vpMPs = pMap->GetAllMapPoints();
@@ -3144,6 +3147,9 @@ int Optimizer::OptimizeSim3(KeyFrame *pKF1, KeyFrame *pKF2, vector<MapPoint *> &
 
 void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& num_fixedKF, int& num_OptKF, int& num_MPs, int& num_edges, bool bLarge, bool bRecInit)
 {
+#ifdef ORBSLAM3_WEB
+    IMU::gWebImuWhere = "LocalInertialBA";  // ISSUES G24 diagnostic
+#endif
     Map* pCurrentMap = pKF->GetMap();
 
     int maxOpt=10;
@@ -3803,6 +3809,9 @@ Eigen::MatrixXd Optimizer::Marginalize(const Eigen::MatrixXd &H, const int &star
 
 void Optimizer::InertialOptimization(Map *pMap, Eigen::Matrix3d &Rwg, double &scale, Eigen::Vector3d &bg, Eigen::Vector3d &ba, bool bMono, Eigen::MatrixXd  &covInertial, bool bFixedVel, bool bGauss, float priorG, float priorA)
 {
+#ifdef ORBSLAM3_WEB
+    IMU::gWebImuWhere = "InertialOptimization (Rwg, scale, biases)";  // ISSUES G24 diagnostic
+#endif
     Verbose::PrintMess("inertial optimization", Verbose::VERBOSITY_NORMAL);
     int its = 200;
     long unsigned int maxKFid = pMap->GetMaxKFid();
@@ -3993,6 +4002,9 @@ void Optimizer::InertialOptimization(Map *pMap, Eigen::Matrix3d &Rwg, double &sc
 
 void Optimizer::InertialOptimization(Map *pMap, Eigen::Vector3d &bg, Eigen::Vector3d &ba, float priorG, float priorA)
 {
+#ifdef ORBSLAM3_WEB
+    IMU::gWebImuWhere = "InertialOptimization (biases)";  // ISSUES G24 diagnostic
+#endif
     int its = 200; // Check number of iterations
     long unsigned int maxKFid = pMap->GetMaxKFid();
     const vector<KeyFrame*> vpKFs = pMap->GetAllKeyFrames();
@@ -4155,6 +4167,9 @@ void Optimizer::InertialOptimization(Map *pMap, Eigen::Vector3d &bg, Eigen::Vect
 
 void Optimizer::InertialOptimization(Map *pMap, Eigen::Matrix3d &Rwg, double &scale)
 {
+#ifdef ORBSLAM3_WEB
+    IMU::gWebImuWhere = "InertialOptimization (Rwg, scale)";  // ISSUES G24 diagnostic
+#endif
     int its = 10;
     long unsigned int maxKFid = pMap->GetMaxKFid();
     const vector<KeyFrame*> vpKFs = pMap->GetAllKeyFrames();
@@ -4714,6 +4729,9 @@ void Optimizer::LocalBundleAdjustment(KeyFrame* pMainKF,vector<KeyFrame*> vpAdju
 
 void Optimizer::MergeInertialBA(KeyFrame* pCurrKF, KeyFrame* pMergeKF, bool *pbStopFlag, Map *pMap, LoopClosing::KeyFrameAndPose &corrPoses)
 {
+#ifdef ORBSLAM3_WEB
+    IMU::gWebImuWhere = "MergeInertialBA";  // ISSUES G24 diagnostic
+#endif
     const int Nd = 6;
     const unsigned long maxKFid = pCurrKF->mnId;
 
@@ -5257,6 +5275,9 @@ void Optimizer::MergeInertialBA(KeyFrame* pCurrKF, KeyFrame* pMergeKF, bool *pbS
 
 int Optimizer::PoseInertialOptimizationLastKeyFrame(Frame *pFrame, bool bRecInit)
 {
+#ifdef ORBSLAM3_WEB
+    IMU::gWebImuWhere = "PoseInertialOptimizationLastKeyFrame";  // ISSUES G24 diagnostic
+#endif
     g2o::SparseOptimizer optimizer;
     g2o::BlockSolverX::LinearSolverType * linearSolver;
 
@@ -5589,6 +5610,18 @@ int Optimizer::PoseInertialOptimizationLastKeyFrame(Frame *pFrame, bool bRecInit
         }
     }
 
+#ifdef ORBSLAM3_WEB
+    {   // web port (ISSUES G24): a diverged Gauss-Newton can end finite but absurd (seen: gyro bias 1.5e18 rad/s, which
+        // then turned the pre-integration NaN); its pose and velocity are garbage too. Keep the frame's predicted state
+        // and report no inliers (this frame is lost) instead of applying the result.
+        const IMU::Bias bw(VA->estimate()[0], VA->estimate()[1], VA->estimate()[2], VG->estimate()[0], VG->estimate()[1], VG->estimate()[2]);
+        if(!IMU::WebBiasSane(bw) || !VP->estimate().twb.allFinite() || !VP->estimate().Rwb.allFinite() || !VV->estimate().allFinite())
+        {
+            IMU::WebNanTrap("PoseInertialOptimizationLastKeyFrame: diverged (absurd bias or pose), result dropped");
+            return 0;
+        }
+    }
+#endif
     // Recover optimized pose, velocity and biases
     pFrame->SetImuPoseVelocity(VP->estimate().Rwb.cast<float>(), VP->estimate().twb.cast<float>(), VV->estimate().cast<float>());
     Vector6d b;
@@ -5641,6 +5674,9 @@ int Optimizer::PoseInertialOptimizationLastKeyFrame(Frame *pFrame, bool bRecInit
 
 int Optimizer::PoseInertialOptimizationLastFrame(Frame *pFrame, bool bRecInit)
 {
+#ifdef ORBSLAM3_WEB
+    IMU::gWebImuWhere = "PoseInertialOptimizationLastFrame";  // ISSUES G24 diagnostic
+#endif
 #ifdef ORBSLAM3_WEB
     // web port: upstream builds the prior edge from the previous frame's IMU constraint (mpcpi) even when it does not
     // exist (that frame was not optimised inertially, e.g. right after a rejected IMU initialisation: "scale too small",
@@ -6002,6 +6038,18 @@ int Optimizer::PoseInertialOptimizationLastFrame(Frame *pFrame, bool bRecInit)
     nInliers = nInliersMono + nInliersStereo;
 
 
+#ifdef ORBSLAM3_WEB
+    {   // web port (ISSUES G24): a diverged Gauss-Newton can end finite but absurd (seen: gyro bias 1.5e18 rad/s, which
+        // then turned the pre-integration NaN); its pose and velocity are garbage too. Keep the frame's predicted state
+        // and report no inliers (this frame is lost) instead of applying the result.
+        const IMU::Bias bw(VA->estimate()[0], VA->estimate()[1], VA->estimate()[2], VG->estimate()[0], VG->estimate()[1], VG->estimate()[2]);
+        if(!IMU::WebBiasSane(bw) || !VP->estimate().twb.allFinite() || !VP->estimate().Rwb.allFinite() || !VV->estimate().allFinite())
+        {
+            IMU::WebNanTrap("PoseInertialOptimizationLastFrame: diverged (absurd bias or pose), result dropped");
+            return 0;
+        }
+    }
+#endif
     // Recover optimized pose, velocity and biases
     pFrame->SetImuPoseVelocity(VP->estimate().Rwb.cast<float>(), VP->estimate().twb.cast<float>(), VV->estimate().cast<float>());
     Vector6d b;

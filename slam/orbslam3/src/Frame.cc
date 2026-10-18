@@ -442,8 +442,8 @@ void Frame::SetPose(const Sophus::SE3<float> &Tcw) {
 void Frame::SetNewBias(const IMU::Bias &b)
 {
 #ifdef ORBSLAM3_WEB
-    if(!IMU::WebFinite(b))
-        IMU::WebNanTrap("Frame::SetNewBias");
+    if(!IMU::WebBiasSane(b))
+        IMU::WebNanTrap("Frame::SetNewBias (non-finite or absurd bias)");
 #endif
     mImuBias = b;
     if(mpImuPreintegrated)

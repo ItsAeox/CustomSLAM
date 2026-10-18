@@ -826,8 +826,8 @@ float KeyFrame::ComputeSceneMedianDepth(const int q)
 void KeyFrame::SetNewBias(const IMU::Bias &b)
 {
 #ifdef ORBSLAM3_WEB
-    if(!IMU::WebFinite(b))
-        IMU::WebNanTrap("KeyFrame::SetNewBias");
+    if(!IMU::WebBiasSane(b))
+        IMU::WebNanTrap("KeyFrame::SetNewBias (non-finite or absurd bias)");
 #endif
     unique_lock<mutex> lock(mMutexPose);
     mImuBias = b;

@@ -268,6 +268,13 @@ inline bool WebFinite(const Bias& b)
     return std::isfinite(b.bax) && std::isfinite(b.bay) && std::isfinite(b.baz) && std::isfinite(b.bwx) &&
            std::isfinite(b.bwy) && std::isfinite(b.bwz);
 }
+// physically possible: |gyro bias| <= 1 rad/s, |acc bias| <= 20 m/s^2 per axis (a diverged Gauss-Newton gave 1.5e18)
+inline bool WebBiasSane(const Bias& b)
+{
+    return WebFinite(b) && std::abs(b.bwx) <= 1.f && std::abs(b.bwy) <= 1.f && std::abs(b.bwz) <= 1.f &&
+           std::abs(b.bax) <= 20.f && std::abs(b.bay) <= 20.f && std::abs(b.baz) <= 20.f;
+}
+extern thread_local const char* gWebImuWhere;  // the last IMU optimisation that ran in this thread (for WebNanTrap)
 #endif
 
 }

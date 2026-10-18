@@ -38,11 +38,13 @@ Eigen::Matrix3f NormalizeRotation(const Eigen::Matrix3f &R){
 }
 
 #ifdef ORBSLAM3_WEB
+thread_local const char* gWebImuWhere = "-";
+
 __attribute__((noinline)) void WebNanTrap(const char* where)
 {
     static std::atomic<int> n{0};
     if(n++ < 10)
-        std::cerr << "IMU-NAN first seen in " << where << std::endl;
+        std::cerr << "IMU-NAN first seen in " << where << " (last IMU optimisation in this thread: " << gWebImuWhere << ")" << std::endl;
 }
 #endif
 
@@ -305,6 +307,10 @@ Eigen::Matrix3f Preintegrated::GetDeltaRotation(const Bias &b_)
                       << " | preint gyro bias " << b.bwx << " " << b.bwy << " " << b.bwz << " | JRg finite " << JRg.allFinite()
                       << " | dR finite " << dR.allFinite() << " | dT " << dT << std::endl;
     }
+    // a diverging Gauss-Newton evaluates absurd biases (seen: inf, 6e37) before PoseInertialOptimization* can drop its
+    // result; Sophus aborted here. Skip the bias correction for such an evaluation (no change for possible biases).
+    if(!WebBiasSane(b_) || !(JRg * dbg).allFinite())
+        return NormalizeRotation(dR);
 #endif
     return NormalizeRotation(dR * Sophus::SO3f::exp(JRg * dbg).matrix());
 }
@@ -315,6 +321,10 @@ Eigen::Vector3f Preintegrated::GetDeltaVelocity(const Bias &b_)
     Eigen::Vector3f dbg, dba;
     dbg << b_.bwx-b.bwx,b_.bwy-b.bwy,b_.bwz-b.bwz;
     dba << b_.bax-b.bax,b_.bay-b.bay,b_.baz-b.baz;
+#ifdef ORBSLAM3_WEB
+    if(!WebBiasSane(b_))  // see GetDeltaRotation
+        return dV;
+#endif
     return dV + JVg * dbg + JVa * dba;
 }
 
@@ -324,6 +334,10 @@ Eigen::Vector3f Preintegrated::GetDeltaPosition(const Bias &b_)
     Eigen::Vector3f dbg, dba;
     dbg << b_.bwx-b.bwx,b_.bwy-b.bwy,b_.bwz-b.bwz;
     dba << b_.bax-b.bax,b_.bay-b.bay,b_.baz-b.baz;
+#ifdef ORBSLAM3_WEB
+    if(!WebBiasSane(b_))  // see GetDeltaRotation
+        return dP;
+#endif
     return dP + JPg * dbg + JPa * dba;
 }
 

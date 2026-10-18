@@ -1,0 +1,3 @@
+# replay_arms.sh arms: the IMU arms again after the second G24 guard (impossible biases), to count aborts and compare
+imu_dt88|imu|--mode mono_inertial;--imu-dt -88
+imufast_dt88|imufast|--mode mono_inertial;--imu-dt -88
