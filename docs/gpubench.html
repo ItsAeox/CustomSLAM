@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WebGPU ORB Benchmark</title>
+<style>
+  :root { --bg: #ffffff; --fg: #1d1d1f; --muted: #6e6e73; --line: #d2d2d7; --acc: #0a66c2; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111214; --fg: #f2f2f4; --muted: #a1a1a6; --line: #2c2c30; --acc: #5aa2ff; } }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  p { color: var(--muted); margin: 0 0 14px; max-width: 46em; }
+  button { font: inherit; padding: 10px 18px; border-radius: 8px; border: 1px solid var(--acc); background: var(--acc); color: #fff; }
+  button:disabled { opacity: 0.5; }
+  pre { white-space: pre-wrap; word-break: break-word; border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-top: 14px; font-size: 13px; }
+  a { color: var(--acc); }
+</style>
+</head>
+<body>
+<a href="./">← index</a>
+<h1>WebGPU ORB benchmark</h1>
+<p>Times the GPU work a GPU version of ORB would do on one 480×640 frame (image pyramid, corner detection, blur,
+orientation and descriptors for up to 2000 corners) plus copying the results back to the CPU, 150 times. It runs in a
+worker, where the SLAM runs. About 30 seconds; keep the screen on. On the PC dev server the results are saved to
+<code>results/browser</code>.</p>
+<button id="go">Run</button> <button id="go2">Run on the main thread</button>
+<pre id="out">Not run yet.</pre>
+<script type="module">
+const out = document.getElementById('out');
+const name = `gpubench_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.log`;
+const lines = [];
+const log = (s) => {
+  lines.push(s);
+  out.textContent = lines.join('\n');
+  if (location.hostname === 'localhost') navigator.sendBeacon(`/api/result?name=${name}&append=1`, s + '\n');
+};
+const start = (where) => {
+  document.getElementById('go').disabled = document.getElementById('go2').disabled = true;
+  lines.length = 0;
+  log(`${new Date().toString()} | ${navigator.userAgent} | ${navigator.hardwareConcurrency} cores | ${where}`);
+};
+const finish = () => { document.getElementById('go').disabled = document.getElementById('go2').disabled = false; };
+document.getElementById('go').onclick = () => {
+  start('worker');
+  const w = new Worker('gpubench.worker.js', { type: 'module' });
+  w.onmessage = (e) => {
+    if (e.data.line) log(e.data.line);
+    if (e.data.error) { log(`ERROR ${e.data.error}`); finish(); w.terminate(); }
+    if (e.data.done) { log('done'); finish(); w.terminate(); }
+  };
+  w.onerror = (e) => { log(`ERROR (worker) ${e.message}`); finish(); };
+  w.postMessage({ iters: 150 });
+};
+document.getElementById('go2').onclick = async () => {
+  start('main thread');
+  try {
+    const { runBench } = await import('./gpubench.js');
+    await runBench(log, 150);
+    log('done');
+  } catch (err) { log(`ERROR ${err.message || err}`); }
+  finish();
+};
+</script>
+</body>
+</html>

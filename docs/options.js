@@ -10,7 +10,7 @@ export const OPTIONS = [
   { key: 'reloc', label: 'Relocalise before new map', values: [['3', '3 s (stock)'], ['10', '10 s'], ['30', '30 s']], def: '3' },
   { key: 'motion', label: 'Motion model', values: [['stock', 'stock (constant velocity per frame)'], ['time', 'time-scaled (dropped frames)']], def: 'stock' },
   { key: 'imu', label: 'IMU (mono-inertial, experimental)', page: 'ar', values: [['off', 'off (visual only)'], ['on', 'on (DeviceMotion)']], def: 'off' },
-  { key: 'imudt', label: 'IMU time offset (ms, measured with "Record")', page: 'ar',
+  { key: 'imudt', label: 'IMU time offset (ms, measured with "Record")', page: 'ar', device: true,  // a property of the phone: presets keep it
     values: [['0', '0 (none)'], ['-40', '−40'], ['-20', '−20'], ['20', '+20'], ['40', '+40'], ['60', '+60'], ['80', '+80'],
              ['100', '+100'], ['120', '+120']], def: '0' },
   { key: 'gyro', label: 'Gyro rotation prior (visual-only tracking)', page: 'ar',
@@ -36,6 +36,7 @@ export const OPTIONS = [
   { key: 'kf', label: 'Keyframes', values: [['stock', 'original'], ['fewer', 'fewer (ratio 0.8)']], def: 'stock' },
   { key: 'voc', label: 'Vocabulary (download)', values: [['full', 'full (49 MB, original)'], ['small', 'small (5 MB, own k10L5)']], def: 'full', when: (o) => o.desc !== 'teblid' },
   { key: 'rot', label: 'Turning on the spot', values: [['off', 'original (no new points without sideways motion)'], ['far', 'far points (prototype 1: made-up depth)'], ['inf', 'points at infinity (prototype 2)'], ['inf3', 'points at infinity, kept out of relocalisation (prototype 3)']], def: 'off' },
+  { key: 'bridge', label: 'After turning away (gyro)', values: [['off', 'original (relocalise until the timeout, then a new map)'], ['tv', 'continue this map: two-view start checked by the gyro'], ['gyro', 'continue this map: gyro two-view start']], def: 'off' },
   { key: 'newarea', label: 'New areas when turning', values: [['stock', 'original (keyframes by tracked-point count)'], ['cov', 'extra keyframes for new textured areas'], ['cov2', 'extra keyframes + new points from smaller baselines']], def: 'stock' },
   { key: 'hold', label: 'Tree during brief tracking losses', page: 'ar', values: [['hide', 'hidden (original)'], ['gyro', 'held by the gyro for up to 0.4 s']], def: 'hide' },
 ];
@@ -72,8 +73,11 @@ export const PRESETS = [
     note: 'The KLT optical flow split over 4 threads (the browser build of OpenCV runs it on one). Same tracks as one thread; less time per KLT frame.' },
   { key: 'rotate', label: 'Fastest + turning on the spot (prototype)', set: { kltmax: '4', motion: 'time', map: 'light', rot: 'far' },
     note: 'Prototype 1: when you turn without moving sideways, new points are added far away instead of none, so tracking does not run out of points. Datasets: same robustness, position error 1.66x. Prototype 2 (points at infinity) is under Algorithm options. Untested on the phone.' },
-  { key: 'light', label: 'Light ORB', set: { tracker: 'stock', features: '600', levels: '6' },
-    note: 'ORB on every frame with 600 features and 6 pyramid levels (23% less tracking time, same accuracy on EuRoC).' },
+  // round 4 (2026-10-18 evening)
+  { key: 'fastqpf', label: 'Fastest + quick solver + parallel ORB + 4-thread flow', set: { kltmax: '4', motion: 'time', map: 'light', pose: 'fast', orbpar: 'parallel', kltpar: 'parallel' },
+    note: 'The three speed-ups together (same results as "Hybrid, fastest", less time): tracking 36 % faster on MH01 in the browser build (desktop).' },
+  { key: 'gbridge', label: 'Fastest + gyro recovery + continue the map after turning', set: { kltmax: '4', motion: 'time', map: 'light', gyro: 'on', recover: 'coast', hold: 'gyro', bridge: 'gyro' },
+    note: 'Gyro recovery, plus: after turning away to an unmapped view (bed -> PC), the new view is added to the same map instead of waiting 10 s and starting a new map. Your recordings: fewer maps; with a tree placed no gain; worse on datasets.' },
   { key: 'imu', label: 'IMU (visual-inertial)', set: { imu: 'on', tracker: 'stock' },
     note: 'Visual-inertial mode with the phone IMU: real-world scale and gravity. Experimental; ORB on every frame. Needs a calibrated camera and the IMU time offset.' },
   { key: 'imufast', label: 'IMU, tuned for speed', set: { imu: 'on', tracker: 'stock', motion: 'time', features: '600', levels: '6', map: 'light' },
@@ -82,13 +86,13 @@ export const PRESETS = [
 
 // Sets every option of `page` from a preset (unlisted keys: page default, then option default)
 export function applyPreset(o, preset, pageDefaults = {}, page = '') {
-  for (const d of OPTIONS) if (!d.page || d.page === page) o[d.key] = preset.set[d.key] ?? pageDefaults[d.key] ?? d.def;
+  for (const d of OPTIONS) if ((!d.page || d.page === page) && !(d.device && !(d.key in preset.set) && d.key in o)) o[d.key] = preset.set[d.key] ?? pageDefaults[d.key] ?? d.def;
   return o;
 }
 
 // Key of the preset the options equal (options hidden by `when`, e.g. KLT knobs with stock tracking, are ignored), or 'custom'
 export function matchPreset(o, pageDefaults = {}, page = '') {
-  const p = PRESETS.find((pr) => OPTIONS.every((d) => (d.page && d.page !== page) || !(d.key in o) || (d.when && !d.when(o)) ||
+  const p = PRESETS.find((pr) => OPTIONS.every((d) => (d.page && d.page !== page) || !(d.key in o) || (d.when && !d.when(o)) || (d.device && !(d.key in pr.set)) ||
                                                       o[d.key] === (pr.set[d.key] ?? pageDefaults[d.key] ?? d.def)));
   return p ? p.key : 'custom';
 }
@@ -129,7 +133,7 @@ export function applyOptions(yaml, o) {
   if (o.desc === 'teblid') extra.push('Web.Descriptor: 1');  // the page also loads the TEBLID vocabulary (vocabUrl)
   if (o.motion === 'time') extra.push('Web.Track.TimeScaledMotion: 1');  // live camera: prediction scaled to the frame interval
   if (o.map === 'light') extra.push('Web.LBA.MaxOptKFs: 20', 'Web.LBA.MaxFixedKFs: 20', 'Web.Mapping.Neighbors: 15');
-  if ((o.gyro === 'on' || o.init === 'gyro') && o.imu !== 'on') extra.push('Web.Gyro.Prior: 1');  // + IMU.T_b_c1 (ar.js adds the phone IMU block)
+  if ((o.gyro === 'on' || o.init === 'gyro' || (o.bridge && o.bridge !== 'off')) && o.imu !== 'on') extra.push('Web.Gyro.Prior: 1');  // + IMU.T_b_c1 (ar.js adds the phone IMU block)
   if (o.tracker === 'klt' && o.kltnorm === 'on') extra.push('Web.KLT.Normalize: 1');
   if (o.tracker === 'klt' && o.kltpar === 'parallel') extra.push('Web.KLT.Parallel: 1');  // LK points split over 4 threads
   if (o.newarea === 'cov' || o.newarea === 'cov2') extra.push('Web.KF.Coverage: 0.4');  // keyframes for new textured areas
@@ -143,6 +147,8 @@ export function applyOptions(yaml, o) {
   if (o.init === 'quick') extra.push('Web.Init.MinMatches: 60', 'Web.Init.MinParallax: 0.5', 'Web.Init.MinTriangulated: 40');
   if (o.init === 'gyro' && o.imu !== 'on') extra.push('Web.Init.Gyro: 1');
   if (o.kf === 'fewer') extra.push('Web.KF.RefRatio: 0.8');
+  if (o.bridge === 'tv' && o.imu !== 'on') extra.push('Web.Turn.Bridge: 1');  // lost after turning: map the new view in this map
+  if (o.bridge === 'gyro' && o.imu !== 'on') extra.push('Web.Turn.Bridge: 2');
   if (o.voc === 'small' && o.desc !== 'teblid') extra.push('Web.BoW.LevelsUp: 3');  // L5 tree: BoW index at the stock depth
   return extra.length ? `${y.replace(/\s*$/, '\n')}\n# web options (web/options.js)\n${extra.join('\n')}\n` : y;
 }
