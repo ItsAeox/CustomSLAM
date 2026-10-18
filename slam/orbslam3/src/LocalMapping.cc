@@ -813,6 +813,9 @@ void LocalMapping::CreateNewMapPoints()
 
             mpAtlas->AddMapPoint(pMP);
             mlpRecentAddedMapPoints.push_back(pMP);
+#ifdef ORBSLAM3_WEB
+            mnDiagNewMPs++;
+#endif
         }
     }    
 }

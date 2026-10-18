@@ -67,6 +67,7 @@ public:
 #ifdef ORBSLAM3_WEB
     // web port diagnostics: local-mapping activity counters (read at shutdown)
     int mnDiagKFs = 0, mnDiagLBADone = 0, mnDiagLBAAborted = 0, mnDiagLBASkipped = 0;
+    long mnDiagNewMPs = 0;  // map points triangulated by CreateNewMapPoints (cumulative; --trace)
     long mnWebFarCreated = 0, mnWebFarCulled = 0;  // Web.Rot.FarPoints statistics
 #endif
     void SetAcceptKeyFrames(bool flag);

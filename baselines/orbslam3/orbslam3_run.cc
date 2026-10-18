@@ -419,10 +419,28 @@ int main(int argc, char** argv) {
         meas.emplace_back(m.ax, m.ay, m.az, m.gx, m.gy, m.gz, m.t);
       }
     }
+#ifdef REGISTER_TIMES
+    // per-frame stage times (profiling builds): which stage vectors grew during this frame (stage_times.txt)
+    ORB_SLAM3::Tracking* tkp = SLAM.WebTracker();
+    const size_t nOrb = tkp->vdORBExtract_ms.size(), nPose = tkp->vdPosePred_ms.size(), nLm = tkp->vdLMTrack_ms.size(),
+                 nKf = tkp->vdNewKF_ms.size();
+    const unsigned long kfId0 = ORB_SLAM3::KeyFrame::nNextId;
+#endif
     auto t0 = std::chrono::steady_clock::now();
     const Sophus::SE3f Tcw = SLAM.TrackMonocular(im, d.t[i], meas);
     auto t1 = std::chrono::steady_clock::now();
     const double ttrack = std::chrono::duration<double>(t1 - t0).count();
+#ifdef REGISTER_TIMES
+    {
+      static std::ofstream stf(fs::path(out) / "stage_times.txt");
+      auto last = [](const std::vector<double>& v, size_t n0) { return v.size() > n0 ? v.back() : 0.0; };
+      stf << i << " " << ttrack * 1000.0 << " " << last(tkp->vdORBExtract_ms, nOrb) << " " << last(tkp->vdPosePred_ms, nPose) << " "
+          << last(tkp->vdLMTrack_ms, nLm) << " " << last(tkp->vdNewKF_ms, nKf) << " " << (tkp->mbWebKLTFrame ? 1 : 0) << " "
+          << (ORB_SLAM3::KeyFrame::nNextId > kfId0 ? 1 : 0) << "\n";
+      // columns: frame, total, ORB extraction (a stale copy on flow frames), pose prediction, local-map tracking,
+      // keyframe decision + creation, flow frame, keyframe made
+    }
+#endif
 #ifdef ORBSLAM3_WEB
     if (syncMapping) SLAM.WaitForMappingIdle();
 #endif
@@ -432,7 +450,30 @@ int main(int argc, char** argv) {
       const Sophus::SE3f Twc = Tcw.inverse();
       const Eigen::Quaternionf q = Twc.unit_quaternion();
       tr << i << " " << SLAM.GetTrackingState() << " " << nTracked << " " << Twc.translation().transpose() << " "
-         << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << "\n";
+         << q.x() << " " << q.y() << " " << q.z() << " " << q.w();
+#ifdef ORBSLAM3_WEB
+      {  // + keypoints, flow frame, local map size, map KFs / points, mapping queue / accepting, new points so far,
+         //   textured cells (4x4, >= 3 keypoints) and those without a tracked point
+        ORB_SLAM3::Tracking* tk = SLAM.WebTracker();
+        const ORB_SLAM3::Frame& F = tk->mCurrentFrame;
+        int nKps[16] = {0}, nTr[16] = {0};
+        const float w = ORB_SLAM3::Frame::mnMaxX - ORB_SLAM3::Frame::mnMinX, h = ORB_SLAM3::Frame::mnMaxY - ORB_SLAM3::Frame::mnMinY;
+        for (int k = 0; k < F.N && k < (int)F.mvKeysUn.size(); ++k) {
+          const int cx = std::min(3, std::max(0, (int)(4 * (F.mvKeysUn[k].pt.x - ORB_SLAM3::Frame::mnMinX) / w)));
+          const int cy = std::min(3, std::max(0, (int)(4 * (F.mvKeysUn[k].pt.y - ORB_SLAM3::Frame::mnMinY) / h)));
+          nKps[4 * cy + cx]++;
+          if (k < (int)F.mvpMapPoints.size() && F.mvpMapPoints[k] && !F.mvbOutlier[k]) nTr[4 * cy + cx]++;
+        }
+        int textured = 0, untracked = 0;
+        for (int c = 0; c < 16; ++c) if (nKps[c] >= 3) { ++textured; if (!nTr[c]) ++untracked; }
+        ORB_SLAM3::Map* m = SLAM.WebAtlas()->GetCurrentMap();
+        ORB_SLAM3::LocalMapping* lm = SLAM.WebLocalMapper();
+        tr << " " << F.N << " " << (tk->mbWebKLTFrame ? 1 : 0) << " " << tk->WebLocalMapSize() << " "
+           << (m ? m->KeyFramesInMap() : 0) << " " << (m ? m->MapPointsInMap() : 0) << " " << lm->KeyframesInQueue() << " "
+           << (lm->AcceptKeyFrames() ? 1 : 0) << " " << lm->mnDiagNewMPs << " " << textured << " " << untracked;
+      }
+#endif
+      tr << "\n";
     }
     times << i << " " << ttrack * 1000.0 << " " << SLAM.GetTrackingState() << "\n";
     // Real-time protocol of ORB-SLAM3's examples: wait for the rest of the frame period, which leaves time for
