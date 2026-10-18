@@ -705,7 +705,7 @@ async function start() {
     }, 3000);
     const slam = createSlamWorker((s) => {
       console.log(s);
-      if (!/Web config|ERROR|Map|map|Loading|loaded|[Rr]eloc|[Ll]ost|[Rr]eset|[Mm]erg|[Ll]oop|Fail|Not enough|initiali|IMU|scale too small|[Tt]imestamp|VIBA|Bundle|TURN bridge|Recovered by coasting/.test(s)) return;
+      if (!/Web config|ERROR|Map|map|Loading|loaded|[Rr]eloc|[Ll]ost|[Rr]eset|[Mm]erg|[Ll]oop|Fail|Not enough|initiali|IMU|scale too small|[Tt]imestamp|VIBA|Bundle|TURN bridge|Recovered by coasting|ORB-PROF|LBA-PROFILE|LBAFAST-STATS/.test(s)) return;
       if (s === lastSlamLine) { slamRepeats++; return; }  // e.g. "Lost for a short time" on every frame
       if (slamRepeats) tele(`slam: (previous line ${slamRepeats} more times)`);
       lastSlamLine = s; slamRepeats = 0;
