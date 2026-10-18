@@ -61,6 +61,20 @@ onmessage = async (e) => {
     post(`TOTAL ${frames.length} frames, ${exact} exact; keypoints differ ${kpDiff} of ${kpTotal}; descriptors differ ${descDiff} (${bits} bits)`);
     post(`CPU ORB (ORBextractor, WASM): ${stats(tCpu)}`);
     post(`GPU path: ${stats(tGpu)} = pass 1 ${stats(t1)} + CPU order / octree / angles ${stats(tHost)} + pass 2 ${stats(t2)}`);
+    // GPU time per stage (back-to-back submits, so the GPU stays clocked up; cumulative prefixes of pass 1)
+    const last = await gray(frames[frames.length - 1]);
+    for (const [name, ms] of await g.profile(last)) post(`GPU pass 1 ${name}: ${ms.toFixed(2)} ms (submit -> done)`);
+    // GPU path back to back on one frame (no CPU reference in between: the GPU stays clocked up, as in tracking)
+    const tb2 = [];
+    for (let i = 0; i < 20; i++) {
+      const t0 = performance.now();
+      const c = await g.pass1(last);
+      new Uint32Array(M.HEAPU8.buffer, host.candBuffer(c.n), c.n * 4).set(c.cand);
+      const k = host.distribute(c.n);
+      await g.pass2(new Uint32Array(host.pass2()), k);
+      if (i >= 3) tb2.push(performance.now() - t0);
+    }
+    post(`GPU path back to back (one frame, 17 runs): ${stats(tb2)}; second candidate readbacks ${g.extraReadbacks} of ${frames.length + 20}`);
     g.destroy();
     device.destroy();
     postMessage({ done: true });
