@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WebGPU ORB Check</title>
+<script src="./coi.js"></script>
+<style>
+  :root { --bg: #ffffff; --fg: #1d1d1f; --muted: #6e6e73; --line: #d2d2d7; --acc: #0a66c2; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111214; --fg: #f2f2f4; --muted: #a1a1a6; --line: #2c2c30; --acc: #5aa2ff; } }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  p { color: var(--muted); margin: 0 0 14px; max-width: 46em; }
+  button { font: inherit; padding: 10px 18px; border-radius: 8px; border: 1px solid var(--acc); background: var(--acc); color: #fff; }
+  button:disabled { opacity: 0.5; }
+  pre { white-space: pre-wrap; word-break: break-word; border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-top: 14px; font-size: 13px; }
+  a { color: var(--acc); }
+</style>
+</head>
+<body>
+<a href="./">← index</a>
+<h1>WebGPU ORB check</h1>
+<p>Computes ORB features on the GPU and with ORB-SLAM3's own extractor for frames of a phone recording, and checks they
+are identical (keypoints and descriptors), with the time of each.</p>
+<button id="go">Run</button>
+<pre id="out">Not run yet.</pre>
+<script type="module">
+const out = document.getElementById('out');
+const params = new URLSearchParams(location.search);
+const name = `gpuorb_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.log`;
+const lines = [];
+const log = (s) => { lines.push(s); out.textContent = lines.join('\n'); };
+const DEV = location.pathname.startsWith('/web/');
+const rec = params.get('rec') || 'rec_20261018_185037', n = +(params.get('n') || 30), step = +(params.get('step') || 25);
+const frames = Array.from({ length: n }, (_, i) => new URL(DEV ? `/datasets/phone/${rec}/mav0/cam0/data/frame_${i * step}.jpg`
+  : `recordings/${rec}/frames/frame_${i * step}.jpg`, location.href).href);
+const finish = () => {
+  document.getElementById('go').disabled = false;
+  log('end');
+  if (location.hostname === 'localhost') fetch(`/api/result?name=${name}`, { method: 'POST', body: lines.join('\n') + '\n' }).catch(() => {});
+};
+document.getElementById('go').onclick = () => {
+  document.getElementById('go').disabled = true;
+  lines.length = 0;
+  log(`${new Date().toString()} | ${navigator.userAgent} | ${navigator.hardwareConcurrency} cores | ${rec}, ${n} frames every ${step}`);
+  const w = new Worker('gpuorb.worker.js', { type: 'module' });
+  w.onmessage = (e) => {
+    if (e.data.line) log(e.data.line);
+    if (e.data.error) { log(`ERROR ${e.data.error}`); finish(); w.terminate(); }
+    if (e.data.done) { log('done'); finish(); w.terminate(); }
+  };
+  w.onerror = (e) => { log(`ERROR (worker) ${e.message}`); finish(); };
+  w.postMessage({ frames, build: new URL('./build/orbslam3.js', location.href).href });
+};
+if (params.has('auto')) document.getElementById('go').click();
+</script>
+</body>
+</html>

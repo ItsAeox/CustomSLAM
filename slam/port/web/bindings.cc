@@ -35,6 +35,7 @@
 #include "System.h"
 #include "Thirdparty/DBoW2/DUtils/Random.h"
 #include "WebConfig.h"
+#include "WebOrbGpuHost.h"
 
 using namespace emscripten;
 
@@ -381,7 +382,42 @@ class Calibrator {
   std::vector<double> res_;
 };
 
+// GPU ORB host (web/gpuorb.js; WebOrbGpuHost.h): constants for the GPU, the reference extractor, and the CPU part of
+// the GPU path (order, octree, angles), plus a comparison with the reference. For the compare page (gpuorb.html).
+class OrbGpuHost {
+ public:
+  OrbGpuHost(int nFeatures, float scaleFactor, int nLevels, int iniTh, int minTh, int cols, int rows)
+      : h_(nFeatures, scaleFactor, nLevels, iniTh, minTh, cols, rows) {}
+  val consts() { return val(typed_memory_view(h_.consts().size(), h_.consts().data())); }
+  uintptr_t frameBuffer() { return reinterpret_cast<uintptr_t>(h_.frame().data); }
+  int reference() { return h_.reference(); }
+  // candidates: a pointer into the module heap holding n x 4 words (JS copies the GPU readback there first)
+  uintptr_t candBuffer(int n) { cand_.resize((size_t)std::max(n, 1) * 4); return reinterpret_cast<uintptr_t>(cand_.data()); }
+  int distribute(int n) { return h_.distribute(cand_.data(), n); }
+  val pass2() { return val(typed_memory_view(h_.pass2_.size(), h_.pass2_.data())); }
+  uintptr_t descBuffer(int k) { desc_.resize((size_t)std::max(k, 1) * 8); return reinterpret_cast<uintptr_t>(desc_.data()); }
+  val compare(int k) {
+    cmp_ = h_.compare(desc_.data(), k);
+    return val(typed_memory_view(cmp_.size(), cmp_.data()));
+  }
+
+ private:
+  webgpuorb::OrbGpuHost h_;
+  std::vector<uint32_t> cand_, desc_;
+  std::vector<int> cmp_;
+};
+
 EMSCRIPTEN_BINDINGS(orbslam3_web) {
+  class_<OrbGpuHost>("OrbGpuHost")
+      .constructor<int, float, int, int, int, int, int>()
+      .function("consts", &OrbGpuHost::consts)
+      .function("frameBuffer", &OrbGpuHost::frameBuffer)
+      .function("reference", &OrbGpuHost::reference)
+      .function("candBuffer", &OrbGpuHost::candBuffer)
+      .function("distribute", &OrbGpuHost::distribute)
+      .function("pass2", &OrbGpuHost::pass2)
+      .function("descBuffer", &OrbGpuHost::descBuffer)
+      .function("compare", &OrbGpuHost::compare);
   class_<Calibrator>("Calibrator")
       .constructor<>()
       .function("frameBuffer", &Calibrator::frameBuffer)

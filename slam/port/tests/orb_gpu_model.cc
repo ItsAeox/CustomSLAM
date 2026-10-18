@@ -13,6 +13,8 @@
 // Usage: orb_gpu_model <image | directory of frame_*.jpg> [nFeatures=1000] [maxImages=20] [simdLanes=1]
 
 #include "ORBextractor.h"
+#include "../web/WebOrbGpu.h"
+#include "../web/WebOrbGpuHost.h"
 
 #include <opencv2/core.hpp>
 #include <opencv2/features2d.hpp>
@@ -32,7 +34,7 @@ using std::vector;
 
 namespace {
 
-const int EDGE_THRESHOLD = 19, PATCH_SIZE = 31, HALF_PATCH_SIZE = 15;
+const int EDGE_THRESHOLD = webgpuorb::EDGE_THRESHOLD, PATCH_SIZE = 31, HALF_PATCH_SIZE = 15;
 
 struct Probe : ORB_SLAM3::ORBextractor {  // ORBextractor's protected parts
   using ORBextractor::ORBextractor;
@@ -102,22 +104,6 @@ cv::Mat modelResize(const cv::Mat& src, cv::Size dsz, int simdLanes) {
 }
 
 // ---- blur: GaussianBlur(img, Size(7, 7), 2, 2, BORDER_REFLECT_101) on a non-submatrix CV_8U image (fixed point) ----
-vector<int> gaussTaps() {  // getGaussianKernelFixedPoint_ED(getGaussianKernelBitExact(7, 2), 8 fraction bits)
-  cv::Mat k = cv::getGaussianKernel(7, 2, CV_64F);
-  vector<int> r(7);
-  double err = 0;
-  long sum = 0;
-  for (int i = 0; i < 3; i++) {
-    const double adj = k.at<double>(i) * 256 + err;
-    const long v0 = std::lrint(adj);
-    err = adj - (double)v0;
-    r[i] = r[6 - i] = (int)v0;
-    sum += v0;
-  }
-  r[3] = (int)(256 - 2 * sum);
-  return r;
-}
-
 inline int refl101(int p, int n) { return p < 0 ? -p : p >= n ? 2 * n - p - 2 : p; }
 
 cv::Mat modelBlur(const cv::Mat& img, const vector<int>& m) {
@@ -157,26 +143,7 @@ int fastScore(const cv::Mat& img, int x, int y, int t) {
   return best > t ? best - 1 : 0;
 }
 
-struct CellGrid {  // ORBextractor::ComputeKeyPointsOctTree's cells for one level
-  int minBX, minBY, maxBX, maxBY, nCols, nRows, wCell, hCell;
-  CellGrid(int cols, int rows) {
-    minBX = EDGE_THRESHOLD - 3; minBY = minBX;
-    maxBX = cols - EDGE_THRESHOLD + 3; maxBY = rows - EDGE_THRESHOLD + 3;
-    const float W = 35, width = (float)(maxBX - minBX), height = (float)(maxBY - minBY);
-    nCols = (int)(width / W); nRows = (int)(height / W);
-    wCell = (int)std::ceil(width / nCols); hCell = (int)std::ceil(height / nRows);
-  }
-  // cell (i, j) ROI: rows [y0, y1), cols [x0, x1); false if ORB-SLAM3 skips it
-  bool roi(int i, int j, int& x0, int& y0, int& x1, int& y1) const {
-    const float iniY = (float)(minBY + i * hCell), iniX = (float)(minBX + j * wCell);
-    float maxY = iniY + hCell + 6, maxX = iniX + wCell + 6;
-    if (iniY >= maxBY - 3 || iniX >= maxBX - 6) return false;
-    if (maxY > maxBY) maxY = (float)maxBY;
-    if (maxX > maxBX) maxX = (float)maxBX;
-    x0 = (int)iniX; y0 = (int)iniY; x1 = (int)maxX; y1 = (int)maxY;
-    return true;
-  }
-};
+using webgpuorb::CellGrid;
 
 // reference: ORB-SLAM3's cell loop with cv::FAST (what DistributeOctTree receives), on a given level image
 vector<cv::KeyPoint> refCandidates(const cv::Mat& L, int iniTh, int minTh) {
@@ -232,6 +199,42 @@ vector<cv::KeyPoint> modelCandidates(const cv::Mat& L, int iniTh, int minTh) {
   return out;
 }
 
+// the GPU form of the same step (what the WGSL kernels do): per-pixel cell maps (WebOrbGpu.h), a per-cell flag
+// "a pixel survives at 20", candidates emitted in any order, then sorted into ORB-SLAM3's order on the CPU
+vector<cv::KeyPoint> gpuCandidates(const cv::Mat& L, int iniTh, int minTh) {
+  const int w = L.cols, h = L.rows;
+  CellGrid g(w, h);
+  vector<int> colCell, rowCell;
+  g.maps(w, h, colCell, rowCell);
+  cv::Mat s(h, w, CV_32S, cv::Scalar(0));
+  for (int y = 3; y < h - 3; y++)
+    for (int x = 3; x < w - 3; x++) s.at<int>(y, x) = fastScore(L, x, y, minTh);
+  auto strictMax = [&](int x, int y) {
+    const int v = s.at<int>(y, x);
+    for (int dy = -1; dy <= 1; dy++)
+      for (int dx = -1; dx <= 1; dx++)
+        if ((dx || dy) && colCell[x + dx] == colCell[x] && rowCell[y + dy] == rowCell[y] && s.at<int>(y + dy, x + dx) >= v)
+          return false;
+    return true;
+  };
+  vector<char> flag20(g.nCols * g.nRows, 0);
+  for (int y = 0; y < h; y++)
+    for (int x = 0; x < w; x++)
+      if (colCell[x] >= 0 && rowCell[y] >= 0 && s.at<int>(y, x) >= iniTh && strictMax(x, y)) flag20[rowCell[y] * g.nCols + colCell[x]] = 1;
+  struct C { int key, y, x, sc; };
+  vector<C> cs;
+  for (int y = 0; y < h; y++)
+    for (int x = 0; x < w; x++) {
+      if (colCell[x] < 0 || rowCell[y] < 0) continue;
+      const int cell = rowCell[y] * g.nCols + colCell[x], t = flag20[cell] ? iniTh : minTh, v = s.at<int>(y, x);
+      if (v >= t && strictMax(x, y)) cs.push_back({cell, y, x, v});
+    }
+  std::sort(cs.begin(), cs.end(), [](const C& a, const C& b) { return a.key != b.key ? a.key < b.key : a.y != b.y ? a.y < b.y : a.x < b.x; });
+  vector<cv::KeyPoint> out;
+  for (const C& c : cs) out.emplace_back((float)(c.x - g.minBX), (float)(c.y - g.minBY), 7.f, -1.f, (float)c.sc);
+  return out;
+}
+
 // ---- orientation + rotated BRIEF (ORBextractor.cc IC_Angle / computeOrbDescriptor) ----
 float icAngle(const cv::Mat& image, cv::Point2f pt, const vector<int>& u_max) {
   int m_01 = 0, m_10 = 0;
@@ -255,6 +258,35 @@ void orbDescriptor(const cv::KeyPoint& kpt, const cv::Mat& img, const cv::Point*
   const float angle = (float)kpt.angle * (float)(CV_PI / 180.f);
   const float a = (float)cos(angle), b = (float)sin(angle);
   const uchar* center = &img.at<uchar>(cvRound(kpt.pt.y), cvRound(kpt.pt.x));
+  const int step = (int)img.step;
+  auto val = [&](int idx) { return center[cvRound(pattern[idx].x * b + pattern[idx].y * a) * step + cvRound(pattern[idx].x * a - pattern[idx].y * b)]; };
+  for (int i = 0; i < 32; ++i, pattern += 16) {
+    int v = 0;
+    for (int bit = 0; bit < 8; bit++) v |= (val(2 * bit) < val(2 * bit + 1)) << bit;
+    desc[i] = (uchar)v;
+  }
+}
+
+// what the GPU computes for the host path: IC_Angle's integer moments, and rotated BRIEF from a given cos / sin
+void icMoments(const cv::Mat& image, int x, int y, const vector<int>& u_max, int& m_01, int& m_10) {
+  m_01 = 0; m_10 = 0;
+  const uchar* center = &image.at<uchar>(y, x);
+  for (int u = -HALF_PATCH_SIZE; u <= HALF_PATCH_SIZE; ++u) m_10 += u * center[u];
+  const int step = (int)image.step1();
+  for (int v = 1; v <= HALF_PATCH_SIZE; ++v) {
+    int v_sum = 0;
+    const int d = u_max[v];
+    for (int u = -d; u <= d; ++u) {
+      const int val_plus = center[u + v * step], val_minus = center[u - v * step];
+      v_sum += (val_plus - val_minus);
+      m_10 += u * (val_plus + val_minus);
+    }
+    m_01 += v * v_sum;
+  }
+}
+
+void descFromCosSin(const cv::Mat& img, int x, int y, float a, float b, const cv::Point* pattern, uchar* desc) {
+  const uchar* center = &img.at<uchar>(y, x);
   const int step = (int)img.step;
   auto val = [&](int idx) { return center[cvRound(pattern[idx].x * b + pattern[idx].y * a) * step + cvRound(pattern[idx].x * a - pattern[idx].y * b)]; };
   for (int i = 0; i < 32; ++i, pattern += 16) {
@@ -293,10 +325,10 @@ int main(int argc, char** argv) {
     for (size_t i = 0; i < v.size() && (int)files.size() < maxImages; i += stride) files.push_back(v[i].second);
   } else files.push_back(argv[1]);
 
-  const vector<int> taps = gaussTaps();
+  const vector<int> taps = webgpuorb::gaussTaps();
   std::printf("blur taps (8.8 fixed point): %d %d %d %d %d %d %d; resize SIMD lanes %d\n", taps[0], taps[1], taps[2], taps[3],
               taps[4], taps[5], taps[6], simdLanes);
-  long totPyr = 0, totBlur = 0, totCandDiff = 0, totKpDiff = 0, totDescDiff = 0, totKp = 0, imgsExact = 0;
+  long totPyr = 0, totBlur = 0, totCandDiff = 0, totKpDiff = 0, totDescDiff = 0, totKp = 0, imgsExact = 0, totHostKp = 0, totHostDesc = 0;
   for (const auto& f : files) {
     cv::Mat im = cv::imread(f, cv::IMREAD_GRAYSCALE);
     if (im.empty()) { std::printf("%s: unreadable\n", f.c_str()); continue; }
@@ -312,11 +344,13 @@ int main(int argc, char** argv) {
     long pyrDiff = 0, blurDiff = 0, candDiff = 0;
     std::string lv;
     vector<vector<cv::KeyPoint>> levelKps(ref.nlevels);
-    vector<cv::Mat> levelDesc(ref.nlevels);
+    vector<cv::Mat> levelDesc(ref.nlevels), blurs(ref.nlevels);
     for (int l = 0; l < ref.nlevels; l++) {
       if (l) {
         const float s = ref.mvInvScaleFactor[l];
-        pyr[l] = modelResize(pyr[l - 1], cv::Size(cvRound((float)im.cols * s), cvRound((float)im.rows * s)), simdLanes);
+        const cv::Size sz(cvRound((float)im.cols * s), cvRound((float)im.rows * s));
+        pyr[l] = simdLanes == 1 ? webgpuorb::applyResize(pyr[l - 1], webgpuorb::resizeTables(pyr[l - 1].cols, pyr[l - 1].rows, sz.width, sz.height))
+                                : modelResize(pyr[l - 1], sz, simdLanes);
       }
       const long pd = mismatch(pyr[l], ref.mvImagePyramid[l]);
       if (pd > 0 && getenv("ORB_MODEL_WHERE")) {  // diagnostic: which columns / rows differ, first few values
@@ -337,13 +371,16 @@ int main(int argc, char** argv) {
         std::printf("  L%d %dx%d differ: columns%s; rows with a difference %d; e.g.%s\n", l, pyr[l].cols, pyr[l].rows, cs.c_str(), nr, ex.c_str());
       }
       cv::Mat rb = ref.mvImagePyramid[l].clone(), mb = modelBlur(pyr[l], taps);
+      blurs[l] = mb;
       cv::GaussianBlur(rb, rb, cv::Size(7, 7), 2, 2, cv::BORDER_REFLECT_101);
       const long bd = mismatch(mb, rb);
       // candidates: reference = ORB-SLAM3's cell loop with cv::FAST on the reference level image
       const vector<cv::KeyPoint> rc = refCandidates(ref.mvImagePyramid[l], ref.iniThFAST, ref.minThFAST);
-      const vector<cv::KeyPoint> mc = modelCandidates(pyr[l], ref.iniThFAST, ref.minThFAST);
-      long cd = (long)std::abs((long)rc.size() - (long)mc.size());
+      const vector<cv::KeyPoint> mc0 = modelCandidates(pyr[l], ref.iniThFAST, ref.minThFAST);
+      const vector<cv::KeyPoint> mc = gpuCandidates(pyr[l], ref.iniThFAST, ref.minThFAST);  // the GPU form feeds the octree
+      long cd = (long)std::abs((long)rc.size() - (long)mc.size()) + (long)std::abs((long)mc0.size() - (long)mc.size());
       for (size_t k = 0; k < std::min(rc.size(), mc.size()); k++) cd += !sameKp(rc[k], mc[k]);
+      for (size_t k = 0; k < std::min(mc0.size(), mc.size()); k++) cd += !sameKp(mc0[k], mc[k]);
       pyrDiff += pd; blurDiff += bd; candDiff += cd;
       char b[96];
       std::snprintf(b, sizeof b, " L%d:%ld/%ld/%zu-%zu", l, pd, bd, rc.size(), mc.size());
@@ -379,10 +416,40 @@ int main(int argc, char** argv) {
     }
     totPyr += pyrDiff; totBlur += blurDiff; totCandDiff += candDiff; totKpDiff += kd; totDescDiff += dd; totKp += (long)rk.size();
     imgsExact += (pyrDiff == 0 && blurDiff == 0 && candDiff == 0 && kd == 0 && dd == 0);
-    std::printf("%s: pyramid px %ld, blur px %ld, candidates %ld, keypoints %zu/%zu differ %ld, descriptors differ %ld |%s\n",
-                fs::path(f).filename().string().c_str(), pyrDiff, blurDiff, candDiff, rk.size(), mk.size(), kd, dd, lv.c_str());
+    // host path (WebOrbGpuHost.h, what the browser runs) with the model playing the GPU: candidate words + moments in a
+    // shuffled order (the GPU's atomics give any order), then rotated BRIEF from the host's pass-2 cos / sin
+    webgpuorb::OrbGpuHost host(nFeatures, 1.2f, 8, 20, 7, im.cols, im.rows);
+    im.copyTo(host.frame());
+    host.reference();
+    vector<uint32_t> cand;
+    for (int l = 0; l < ref.nlevels; l++) {
+      CellGrid g(pyr[l].cols, pyr[l].rows);
+      for (const auto& k : gpuCandidates(pyr[l], ref.iniThFAST, ref.minThFAST)) {
+        const int x = (int)k.pt.x + g.minBX, y = (int)k.pt.y + g.minBY;
+        int m01, m10;
+        icMoments(pyr[l], x, y, ref.umax, m01, m10);
+        cand.insert(cand.end(), {(uint32_t)x | ((uint32_t)y << 16), (uint32_t)l | ((uint32_t)k.response << 8), (uint32_t)m01, (uint32_t)m10});
+      }
+    }
+    const int nc = (int)cand.size() / 4;
+    for (int i = nc - 1; i > 0; i--) {  // deterministic shuffle of the 4-word groups
+      const int j = (int)(((unsigned)i * 2654435761u) % (unsigned)(i + 1));
+      for (int w = 0; w < 4; w++) std::swap(cand[4 * i + w], cand[4 * j + w]);
+    }
+    const int kept = host.distribute(cand.data(), nc);
+    vector<uint32_t> gdesc((size_t)kept * 8);
+    for (int i = 0; i < kept; i++) {
+      const uint32_t* q = &host.pass2_[(size_t)i * 8];
+      float a, b;
+      std::memcpy(&a, &q[3], 4); std::memcpy(&b, &q[4], 4);
+      descFromCosSin(blurs[q[2]], (int)q[0], (int)q[1], a, b, &ref.pattern[0], reinterpret_cast<uchar*>(&gdesc[(size_t)i * 8]));
+    }
+    const vector<int> hr = host.compare(gdesc.data(), kept);
+    totHostKp += hr[0]; totHostDesc += hr[1];
+    std::printf("%s: pyramid px %ld, blur px %ld, candidates %ld, keypoints %zu/%zu differ %ld, descriptors differ %ld; host path: %d candidates, keypoints differ %d, descriptors %d (bits %d) |%s\n",
+                fs::path(f).filename().string().c_str(), pyrDiff, blurDiff, candDiff, rk.size(), mk.size(), kd, dd, nc, hr[0], hr[1], hr[2], lv.c_str());
   }
-  std::printf("TOTAL %zu images, %ld exact: pyramid px %ld, blur px %ld, candidates %ld, keypoints %ld of %ld, descriptors %ld\n",
-              files.size(), imgsExact, totPyr, totBlur, totCandDiff, totKpDiff, totKp, totDescDiff);
+  std::printf("TOTAL %zu images, %ld exact: pyramid px %ld, blur px %ld, candidates %ld, keypoints %ld of %ld, descriptors %ld; host path: keypoints %ld, descriptors %ld\n",
+              files.size(), imgsExact, totPyr, totBlur, totCandDiff, totKpDiff, totKp, totDescDiff, totHostKp, totHostDesc);
   return 0;
 }
