@@ -201,6 +201,12 @@ namespace ORB_SLAM3 {
 	                        vbInliers[mvKeyPointIndices[i]] = true;
 	                }
 	                Tout = mRefinedTcw;
+#ifdef ORBSLAM3_WEB
+	                // upstream sets bNoMore only when the loop runs out, never on this path: a candidate whose refined poses
+	                // keep failing the caller's check (Tracking::Relocalization: < 10 / < 50 inliers after PoseOptimization)
+	                // is then retried forever once its iteration budget is spent (ISSUES G21: 100 % CPU, tracking frozen)
+	                bNoMore = mnIterations >= mRansacMaxIts;
+#endif
 	                return true;
 	            }
 
