@@ -306,8 +306,7 @@ export async function createGpuOrb(device, consts, W, H) {
       pb.end();
       device.queue.submit([eb.finish()]);
       await mapped;
-      const n = Math.min(new Uint32Array(rb1.getMappedRange(0, 16))[0], CAPC);
-      const total = new Uint32Array(rb1.getMappedRange(0, 16))[0];
+      const total = new Uint32Array(rb1.getMappedRange(0, 16))[0], n = Math.min(total, CAPC);
       const cand = new Uint32Array(rb1.getMappedRange(16, n * 16)).slice();
       rb1.unmap();
       return { n, total, cand };
