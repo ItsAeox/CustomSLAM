@@ -10,7 +10,7 @@
 set -uo pipefail
 E=/mnt/h/Research/CustomSLAM/scripts/experiments/2026-10-18; L=/mnt/h/Research/logs
 echo "=== queue start $(date +%T) snap-$1"
-ARMS="fast-speed fast-speed2" bash $E/speed_bench_klt.sh f6aa2cf wasm > $L/speed_bench_klt_wasm_rerun.log 2>&1; echo "  bench rerun done $(date +%T)"
+grep -q "=== done" $L/speed_bench_klt_wasm_rerun.log 2>/dev/null || { ARMS="fast-speed fast-speed2" bash $E/speed_bench_klt.sh f6aa2cf wasm > $L/speed_bench_klt_wasm_rerun.log 2>&1; echo "  bench rerun done $(date +%T)"; }
 bash $E/map_reuse.sh $1 > $L/map_reuse.log 2>&1; echo "  map_reuse done $(date +%T)"
 bash $E/vocab_hbrb.sh > $L/vocab_hbrb.log 2>&1; echo "  vocab_hbrb done $(date +%T)"
 bash $E/rot_screen.sh $1 rot_screen preset-fast fast-rot > $L/rot_screen.log 2>&1; echo "  rot_screen done $(date +%T)"
