@@ -116,6 +116,13 @@ if (BUILD_WASM)
     -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=8MB -sEXIT_RUNTIME=1)
 endif()
 
+add_executable(orb_gpu_model ${PORT}/tests/orb_gpu_model.cc)  # GPU ORB plan: integer per-pixel model vs ORBextractor
+target_link_libraries(orb_gpu_model PRIVATE orbslam3_web)
+if (BUILD_WASM)
+  target_link_options(orb_gpu_model PRIVATE -sENVIRONMENT=node,worker -sNODERAWFS=1 -sPROXY_TO_PTHREAD=1
+    -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=8MB -sEXIT_RUNTIME=1)
+endif()
+
 # ---- tools (native only) ----
 if (NOT BUILD_WASM)
   add_executable(vocab_convert ${PORT}/tools/vocab_convert.cc)
