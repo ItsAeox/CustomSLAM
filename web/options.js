@@ -37,6 +37,7 @@ export const OPTIONS = [
   { key: 'voc', label: 'Vocabulary (download)', values: [['full', 'full (49 MB, original)'], ['small', 'small (5 MB, own k10L5)']], def: 'full', when: (o) => o.desc !== 'teblid' },
   { key: 'rot', label: 'Turning on the spot', values: [['off', 'original (no new points without sideways motion)'], ['far', 'far points (prototype 1: made-up depth)'], ['inf', 'points at infinity (prototype 2)'], ['inf3', 'points at infinity, kept out of relocalisation (prototype 3)']], def: 'off' },
   { key: 'bridge', label: 'After turning away (gyro)', values: [['off', 'original (relocalise until the timeout, then a new map)'], ['tv', 'continue this map: two-view start checked by the gyro'], ['gyro', 'continue this map: gyro two-view start']], def: 'off' },
+  { key: 'lba', label: 'Local BA solver', values: [['g2o', 'g2o (original)'], ['fast', 'fast (same result, ~3-4x less time; the map keeps growing)']], def: 'g2o' },
   { key: 'kfq', label: 'Keyframes while mapping is busy', values: [['stock', 'refused (original; the map stops growing when mapping falls behind)'], ['2', 'queued, up to 2 waiting'], ['3', 'queued, up to 3 waiting']], def: 'stock' },
   { key: 'newarea', label: 'New areas when turning', values: [['stock', 'original (keyframes by tracked-point count)'], ['cov', 'extra keyframes for new textured areas'], ['cov2', 'extra keyframes + new points from smaller baselines']], def: 'stock' },
   { key: 'hold', label: 'Tree during brief tracking losses', page: 'ar', values: [['hide', 'hidden (original)'], ['gyro', 'held by the gyro for up to 0.4 s']], def: 'hide' },
@@ -69,6 +70,8 @@ export const PRESETS = [
   // round 4 (2026-10-18 evening)
   { key: 'gbridge', label: 'Fastest + gyro recovery + continue the map after turning', set: { kltmax: '4', motion: 'time', map: 'light', gyro: 'on', recover: 'coast', hold: 'gyro', bridge: 'gyro' },
     note: 'Gyro recovery, plus: after turning away to an unmapped view (bed -> PC), the new view is added to the same map instead of waiting 10 s and starting a new map. Your recordings: fewer maps; with a tree placed no gain; worse on datasets.' },
+  { key: 'gfastba', label: 'Fastest + gyro recovery + fast local BA', set: { kltmax: '4', motion: 'time', map: 'light', gyro: 'on', recover: 'coast', hold: 'gyro', lba: 'fast' },
+    note: 'Gyro recovery with the local bundle adjustment solved by our own solver: the same result as g2o in about a quarter of the time, so mapping keeps up and the map keeps growing into new areas (walking around the tree, panning to the PC).' },
   { key: 'imu', label: 'IMU (visual-inertial)', set: { imu: 'on', tracker: 'stock' },
     note: 'Visual-inertial mode with the phone IMU: real-world scale and gravity. Experimental; ORB on every frame. Needs a calibrated camera and the IMU time offset.' },
   { key: 'imufast', label: 'IMU, tuned for speed', set: { imu: 'on', tracker: 'stock', motion: 'time', features: '600', levels: '6', map: 'light' },
@@ -138,6 +141,7 @@ export function applyOptions(yaml, o) {
   if (o.init === 'quick') extra.push('Web.Init.MinMatches: 60', 'Web.Init.MinParallax: 0.5', 'Web.Init.MinTriangulated: 40');
   if (o.init === 'gyro' && o.imu !== 'on') extra.push('Web.Init.Gyro: 1');
   if (o.kf === 'fewer') extra.push('Web.KF.RefRatio: 0.8');
+  if (o.lba === 'fast') extra.push('Web.LBA.Fast: 1');  // own local BA solver (Optimizer.cc WebBASolveLM, G22)
   if (o.kfq === '2' || o.kfq === '3') extra.push(`Web.KF.BusyQueue: ${o.kfq}`);  // map keeps growing when mapping is slow (G22)
   if (o.bridge === 'tv' && o.imu !== 'on') extra.push('Web.Turn.Bridge: 1');  // lost after turning: map the new view in this map
   if (o.bridge === 'gyro' && o.imu !== 'on') extra.push('Web.Turn.Bridge: 2');
