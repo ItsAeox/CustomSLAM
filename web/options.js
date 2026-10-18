@@ -72,6 +72,8 @@ export const PRESETS = [
     note: 'Gyro recovery, plus: after turning away to an unmapped view (bed -> PC), the new view is added to the same map instead of waiting 10 s and starting a new map. Your recordings: fewer maps; with a tree placed no gain; worse on datasets.' },
   { key: 'gfastba', label: 'Fastest + gyro recovery + fast local BA', set: { kltmax: '4', motion: 'time', map: 'light', gyro: 'on', recover: 'coast', hold: 'gyro', lba: 'fast' },
     note: 'Gyro recovery with the local bundle adjustment solved by our own solver: the same result as g2o in about a quarter of the time, so mapping keeps up and the map keeps growing into new areas (walking around the tree, panning to the PC).' },
+  { key: 'beta', label: 'WebVIO beta: quick solver + gyro recovery + fast local BA + 4-thread flow', set: { kltmax: '4', motion: 'time', map: 'light', pose: 'fast', gyro: 'on', recover: 'coast', hold: 'gyro', lba: 'fast', kltpar: 'parallel' },
+    note: 'The parts that felt best on the phone together (18 Oct): quick pose solver, gyro recovery, our own local BA solver (the map keeps growing) and optical flow on 4 threads. Parallel ORB left out (slower on the Pixel 9), gyro start left out.' },
   { key: 'imu', label: 'IMU (visual-inertial)', set: { imu: 'on', tracker: 'stock' },
     note: 'Visual-inertial mode with the phone IMU: real-world scale and gravity. Experimental; ORB on every frame. Needs a calibrated camera and the IMU time offset.' },
   { key: 'imufast', label: 'IMU, tuned for speed', set: { imu: 'on', tracker: 'stock', motion: 'time', features: '600', levels: '6', map: 'light' },
