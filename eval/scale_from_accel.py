@@ -62,6 +62,7 @@ def main():
     ap.add_argument("--offset-ms", type=float, default=0.0)
     ap.add_argument("--max-s", type=float, default=0.0)
     ap.add_argument("--name", default="")
+    ap.add_argument("--fit-rot", action="store_true", help="also fit a small camera-IMU rotation correction (3 unknowns)")
     a = ap.parse_args()
 
     tr = np.loadtxt(a.traj, comments="#", ndmin=2)
@@ -101,7 +102,14 @@ def main():
             A_R = np.einsum("kij,k->ij", Rwb, dt)
             T = dt.sum()
             # s dv - g T + A_R b = A_f
-            rows.append(np.hstack([(v[i1] - v[i0])[:, None], -T * np.eye(3), A_R]))
+            row = np.hstack([(v[i1] - v[i0])[:, None], -T * np.eye(3), A_R])
+            if a.fit_rot:  # R_wb exp([d]x): A_f + C d with C = -sum R_wb [f]x dt  ->  ... - C d = A_f
+                fx = np.zeros((len(fk), 3, 3))
+                fx[:, 0, 1], fx[:, 0, 2], fx[:, 1, 0] = -fk[:, 2], fk[:, 1], fk[:, 2]
+                fx[:, 1, 2], fx[:, 2, 0], fx[:, 2, 1] = -fk[:, 0], -fk[:, 1], fk[:, 0]
+                C = -np.einsum("kij,kjl,k->il", Rwb, fx, dt)
+                row = np.hstack([row, -C])
+            rows.append(row)
             rhs.append(A_f)
             i0 = max(i0 + 1, np.searchsorted(t, t[i0] + a.window / 2))
     if len(rows) < 10:
@@ -129,7 +137,8 @@ def main():
         g = np.stack([np.interp(tc[ok], gt[:, 0], gt[:, j]) for j in (1, 2, 3)], 1)
         s_gt = umeyama_scale(pc[ok], g)
     print(f"{name}: windows {len(rows)} | s_est {s_est:.4f} s_gt {s_gt:.4f} ratio {s_est / s_gt:.3f} | "
-          f"|g| linear {g_lin:.2f} | bias {np.linalg.norm(sol.x[4:7]):.3f} m/s2 | rms {rms:.3f} m/s | span {tc[-1] - tc[0]:.0f} s")
+          f"|g| linear {g_lin:.2f} | bias {np.linalg.norm(sol.x[4:7]):.3f} m/s2 | rms {rms:.3f} m/s | span {tc[-1] - tc[0]:.0f} s"
+          + (f" | rotation correction {np.degrees(sol.x[7:10]).round(2).tolist()} deg" if a.fit_rot else ""))
 
 
 if __name__ == "__main__":

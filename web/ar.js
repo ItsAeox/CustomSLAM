@@ -94,7 +94,7 @@ const recAcc = [];                  // with rec: [t, ax, ay, az] (specific force
 let imuScaleM = null;               // metres per map unit from the accelerometer (imuscale.js), when measured
 let recCalibAt = 0;
 let gyroOn = false;               // gyro rotation prior (option 'gyro', visual-only; or gyro init); set at start()
-let scaleOn = false, liveScale = null;  // option 'scale': live metric scale from the accelerometer (Web.Scale.Online)
+let scaleOn = false, liveScale = null, scaleConvSince = 0;  // option 'scale': live metric scale (Web.Scale.Online)
 let holdOn = false;               // option 'hold': show the tree through brief losses with the gyro-rotated last pose
 let replay = false;               // a dataset or a phone recording (record.html) is the camera; its IMU, not the phone's
 let qDev = [0, 0, 0, 1], qDevT = null;  // integrated device attitude from DeviceMotion rotation rates (x, y, z, w)
@@ -848,7 +848,10 @@ async function start() {
       }
       prevStats = r.viz.stats; prevTrackMs = r.trackMs;
       const sc = r.viz.scale;  // [valid, metres per map unit, 1-sigma / s, windows, gravity x y z]
-      if (scaleOn && sc && sc[0] && sc[2] < 0.05) {  // converged: the tree size and the floor height in metres
+      const conv = scaleOn && sc && sc[0] && sc[2] < 0.05;
+      scaleConvSince = conv ? (scaleConvSince || performance.now()) : 0;
+      // adopted after 3 s of continuous convergence (scale_online_1019b: a hard sequence converged for 3 s at 2.3x)
+      if (conv && performance.now() - scaleConvSince >= 3000) {  // the tree size and the floor height in metres
         if (!liveScale || Math.abs(sc[1] / liveScale - 1) > 0.03)
           tele(`scale (accelerometer, live): 1 map unit = ${sc[1].toFixed(3)} m ± ${(100 * sc[2]).toFixed(1)} % (${sc[3]} windows)` +
                (floor ? ` -> camera ${(floor.height * sc[1]).toFixed(2)} m above the floor` : ''));
