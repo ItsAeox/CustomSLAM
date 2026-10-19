@@ -94,6 +94,7 @@ const recAcc = [];                  // with rec: [t, ax, ay, az] (specific force
 let imuScaleM = null;               // metres per map unit from the accelerometer (imuscale.js), when measured
 let recCalibAt = 0;
 let gyroOn = false;               // gyro rotation prior (option 'gyro', visual-only; or gyro init); set at start()
+let scaleOn = false, liveScale = null;  // option 'scale': live metric scale from the accelerometer (Web.Scale.Online)
 let holdOn = false;               // option 'hold': show the tree through brief losses with the gyro-rotated last pose
 let replay = false;               // a dataset or a phone recording (record.html) is the camera; its IMU, not the phone's
 let qDev = [0, 0, 0, 1], qDevT = null;  // integrated device attitude from DeviceMotion rotation rates (x, y, z, w)
@@ -513,7 +514,8 @@ async function start() {
   inertial = opts.imu === 'on';  // the options may have changed since the page loaded
   rec = opts.rec === 'on';
   replay = !!params.get('seq');
-  gyroOn = (opts.gyro === 'on' || opts.init === 'gyro' || (opts.bridge && opts.bridge !== 'off')) && !inertial;  // dataset / recording: its own IMU (seq branch)
+  scaleOn = opts.scale === 'on' && !inertial;
+  gyroOn = (opts.gyro === 'on' || opts.init === 'gyro' || (opts.bridge && opts.bridge !== 'off') || scaleOn) && !inertial;  // the scale needs the IMU feed too  // dataset / recording: its own IMU (seq branch)
   holdOn = opts.hold === 'gyro' && (!params.get('seq') || params.get('holdtest') === '1');  // holdtest: run the code on a dataset (no gyro: held = last pose)
   try {
     if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
@@ -845,6 +847,14 @@ async function start() {
         if (!lost) lostSince = 0;
       }
       prevStats = r.viz.stats; prevTrackMs = r.trackMs;
+      const sc = r.viz.scale;  // [valid, metres per map unit, 1-sigma / s, windows, gravity x y z]
+      if (scaleOn && sc && sc[0] && sc[2] < 0.05) {  // converged: the tree size and the floor height in metres
+        if (!liveScale || Math.abs(sc[1] / liveScale - 1) > 0.03)
+          tele(`scale (accelerometer, live): 1 map unit = ${sc[1].toFixed(3)} m ± ${(100 * sc[2]).toFixed(1)} % (${sc[3]} windows)` +
+               (floor ? ` -> camera ${(floor.height * sc[1]).toFixed(2)} m above the floor` : ''));
+        liveScale = sc[1];
+        imuScaleM = sc[1];
+      }
       if (r.mapWait !== mapWait) {
         if (r.mapWait === 0 && (mapWait === 1 || (mapWait === -1 && n <= 1))) tele(r.state === 2 || r.state === 5 ? 'room: relocalised into the saved map' : 'room: gave up waiting, new map');
         mapWait = r.mapWait;

@@ -1630,6 +1630,8 @@ Sophus::SE3f Tracking::GrabImageMonocular(const cv::Mat &im, const double &times
     Track();
 
 #ifdef ORBSLAM3_WEB
+    if(webConfig().scaleOnline && mSensor == System::MONOCULAR && mState == OK)
+        WebScaleUpdate();
     if(webConfig().kltEnable && mSensor == System::MONOCULAR)
     {
         if(!mbWebKLTFrame)
@@ -3560,8 +3562,33 @@ bool Tracking::WebGyroRotation(double t0, double t1, Eigen::Matrix3f& dR) const
     return true;
 }
 
+// web port (Web.Scale.Online): the tracked camera into the online scale / gravity estimator (WebScale.h); restarts on
+// a new map; solved every 15 tracked frames
+void Tracking::WebScaleUpdate()
+{
+    const WebConfig& cfg = webConfig();
+    Map* pMap = mpAtlas->GetCurrentMap();
+    if(pMap != mpWebScaleMap)
+    {
+        mWebScale.reset();
+        mWebScale.window = cfg.scaleWindow;
+        const Eigen::Matrix3f Rbc = Eigen::Map<const Eigen::Matrix<float, 3, 3, Eigen::RowMajor>>(cfg.gyroRbc);
+        mWebScale.setRcb(Rbc.transpose().cast<double>());
+        mpWebScaleMap = pMap;
+        mdWebScaleMapStart = mCurrentFrame.mTimeStamp;
+        mdWebScaleConverged = -1;
+    }
+    const Sophus::SE3f Twc = mCurrentFrame.GetPose().inverse();
+    mWebScale.addPose(mCurrentFrame.mTimeStamp + cfg.gyroTimeOffset, Twc.translation().cast<double>(), Twc.rotationMatrix().cast<double>());
+    if(++mnWebScaleFrames % 15 == 0 && mWebScale.solve() && mWebScale.relStd < 0.05 && mdWebScaleConverged < 0)
+        mdWebScaleConverged = mCurrentFrame.mTimeStamp - mdWebScaleMapStart;
+}
+
 void Tracking::WebGrabGyro(const std::vector<IMU::Point>& v)
 {
+    if(webConfig().scaleOnline)
+        for(const IMU::Point& p : v)
+            mWebScale.addImu(p.t, p.a.cast<double>());
     mvWebGyro.insert(mvWebGyro.end(), v.begin(), v.end());
     if(mvWebGyro.empty())
         return;

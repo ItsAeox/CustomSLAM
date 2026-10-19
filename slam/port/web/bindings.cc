@@ -16,6 +16,7 @@
 #include <emscripten/bind.h>
 #include <emscripten/val.h>
 
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <memory>
@@ -221,6 +222,19 @@ class WebSlam {
 
   // [keyframes in active map, map points in active map, map-point matches in the last frame (frameKeyPoints()),
   //  number of maps in the atlas, IMU initialised (inertial mode), IMU initialisation refined (VIBA2 done)]
+  // Web.Scale.Online: [valid, metres per map unit, its 1-sigma / s, windows, gravity direction x y z (map frame)]
+  val scaleEstimate() {
+    scale_.fill(0);
+    if (sys_) {
+      const ORB_SLAM3::WebScaleEstimator& se = sys_->WebTracker()->mWebScale;
+      if (se.valid) {
+        const Eigen::Vector3d gd = se.g.normalized();
+        scale_ = {1.0, se.s, se.relStd, (double)se.windows, gd.x(), gd.y(), gd.z()};
+      }
+    }
+    return val(typed_memory_view(scale_.size(), scale_.data()));
+  }
+
   val mapStats() {
     stats_[0] = stats_[1] = stats_[3] = stats_[4] = stats_[5] = 0;
     stats_[2] = nMatches_;
@@ -292,6 +306,7 @@ class WebSlam {
   }
 
  private:
+  std::array<double, 7> scale_{};
   std::unique_ptr<ORB_SLAM3::System> sys_;
   cv::Mat frame_, work_, scaled_;
   bool clahe_ = false;
@@ -442,6 +457,7 @@ EMSCRIPTEN_BINDINGS(orbslam3_web) {
       .function("graphEdges", &WebSlam::graphEdges)
       .function("initMatches", &WebSlam::initMatches)
       .function("mapStats", &WebSlam::mapStats)
+      .function("scaleEstimate", &WebSlam::scaleEstimate)
       .function("reset", &WebSlam::reset)
       .function("profile", &WebSlam::profile)
       .function("setKeepMap", &WebSlam::setKeepMap)

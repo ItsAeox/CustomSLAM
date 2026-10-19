@@ -20,6 +20,7 @@
 #ifndef TRACKING_H
 #define TRACKING_H
 
+#include "WebScale.h"
 #include <opencv2/core/core.hpp>
 #include <opencv2/features2d/features2d.hpp>
 
@@ -366,6 +367,14 @@ protected:
     // mVelocity, rescaled to tNow (Web.Track.TimeScaledMotion), its rotation from the gyro (Web.Gyro.Prior)
     Sophus::SE3f WebMotionPrediction(double tNow) const;
     std::vector<IMU::Point> mvWebGyro;  // gyro samples for Web.Gyro.Prior (IMU clock, oldest first)
+public:
+    WebScaleEstimator mWebScale;        // Web.Scale.Online: metric scale / gravity of the current map (WebScale.h)
+    double mdWebScaleConverged = -1;    // seconds after the map started until the scale's 1-sigma was under 5 % (-1: not yet)
+private:
+    Map* mpWebScaleMap = nullptr;
+    double mdWebScaleMapStart = 0;
+    long mnWebScaleFrames = 0;
+    void WebScaleUpdate();
     bool WebGyroRotation(double t0, double t1, Eigen::Matrix3f& dR) const;  // body rotation t0 -> t1 from mvWebGyro
     // last frame tracked OK (pose, time, map), the origin of Web.Track.Coast
     bool mbWebGood = false;

@@ -89,6 +89,10 @@ struct WebConfig
                                // = more culling)
 
     // Gyro-aided prediction (visual-only modes; see Tracking::WebMotionPrediction). Off by default = stock.
+    int scaleOnline = 0;       // Web.Scale.Online: 1 = metric scale + gravity of the current map from the accelerometer,
+                               // online (WebScale.h; needs the IMU samples — page gyro feed / runner --gyro — and
+                               // IMU.T_b_c1); an estimate only, tracking unchanged
+    double scaleWindow = 2.0;  // Web.Scale.Window: window length (s) of the scale estimator
     int gyroPrior = 0;         // Web.Gyro.Prior: 1 = the rotation of the frame-to-frame prediction (motion model and
                                // KLT initial flow) comes from the gyroscope integrated between the two frames
     double gyroTimeOffset = 0; // Web.Gyro.TimeOffset: seconds added to frame times to get IMU times (> 0: IMU stamps late)
@@ -188,9 +192,12 @@ inline void loadWebConfig(const std::string& settingsFile)
     readInt("Web.KF.BusyQueue", c.kfBusyQueue);
     readInt("Web.Mapping.FuseQueued", c.mapFuseQueued);
     readInt("Web.Gyro.Prior", c.gyroPrior);
+    cv::FileNode sw = fs["Web.Scale.Window"];
+    if (!sw.empty() && (sw.isInt() || sw.isReal())) c.scaleWindow = sw.real();
     cv::FileNode go = fs["Web.Gyro.TimeOffset"];
     if (!go.empty() && (go.isInt() || go.isReal())) c.gyroTimeOffset = go.real();
-    if (c.gyroPrior) {  // camera -> body rotation from the IMU extrinsics (same key as ORB-SLAM3's inertial settings)
+    readInt("Web.Scale.Online", c.scaleOnline);
+    if (c.gyroPrior || c.scaleOnline) {  // camera -> body rotation from the IMU extrinsics (same key as ORB-SLAM3's inertial settings)
         cv::Mat Tbc;
         fs["IMU.T_b_c1"] >> Tbc;
         if (Tbc.rows >= 3 && Tbc.cols >= 3) {
@@ -198,8 +205,9 @@ inline void loadWebConfig(const std::string& settingsFile)
             for (int r = 0; r < 3; r++)
                 for (int k = 0; k < 3; k++) c.gyroRbc[3 * r + k] = Tbc.at<float>(r, k);
         } else {
-            std::cout << "Web config: Web.Gyro.Prior needs IMU.T_b_c1 (camera -> IMU extrinsics); gyro prior off" << std::endl;
+            std::cout << "Web config: Web.Gyro.Prior / Web.Scale.Online need IMU.T_b_c1 (camera -> IMU extrinsics); both off" << std::endl;
             c.gyroPrior = 0;
+            c.scaleOnline = 0;
         }
     }
     readInt("Web.Track.Coast", c.coast);
@@ -227,6 +235,7 @@ inline void loadWebConfig(const std::string& settingsFile)
               << " (0 = stock); descriptor " << (c.descriptor == 1 ? "TEBLID-256" : "ORB") << "; reloc timeout "
               << c.relocTimeout << " s" << (c.keepMap ? " (keep map)" : "") << (c.timeScaledMotion ? "; time-scaled motion" : "")
               << (c.gyroPrior ? "; gyro prior (IMU time offset " + std::to_string(c.gyroTimeOffset * 1000) + " ms)" : std::string())
+              << (c.scaleOnline ? "; online metric scale (" + std::to_string(c.scaleWindow) + " s windows)" : std::string())
               << (c.bowLevelsUp != 4 ? "; BoW levels up " + std::to_string(c.bowLevelsUp) : std::string())
               << (c.kfRefRatio > 0 ? "; KF ref ratio " + std::to_string(c.kfRefRatio) : std::string())
               << (c.kfBusyQueue > 0 ? "; keyframes queued while mapping is busy (up to " + std::to_string(c.kfBusyQueue) + ")" : std::string())

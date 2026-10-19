@@ -38,6 +38,7 @@ export const OPTIONS = [
   { key: 'voc', label: 'Vocabulary (download)', values: [['full', 'full (49 MB, original)'], ['small', 'small (5 MB, own k10L5)']], def: 'full', when: (o) => o.desc !== 'teblid' },
   { key: 'rot', label: 'Turning on the spot', values: [['off', 'original (no new points without sideways motion)'], ['far', 'far points (prototype 1: made-up depth)'], ['inf', 'points at infinity (prototype 2)'], ['inf3', 'points at infinity, kept out of relocalisation (prototype 3)']], def: 'off' },
   { key: 'bridge', label: 'After turning away (gyro)', values: [['off', 'original (relocalise until the timeout, then a new map)'], ['tv', 'continue this map: two-view start checked by the gyro'], ['gyro', 'continue this map: gyro two-view start']], def: 'off' },
+  { key: 'scale', label: 'Metric scale', values: [['off', 'off (original: tree size from the phone height guess)'], ['on', 'from the accelerometer (live estimate)']], def: 'off' },
   { key: 'lba', label: 'Local BA solver', values: [['g2o', 'g2o (original)'], ['fast', 'fast (same result, ~3-4x less time; the map keeps growing)']], def: 'g2o' },
   { key: 'kfq', label: 'Keyframes while mapping is busy', values: [['stock', 'refused (original; the map stops growing when mapping falls behind)'], ['2', 'queued, up to 2 waiting'], ['3', 'queued, up to 3 waiting']], def: 'stock' },
   { key: 'newarea', label: 'New areas when turning', values: [['stock', 'original (keyframes by tracked-point count)'], ['cov', 'extra keyframes for new textured areas'], ['cov2', 'extra keyframes + new points from smaller baselines']], def: 'stock' },
@@ -145,7 +146,8 @@ export function applyOptions(yaml, o) {
   if (o.init === 'quick') extra.push('Web.Init.MinMatches: 60', 'Web.Init.MinParallax: 0.5', 'Web.Init.MinTriangulated: 40');
   if (o.init === 'gyro' && o.imu !== 'on') extra.push('Web.Init.Gyro: 1');
   if (o.kf === 'fewer') extra.push('Web.KF.RefRatio: 0.8');
-  if (o.lba === 'fast') extra.push('Web.LBA.Fast: 1');  // own local BA solver (Optimizer.cc WebBASolveLM, G22)
+  if (o.lba === 'fast') extra.push('Web.LBA.Fast: 1');
+  if (o.scale === 'on' && o.imu !== 'on') extra.push('Web.Scale.Online: 1');  // WebScale.h; an estimate, tracking unchanged  // own local BA solver (Optimizer.cc WebBASolveLM, G22)
   if (o.kfq === '2' || o.kfq === '3') extra.push(`Web.KF.BusyQueue: ${o.kfq}`);  // map keeps growing when mapping is slow (G22)
   if (o.bridge === 'tv' && o.imu !== 'on') extra.push('Web.Turn.Bridge: 1');  // lost after turning: map the new view in this map
   if (o.bridge === 'gyro' && o.imu !== 'on') extra.push('Web.Turn.Bridge: 2');

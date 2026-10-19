@@ -36,7 +36,7 @@ run_one() {
   mkdir -p $o
   local st=$O/$r/settings/${r}_arm-$a.yaml voc=$V/ORBvoc.bin g=""
   grep -q "Web.BoW.LevelsUp: 3" $st && voc=$V/ORBvoc_own_k10L5.bin
-  grep -q "Web.Gyro.Prior: 1" $st && g="--gyro"
+  grep -qE "Web.Gyro.Prior: 1|Web.Scale.Online: 1" $st && g="--gyro"  # IMU samples for the gyro prior / online scale
   local aa=$(cat $O/$r/settings/${r}_arm-$a.args 2>/dev/null)
   timeout 1800 $NODE $JS --dataset euroc --mode mono --seq $PH/$r --vocab $voc --settings $st --seed $s ${MODE:---live --rate-scale 1.0} $g ${TRACE:+--trace} $aa \
     --out $o > $o/run.log 2>&1 || echo "  $r $a seed $s: exit $?"

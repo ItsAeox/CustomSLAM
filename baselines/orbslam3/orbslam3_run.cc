@@ -26,6 +26,9 @@
 
 #include <System.h>
 #include <ImuTypes.h>
+#ifdef ORBSLAM3_WEB
+#include <WebConfig.h>
+#endif
 #include "Thirdparty/DBoW2/DUtils/Random.h"
 
 #include <opencv2/core.hpp>
@@ -479,6 +482,10 @@ int main(int argc, char** argv) {
            << " " << tk->mnWebBridges << " " << tk->WebOldPointsTracked()  // + turn bridges so far, points from before the latest
            << " " << lm->mnDiagCulledRatio << " " << lm->mnDiagCulledObs << " " << lm->mnDiagCulledKFs << " " << tk->mnWebKFBusy;
            // + new points culled (found ratio / observations), keyframes culled, keyframes due while mapping was busy
+        const ORB_SLAM3::WebScaleEstimator& se = tk->mWebScale;  // + Web.Scale.Online: metres per map unit (0 = none yet),
+        const Eigen::Vector3d gd = se.valid ? Eigen::Vector3d(se.g.normalized()) : Eigen::Vector3d::Zero();
+        tr << " " << (se.valid ? se.s : 0.0) << " " << (se.valid ? se.relStd : -1.0) << " " << se.windows  // its 1-sigma / s,
+           << " " << gd.transpose();                                                                         // windows, gravity dir
       }
 #endif
       tr << "\n";
@@ -501,6 +508,15 @@ int main(int argc, char** argv) {
   const double seqS = lastIdx > 0 ? d.t[lastIdx] - d.t[0] : 0.0;
   src.reset();
   const auto msEnd = mapSize(SLAM);  // before the final global optimisation / shutdown
+#ifdef ORBSLAM3_WEB
+  if (ORB_SLAM3::webConfig().scaleOnline) {  // Web.Scale.Online, the current map's last estimate
+    const ORB_SLAM3::Tracking* tk = SLAM.WebTracker();
+    const ORB_SLAM3::WebScaleEstimator& se = tk->mWebScale;
+    std::cout << "SCALE-STATS valid=" << se.valid << " s=" << se.s << " rel_std=" << se.relStd << " windows=" << se.windows
+              << " g_linear=" << se.gLinear << " bias=" << se.ba.norm() << " rms=" << se.rms << " span=" << se.span
+              << " converged_after=" << tk->mdWebScaleConverged << " solves=" << se.solves << std::endl;
+  }
+#endif
   fs::current_path(out);  // REGISTER_TIMES builds write their *TimeStats.txt files to the working directory
   SLAM.Shutdown();
   if (!saveMap.empty()) SLAM.WebSaveMap(saveMap);  // the largest map; failures are printed (WEBMAP ...)
