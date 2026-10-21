@@ -64,6 +64,8 @@ def main():
     ap.add_argument("--bias-prior", type=float, default=0.0, help="1-sigma of an accelerometer bias prior (m/s2; 0 = none)")
     ap.add_argument("--inverse", action="store_true", help="solve for 1/s in map units: the noisy visual positions are "
                     "the observations, not a regressor (no regression dilution of s)")
+    ap.add_argument("--rate-range", type=lambda v: tuple(float(x) for x in v.split(",")), default=None,
+                    help="lo,hi: use only steps with a mean gyro rate in [lo, hi) rad/s")
     ap.add_argument("--name", default="")
     a = ap.parse_args()
 
@@ -78,6 +80,7 @@ def main():
     Rwc = Rotation.from_quat(tr[:, 4:8])
     ti, acc = load_imu(a.imu)
     ti = ti - a.offset_ms * 1e-3
+    gyr = np.loadtxt(a.imu, delimiter=",", comments="#", usecols=(1, 2, 3))
     Rcb = load_tbc(a.tbc)[:3, :3].T
     name = a.name or Path(a.traj).parent.name
 
@@ -109,6 +112,10 @@ def main():
             m = (ti >= tc[i] - 0.05) & (ti <= tc[j] + 0.05)
             if m.sum() < 3:
                 continue
+            if a.rate_range:  # only steps whose mean gyro rate is in [lo, hi) rad/s (rotation-related error check)
+                lo, hi = a.rate_range
+                if not lo <= np.linalg.norm(gyr[m], axis=1).mean() < hi:
+                    continue
             dV, dP, JV, JP = preintegrate(ti[m], acc[m], slerp, Rcb, tc[i], tc[j])
             vi, vj = vbase + 3 * k, vbase + 3 * (k + 1)
             dp = pc[j] - pc[i]
