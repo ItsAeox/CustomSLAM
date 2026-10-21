@@ -61,7 +61,9 @@ def main():
     ap.add_argument("--window", type=float, default=1.0)
     ap.add_argument("--offset-ms", type=float, default=0.0)
     ap.add_argument("--max-s", type=float, default=0.0)
+    ap.add_argument("--from-s", type=float, default=0.0, help="skip the first N s of the trajectory (after --max-s)")
     ap.add_argument("--name", default="")
+    ap.add_argument("--s-true", type=float, default=0.0, help="known true scale (no --gt), e.g. eval/scale_known_motion.py")
     ap.add_argument("--fit-rot", action="store_true", help="also fit a small camera-IMU rotation correction (3 unknowns)")
     a = ap.parse_args()
 
@@ -70,6 +72,8 @@ def main():
     tr = tr[np.concatenate([[True], np.diff(tr[:, 0]) > 1e-6])]
     if a.max_s > 0:
         tr = tr[tr[:, 0] <= tr[0, 0] + a.max_s]
+    if a.from_s > 0:
+        tr = tr[tr[:, 0] >= tr[0, 0] + a.from_s]
     tc, pc = tr[:, 0], tr[:, 1:4]
     Rwc = Rotation.from_quat(tr[:, 4:8])
     ti, acc = load_imu(a.imu)
@@ -118,6 +122,10 @@ def main():
     A, b = np.vstack(rows), np.concatenate(rhs)
     x0 = np.linalg.lstsq(A, b, rcond=None)[0]
     g_lin = np.linalg.norm(x0[1:4])
+    # 1-sigma of s from the linear system (as WebScale.h: residual variance x (A^T A)^-1)
+    r_lin = A @ x0 - b
+    cov = np.linalg.pinv(A.T @ A) * (r_lin @ r_lin) / max(1, len(b) - A.shape[1])
+    rel_lin = np.sqrt(max(cov[0, 0], 0)) / abs(x0[0]) if x0[0] else np.inf
 
     def res(x):
         return np.concatenate([A @ x - b, [10.0 * (np.linalg.norm(x[1:4]) - G)]])
@@ -130,13 +138,13 @@ def main():
     s_est = sol.x[0]
     rms = np.sqrt(np.mean((A @ sol.x - b) ** 2))
 
-    s_gt = np.nan
+    s_gt = a.s_true or np.nan
     if a.gt:
         gt = np.loadtxt(a.gt, comments="#", ndmin=2)
         ok = (tc >= gt[0, 0]) & (tc <= gt[-1, 0])
         g = np.stack([np.interp(tc[ok], gt[:, 0], gt[:, j]) for j in (1, 2, 3)], 1)
         s_gt = umeyama_scale(pc[ok], g)
-    print(f"{name}: windows {len(rows)} | s_est {s_est:.4f} s_gt {s_gt:.4f} ratio {s_est / s_gt:.3f} | "
+    print(f"{name}: windows {len(rows)} | s_est {s_est:.4f} s_gt {s_gt:.4f} ratio {s_est / s_gt:.3f} | 1-sigma {100 * rel_lin:.1f} % | "
           f"|g| linear {g_lin:.2f} | bias {np.linalg.norm(sol.x[4:7]):.3f} m/s2 | rms {rms:.3f} m/s | span {tc[-1] - tc[0]:.0f} s"
           + (f" | rotation correction {np.degrees(sol.x[7:10]).round(2).tolist()} deg" if a.fit_rot else ""))
 
