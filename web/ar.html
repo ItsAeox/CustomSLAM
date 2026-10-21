@@ -23,6 +23,9 @@
                 color: #e6e6e6; background: rgba(0,0,0,.55); padding: 2px 6px; border-radius: 4px; }
   #hint { position: fixed; left: 16px; right: 16px; top: max(96px, calc(env(safe-area-inset-top) + 86px));
           text-align: center; font-size: 15px; text-shadow: 0 1px 3px #000; pointer-events: none; }
+  #cubeInfo { position: fixed; left: 16px; right: 16px; top: max(150px, calc(env(safe-area-inset-top) + 140px));
+              padding: 6px 10px; border-radius: 8px; background: var(--panel); font-size: 12px; text-align: center;
+              font-variant-numeric: tabular-nums; pointer-events: none; }
   /* collapsed controls: menu (bottom right) opens the action buttons; info (top right) opens the status panels */
   .round { width: 44px; height: 44px; padding: 0; border-radius: 50%; font-size: 18px; line-height: 1; }
   #menuBtn { position: fixed; right: 14px; bottom: max(14px, env(safe-area-inset-bottom)); z-index: 4; }
@@ -77,6 +80,7 @@
 <div id="hud" hidden></div>
 <div id="hint" hidden></div>
 <div id="ghost" hidden><span>tree goes here</span></div>
+<div id="cubeInfo" hidden></div>
 <button id="menuBtn" class="round" hidden aria-label="Actions" aria-expanded="false">☰</button>
 <button id="infoBtn" class="round" hidden aria-label="Status panels" aria-expanded="false">ⓘ</button>
 <div id="bar" hidden>
