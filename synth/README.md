@@ -67,9 +67,10 @@ Textures are drawn by code (noise, shapes, text glyphs, checkerboards): no photo
 `synth/band_check.py` (motion content above 40 Hz). Full set, 29 Oct 2026:
 
 - (a) ground truth + ideal IMU, linear alignment (eval/scale_linear_align.py, 0.5 s nodes): scale 0.998-1.001 and
-  |g| 9.80-9.88 on all 49; position residual 0 (shake: <= 0.3 mm). The window estimator (eval/scale_from_accel.py,
-  1 s windows) on the same exact data: 1.00-1.04 on slide / rotate / orbit / walk / ar, 1.03-1.16 on gesture, 1.27-1.36
-  on shake (its own error, not the data's).
+  |g| 9.80-9.88 on all 49; position residual 0 (shake: <= 0.3 mm). The offline window estimator (eval/scale_from_accel.py,
+  1 s windows; 2 s windows on 8 sequences give the same) on the same exact data: 1.00-1.04 on slide / rotate / orbit /
+  walk / ar, 1.03-1.16 on gesture, 1.27-1.36 on shake (its own error, not the data's; WebScale.h, the online version
+  with gate and Huber weights, is not run here).
 - (b) the phone-like IMU: time offset recovered -81 to -85 ms (injected -88; the sensor's 10 ms averaging delays it
   ~5 ms); alignment 0.988-1.019, except the slow slides: slide0 1.081, slide1 1.037 (accelerations 0.1-0.3 m/s^2,
   at Chrome's 0.1 m/s^2 rounding: as on the real 21 Oct recording).
