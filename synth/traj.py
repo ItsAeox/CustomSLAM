@@ -310,13 +310,14 @@ def scn_walk(room, rng, k):
     heading = np.where(spd > 0.05, heading, np.nan)
     idx = np.where(~np.isnan(heading))[0]
     heading = np.interp(np.arange(len(t)), idx, heading[idx]) if len(idx) else np.zeros(len(t))
+    heading = smooth(heading, 1.0)  # the linear bridge over stops has kinks (U-turns: ~180 deg in < 0.3 s)
     bob_v, bob_l = gait(t, spd, rng)
     z = rng.uniform(1.3, 1.5)
     tr, ro = hand(t, rng)
-    side = np.stack([np.sin(heading), -np.cos(heading)], 1)
+    side = np.stack([np.sin(heading), -np.cos(heading)], 1)  # sway direction: smooth, or it puts ms-long spikes in the acceleration
     p = np.concatenate([xy + bob_l[:, None] * side, (z + bob_v)[:, None]], 1) + tr
     look = bandnoise(t, rng, 0, 0.25, np.radians(30), 1)
-    yaw = smooth(heading, 1.0) + look + ro[:, 0]
+    yaw = heading + look + ro[:, 0]
     pitch = np.radians(-20) + bandnoise(t, rng, 0, 0.3, np.radians(8), 1) + ro[:, 1]
     return finish(t, p, yaw, pitch, ro[:, 2], {"speed_mps": speed, "waypoints": pts.round(2).tolist()})
 

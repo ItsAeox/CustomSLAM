@@ -56,9 +56,28 @@ latency, camera exposure 12 ms and rolling-shutter readout 20 ms, image noise.
 
 `synth/render.py`: exact ray casting of textured rectangles (no mesh approximation), pinhole camera in the OpenCV
 convention, mip-mapped texture sampling (no aliasing on oblique floors), Lambertian ceiling lights, rolling shutter
-(each row at its own time), motion blur (sub-samples over the exposure, about one per pixel of image motion),
+(each row at its own time), motion blur (sub-samples over the exposure, about one per pixel of image motion; each
+sub-sample is a depth-based reprojection of the central render, 0.28 DN mean difference from rendering each one),
 vignetting, auto exposure, shot + read noise, gamma, JPEG. Frame time = middle row, middle of the exposure.
 Textures are drawn by code (noise, shapes, text glyphs, checkerboards): no photographs, free to publish.
+
+## Validation
+
+`synth/validate.py` per sequence (`validation.json`), `synth/summary.py` (one table, `datasets/synth/SUMMARY.md`),
+`synth/band_check.py` (motion content above 40 Hz). Full set, 29 Oct 2026:
+
+- (a) ground truth + ideal IMU, linear alignment (eval/scale_linear_align.py, 0.5 s nodes): scale 0.998-1.001 and
+  |g| 9.80-9.88 on all 49; position residual 0 (shake: <= 0.3 mm). The window estimator (eval/scale_from_accel.py,
+  1 s windows) on the same exact data: 1.00-1.04 on slide / rotate / orbit / walk / ar, 1.03-1.16 on gesture, 1.27-1.36
+  on shake (its own error, not the data's).
+- (b) the phone-like IMU: time offset recovered -81 to -85 ms (injected -88; the sensor's 10 ms averaging delays it
+  ~5 ms); alignment 0.988-1.019, except the slow slides: slide0 1.081, slide1 1.037 (accelerations 0.1-0.3 m/s^2,
+  at Chrome's 0.1 m/s^2 rounding: as on the real 21 Oct recording).
+- (c) 1 m board corners vs the ground-truth projection (24 of 49 sequences have the whole board in a still frame):
+  0.17-0.51 px mean, 0.93 px max.
+- Band limit: true acceleration above 40 Hz <= 0.11 m/s^2, rotation rate <= 0.43 deg/s, except the slide table
+  vibration (15-45 Hz by design, <= 0.85 m/s^2). The first walk render had spikes up to 135 m/s^2 at U-turns (sway
+  direction from an unsmoothed heading; ideal-IMU scale 1.052 on walk0): fixed, the walks re-rendered.
 
 ## Commands
 
@@ -66,6 +85,7 @@ Textures are drawn by code (noise, shapes, text glyphs, checkerboards): no photo
 python synth/make_dataset.py --procs 4 --clean        # all 42 + 7 clean (H:/Research/datasets/synth, results/gt)
 python synth/make_dataset.py --only slide4,orbit3     # selected sequences
 python synth/validate.py H:/Research/datasets/synth/*  # validation ladder
+python synth/summary.py H:/Research/datasets/synth     # one table: motion statistics + validation (SUMMARY.md)
 python synth/imu_stats.py <recording dir>              # the real-phone statistics the model is based on
 ```
 
