@@ -37,8 +37,12 @@ const PHONE_HEIGHT_M = Number(params.get('camh')) || 1.4;
 const CUBE = params.get('obj') === 'cube';
 const metresPerUnit = () => imuScaleM ?? (floor && floor.height > 0 ? PHONE_HEIGHT_M / floor.height : null);
 const scaleSource = () => (imuScaleM ? 'accelerometer scale' : `phone at ${PHONE_HEIGHT_M} m`);
+// the cube uses a measured scale only (accelerometer), or a height the user gave (?camh=); never the 1.4 m guess
+const CAMH_GIVEN = params.has('camh');
+const cubeMetresPerUnit = () => imuScaleM ?? (CAMH_GIVEN && floor && floor.height > 0 ? PHONE_HEIGHT_M / floor.height : null);
 const scaleNow = () => (imuScaleM ? `accelerometer, 1 unit = ${imuScaleM.toFixed(3)} m`
-  : floor ? `guess: phone ${PHONE_HEIGHT_M} m above the floor plane, 1 unit = ${(PHONE_HEIGHT_M / floor.height).toFixed(3)} m` : 'none yet');
+  : CAMH_GIVEN && floor ? `given height: phone ${PHONE_HEIGHT_M} m above the floor plane, 1 unit = ${(PHONE_HEIGHT_M / floor.height).toFixed(3)} m`
+  : 'not measured yet (the cube does not use the 1.4 m height guess)');
 let cubeSource = '';  // ?obj=cube: the scale the placed cube was sized with
 // Presets (web/options.js PRESETS) set every option at once; changing a single option shows "custom"
 const saveOptsToUrl = () => history.replaceState(null, '', `?${optionsToParams(opts, new URLSearchParams(location.search), AR_DEFAULTS)}`);
@@ -478,8 +482,12 @@ function placeCactus(clientX, clientY) {
   if (!hit) { hint('Tap on the floor (below the horizon).', 2500); tele('tap rejected: the ray misses the floor plane'); return; }
   if (!cactusProto) return;
   if (CUBE) {  // 1 m edge from the scale now (frozen: the floor height keeps changing; tap again to re-place)
-    const mpu = metresPerUnit();
-    if (!mpu) { hint('No scale yet: wait for the green floor grid, then tap.', 2500); tele('cube: no scale yet (no floor, no accelerometer scale)'); return; }
+    const mpu = cubeMetresPerUnit();
+    if (!mpu) {
+      hint('No measured scale yet: slide the phone briskly side to side (about 2 s per slide, no twisting) until the panel says "in use".', 3500);
+      tele('cube: waiting for the measured scale (the 1.4 m height guess is not used for the cube)');
+      return;
+    }
     size = 1 / mpu;
     cubeSource = scaleNow();
   }
@@ -870,6 +878,9 @@ async function start() {
       }
       prevStats = r.viz.stats; prevTrackMs = r.trackMs;
       const sc = r.viz.scale;  // [valid, metres per map unit, 1-sigma / s, windows, gravity x y z]
+      if (scaleOn && n % 60 === 0)  // every ~2 s: the estimate, also when not adopted (why a session never used it)
+        tele(sc && sc[0] ? `scale estimate: 1 unit = ${sc[1].toFixed(3)} m ± ${(100 * sc[2]).toFixed(1)} % (${sc[3]} windows)${imuScaleM === sc[1] ? ', in use' : ''}`
+                         : `scale estimate: none (fewer than 10 windows of tracking, or the gravity check failed)${tracking() ? '' : ', not tracking'}`);
       const conv = scaleOn && sc && sc[0] && sc[2] < 0.05;
       scaleConvSince = conv ? (scaleConvSince || performance.now()) : 0;
       // adopted after 3 s of continuous convergence (scale_online_1019b: a hard sequence converged for 3 s at 2.3x)
@@ -965,7 +976,7 @@ async function start() {
         const acc = !scaleOn ? 'accelerometer scale: off (Algorithm option "Metric scale")'
           : sc && sc[0] ? `accelerometer estimate: 1 unit = ${sc[1].toFixed(3)} m ± ${(100 * sc[2]).toFixed(0)} % (${sc[3]} windows)` +
                           (sc[2] >= 0.05 ? ', too uncertain (needs < 5 %)' : imuScaleM === sc[1] ? ', in use' : ', must hold 3 s')
-          : 'accelerometer estimate: not settled yet (needs ~11 s of unbroken tracking with brisk motion)';
+          : 'accelerometer estimate: not settled yet (needs ~20–30 s of unbroken tracking with brisk side-to-side slides)';
         $('cubeInfo').innerHTML = `<b>1 m cube</b> · ${cactus ? `sized with ${cubeSource}` : 'tap the floor to place it'}` +
           `<br>scale now: ${scaleNow()}${cactus && imuScaleM && !cubeSource.startsWith('accelerometer') ? ' (tap again to use it)' : ''}<br>${acc}`;
       }
