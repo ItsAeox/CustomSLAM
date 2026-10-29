@@ -7,7 +7,7 @@
     /datasets/...  dataset sequences (read-only)
     /vocab/...     ORBvoc.bin
     /settings/...  generated ORB-SLAM3 settings files
-- GET  /api/sequence?dataset=tumvie|euroc|tumvi&name=<seq>  -> JSON manifest (image URLs + timestamps, as orbslam3_run)
+- GET  /api/sequence?dataset=tumvie|euroc|tumvi|phone|synth&name=<seq>  -> JSON manifest (image URLs + timestamps, as orbslam3_run)
 - GET  /api/sequences                          -> all runnable sequences with settings + GT URLs (viewer)
 - GET  /api/imu?dataset=euroc|tumvi&name=<seq>  -> accelerometer on the camera timeline + camera<-IMU rotation
                                                   (ar.html dataset test mode: gravity instead of DeviceMotion)
@@ -116,7 +116,7 @@ def imu_manifest(seq: Path, dataset: str, hz: float = 50.0) -> dict:
         if l.strip() and not l.startswith("#"):
             ns0 = int(l.split(",", 1)[0])
             break
-    if dataset == "phone":  # recorder (record.js): DeviceMotion device axes, rear camera portrait: R_bc = diag(1, -1, -1)
+    if dataset in ("phone", "synth"):  # recorder (record.js) / synthetic: DeviceMotion device axes, rear camera portrait: R_bc = diag(1, -1, -1)
         r_bc = PHONE_R_BC
     elif dataset == "euroc":  # EuRoC: imu0 is the body frame; cam0 T_BS maps camera -> body
         txt = (seq / "mav0" / "cam0" / "sensor.yaml").read_text()
@@ -161,6 +161,9 @@ def list_sequences(root: Path) -> list:
     for seq in sorted((ds_root / "phone").glob("*")):  # recorder sequences (settings written by record.js)
         if (seq / "mav0" / "cam0" / "data.csv").exists() and (seq / "settings.yaml").exists():
             add("phone", seq.name, f"/datasets/phone/{seq.name}/settings.yaml", False)
+    for seq in sorted((ds_root / "synth").glob("*")):  # synthetic sequences (synth/make_dataset.py), phone layout + GT
+        if (seq / "mav0" / "cam0" / "data.csv").exists() and (seq / "settings.yaml").exists():
+            add("synth", seq.name, f"/datasets/synth/{seq.name}/settings.yaml", False)
     for seq in sorted(ds_root.glob("*")):
         if (seq / "camera-calibration.json").exists() and (seq / "left_images").is_dir():
             s = root / "results" / "scratch" / "settings" / f"tumvie_{seq.name}.yaml"
@@ -207,7 +210,7 @@ class Handler(SimpleHTTPRequestHandler):
             q = parse_qs(u.query)
             name = q.get("name", [""])[0]
             dataset = q.get("dataset", ["tumvie"])[0]
-            sub = {"euroc": "euroc", "tumvi": "tumvi", "phone": "phone"}.get(dataset, "")
+            sub = {"euroc": "euroc", "tumvi": "tumvi", "phone": "phone", "synth": "synth"}.get(dataset, "")
             base = (self.root / "datasets" / sub).resolve()
             seq = (base / name).resolve()
             if not name or base not in seq.parents or not seq.is_dir():
@@ -218,7 +221,7 @@ class Handler(SimpleHTTPRequestHandler):
             q = parse_qs(u.query)
             name = q.get("name", [""])[0]
             dataset = q.get("dataset", [""])[0]
-            sub = {"euroc": "euroc", "tumvi": "tumvi", "phone": "phone"}.get(dataset, "")
+            sub = {"euroc": "euroc", "tumvi": "tumvi", "phone": "phone", "synth": "synth"}.get(dataset, "")
             base = (self.root / "datasets" / sub).resolve()
             seq = (base / name).resolve()
             if not sub or not name or base not in seq.parents or not (seq / "mav0" / "imu0" / "data.csv").exists():

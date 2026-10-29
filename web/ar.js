@@ -563,19 +563,22 @@ async function start() {
       const imuRaw = (inertial || gyroOn) ? await fetch(rec ? `${rec}/imu_raw.json` : `/api/imu?dataset=${dataset}&name=${encodeURIComponent(name)}&raw=1`)
         .then((r) => (r.ok ? r.json() : null)).catch(() => null) : null;  // gyro presets: the gyro prior needs IMU.T_b_c1 in the settings (recordings have it)
       // recordings (record.html): the taps, replayed at their time and image position (same tree placement for every preset)
-      if (dataset === 'phone') {
-        const txt = await fetch(rec ? `${rec}/touches.csv` : `/datasets/phone/${encodeURIComponent(name)}/touches.csv`).then((r) => (r.ok ? r.text() : '')).catch(() => '');
+      if (dataset === 'phone' || dataset === 'synth') {
+        const txt = await fetch(rec ? `${rec}/touches.csv` : `/datasets/${dataset}/${encodeURIComponent(name)}/touches.csv`).then((r) => (r.ok ? r.text() : '')).catch(() => '');
         replayTaps = txt.split(/\r?\n/).filter((l) => l && !l.startsWith('#')).map((l) => {
           const [t, u, v] = l.split(','); return { t: Number(BigInt(t) - BigInt(Math.round(man.tBase * 1e9))) * 1e-9, u: Number(u), v: Number(v) };
         });
         tele(`recording ${name}: ${man.frames.length} frames, ${replayTaps.length} taps to replay`);
       }
       let kRaw = 0;
+      // recordings / synthetic: the IMU time offset option applies as live (true = reported - offset); before
+      // 29 Oct replays ignored it (fed the IMU at offset 0)
+      const dtImu = (dataset === 'phone' || dataset === 'synth') ? Number(opts.imudt) / 1000 : 0;
       const imuUpTo = (t) => {  // raw dataset IMU samples up to t (inertial test mode)
         const out = [];
-        while (imuRaw && kRaw < imuRaw.t.length && imuRaw.t[kRaw] <= t) {
+        while (imuRaw && kRaw < imuRaw.t.length && imuRaw.t[kRaw] - dtImu <= t) {
           const a = imuRaw.acc[kRaw], g = imuRaw.gyro[kRaw];
-          out.push(imuRaw.t[kRaw], a[0], a[1], a[2], g[0], g[1], g[2]); kRaw++;
+          out.push(imuRaw.t[kRaw] - dtImu, a[0], a[1], a[2], g[0], g[1], g[2]); kRaw++;
         }
         return out;
       };

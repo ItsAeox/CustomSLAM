@@ -10,7 +10,7 @@ set -uo pipefail
 cd /mnt/h/Research/CustomSLAM
 TAG=$1 O=$2 ARMSFILE=$3
 NODE=/opt/slam/emsdk/node/24.19.0_64bit/bin/node; JS=/root/build/snap-$TAG/wasm/orbslam3_run.js
-PH=/mnt/h/Research/datasets/phone; V=/mnt/h/Research/vocab
+PH=${PH:-/mnt/h/Research/datasets/phone}; V=/mnt/h/Research/vocab  # PH=.../datasets/synth for the synthetic set (RECS needed)
 RECS=${RECS:-$(awk '!/^#/ && NF {print $1}' $PH/labels.txt)}
 mkdir -p $O
 echo "=== start $(date +%T) binary $JS"
@@ -46,7 +46,7 @@ run_one() {
 export -f run_one; export O PH V NODE JS TRACE MODE
 printf '%s\n' "${jobs_list[@]}" | xargs -P 4 -L 1 bash -c 'run_one $0 $1 $2'
 echo "=== runs done $(date +%T)"
-/opt/slam/venv/bin/python scripts/experiments/2026-10-18/summary_presets.py $O $PH/labels.txt
+[ -f $PH/labels.txt ] && /opt/slam/venv/bin/python scripts/experiments/2026-10-18/summary_presets.py $O $PH/labels.txt
 for a in "${ARMS[@]}"; do echo "$a: turn bridges $(grep -h BRIDGE-STATS $O/*/$a/*/run.log 2>/dev/null | sed 's/.*bridges=\([0-9]*\).*/\1/' | awk '{s+=$1; n++} END{printf "%.1f per run", n ? s/n : 0}')"; done
 for a in "${ARMS[@]}"; do echo "$a: coverage keyframes $(grep -h COV-STATS $O/*/$a/*/run.log 2>/dev/null | sed 's/.*=//' | awk '{s+=$1; n++} END{printf "%.1f per run", n ? s/n : 0}')"; done
 echo "=== done $(date +%T)"
