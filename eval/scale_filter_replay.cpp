@@ -5,6 +5,7 @@
 //   g++ -O2 -std=c++17 -I/usr/include/eigen3 -Islam/orbslam3/include eval/scale_filter_replay.cpp -o scale_filter_replay
 //   scale_filter_replay <run dir> <sequence dir> <imu csv> <offset ms> <out>   (IMU time = camera time + offset)
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
@@ -77,6 +78,7 @@ int main(int argc, char** argv) {
   }
   const auto tr = rows(run + "/trace.txt", ' ');
   WebScaleFilter F;
+  if (const char* pr = std::getenv("PRUNE")) F.prune = std::atof(pr);  // test: the pruning threshold (header default otherwise)
   F.setRcb(Rbc.transpose());
   size_t k = 0;
   int mapid = 0;

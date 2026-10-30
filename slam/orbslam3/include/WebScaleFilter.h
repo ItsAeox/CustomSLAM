@@ -15,7 +15,7 @@
 // of the map); a visual update whose NIS on the most likely hypothesis exceeds the gate is skipped (relocalisation jumps),
 // a bank that skips 10 in a row is dropped. The IMU between two frames is the same for every hypothesis, so the
 // transition (Phi, input u) and the noise (Q = q QA + QO) are accumulated once per frame; hypotheses whose
-// log-likelihood falls 30 below the best (weight < e^-30) are pruned from that bank (the next bank starts with the full grid).
+// log-likelihood falls 100 below the best are pruned from that bank (the next bank starts with the full grid).
 // Results on the synthetic set (EXPERIMENTS vio_filter_sweep, prototype): converged in 7 / 9 / 6 / 11 of 12 runs of ar /
 // gesture / orbit / shake (online window estimator 3 / 5 / 0 / 0), median scale error 0.7-2.5 %.
 #pragma once
@@ -43,6 +43,10 @@ class WebScaleFilter {
   double sigVis = 0.005;                      // visual position noise (map units)
   double sigBa = 0.1, baWalk = 0.002;         // bias prior (m/s^2), random walk (m/s^2 / sqrt(s))
   double restart = 30, gate = 16.27;
+  double prune = 100;  // log-likelihood below the best at which a hypothesis is dropped from its bank (0 = never). 30 was
+                     // safe on the synthetic set but not on real phone data (rec_20261021_070221: relative likelihoods swing,
+                     // pruned scales would have come back -> falsely narrow posterior, a 3.7-4.8x scale claimed); 60 and
+                     // 100 gave the unpruned results there and on the synthetic set, at 1/3-1/6 of its cost
   double stableBack = 3.0;  // s: the reported 1-sigma is at least the relative change of the estimate over this time (0 = off)
   int maxSkips = 10, startKFs = 10;
   double startTime = 2.0;
@@ -248,10 +252,10 @@ class WebScaleFilter {
         int jb2 = 0;
         for (int j = 1; j < J; j++) if (active[j] && (!active[jb2] || L[j] > L[jb2])) jb2 = j;
         for (int j = 0; j < J; j++)
-          if (active[j] && L[j] < Lmax - prune && std::abs(j / nq - jb2 / nq) > 3) active[j] = 0;
+          if (active[j] && F.prune > 0 && L[j] < Lmax - F.prune && std::abs(j / nq - jb2 / nq) > 3) active[j] = 0;
       }
     }
-    static constexpr double prune = 30;
+
 
     // marginal over the noise levels, parabola peak over ln s
     void estimate(const WebScaleFilter& F, double& s, double& sd, bool& edge) const {
