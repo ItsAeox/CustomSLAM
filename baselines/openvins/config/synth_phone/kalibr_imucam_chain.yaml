@@ -1,0 +1,16 @@
+%YAML:1.0
+# synthetic set camera (settings.yaml: pinhole, no distortion, 480 x 640) and IMU.T_b_c1 (camera -> IMU); t_imu = t_cam + timeshift
+cam0:
+  T_imu_cam: #rotation from camera to IMU R_CtoI, position of camera in IMU p_CinI
+    - [1.0, 0.0, 0.0, 0.0]
+    - [0.0, -1.0, 0.0, 0.0]
+    - [0.0, 0.0, -1.0, 0.0]
+    - [0.0, 0.0, 0.0, 1.0]
+  cam_overlaps: []
+  camera_model: pinhole
+  distortion_coeffs: [0.0, 0.0, 0.0, 0.0]
+  distortion_model: radtan
+  intrinsics: [465.602889, 465.602889, 240.0, 320.0] #fu, fv, cu, cv
+  resolution: [480, 640]
+  rostopic: /cam0/image_raw
+  timeshift_cam_imu: -0.088
