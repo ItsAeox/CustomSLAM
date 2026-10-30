@@ -280,7 +280,7 @@ def main():
     jobs = [] if a.clean_only else [(s, a.out, a.gt, False) for s in sp]
     if a.clean or a.clean_only:
         jobs += [(s, a.out, a.gt, True) for s in sp if s["variant"] == 0]
-    jobs.sort(key=lambda j: -{"slide": 60, "rotate": 35, "ar": 40}.get(j[0]["scenario"], 30))  # long ones first
+    jobs.sort(key=lambda j: -{"slide": 60, "rotate": 35, "ar": 40, "bedside": 80, "rapid": 70, "longar": 150}.get(j[0]["scenario"], 30))  # long ones first
     t0 = time.time()
     with Pool(a.procs) as pool:
         for name, n, sec, info in pool.imap_unordered(_job, jobs):

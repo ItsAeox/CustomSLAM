@@ -365,8 +365,145 @@ def scn_ar(room, rng, k):
                    "phases_s": {k_: [round(v[0], 2), round(v[1], 2)] for k_, v in T.items()}})
 
 
+# ------------------------------------------------------------------------------------------------ longer scenarios
+# (30 Oct, the user's phone tests: seated at the bed, standing up, fast glances; longer sessions for the scale over time)
+def furniture_target(room):
+    for name in ("bed", "table", "desk"):
+        if name in room.targets:
+            return room.targets[name].copy()
+    return room.targets["centre"].copy()
+
+
+def scn_bedside(room, rng, k):
+    """S8: the user's bedroom test (30 Oct): seated 1.1-1.6 m from a textured furniture top (bed / table / desk), brisk
+    side-to-side slides (scale), a hold (placing), standing up, a short walk along an arc with two fast glances away and
+    back (peak 150-250 deg/s), walking back, sitting down and looking at the target again"""
+    target = furniture_target(room)
+    xy = stand_point(room, rng, target, (1.1, 1.6))
+    zs = rng.uniform(0.95, 1.1)
+    amp = [0.15, 0.2, 0.25, 0.3, 0.2, 0.25][k]
+    f = [1.2, 1.0, 0.9, 0.8, 1.3, 1.1][k]
+    peak = np.radians([150, 200, 250, 180, 220, 160][k])
+    T, tc = {}, 2.5
+    T["init"] = (tc, tc + 1.5); tc += 2.5
+    t_g = rng.uniform(15, 20); g0 = tc; tc += t_g + 0.5
+    T["hold"] = (tc, tc + 3.0); tc += 3.5
+    T["up"] = (tc, tc + 1.5); tc += 2.0
+    r0 = float(np.linalg.norm(xy - target[:2]))
+    span = np.radians(rng.uniform(50, 80)) * rng.choice([-1, 1])
+    D = abs(span) * r0 / 0.35
+    T["arc"] = (tc, tc + D); tc += D + 0.5
+    Dg = 1.875 * np.radians(90) / peak
+    for g in ("g1", "g2"):
+        T[g] = (tc, tc + Dg); tc += Dg + 0.8
+        T[g + "b"] = (tc, tc + Dg); tc += Dg + 1.0
+    T["back"] = (tc, tc + D); tc += D + 0.5
+    T["down"] = (tc, tc + 1.5); tc += 2.0 + 6.0
+    t = timeline(tc)
+    a0 = np.arctan2(xy[1] - target[1], xy[0] - target[0])
+    a = a0 + segments(t, [(T["arc"][0], T["arc"][1], 0.0, span), (T["back"][0], T["back"][1], span, 0.0)])
+    z = zs + segments(t, [(T["up"][0], T["up"][1], 0.0, 0.4), (T["down"][0], T["down"][1], 0.4, 0.0)])
+    bob_v, bob_l = gait(t, np.abs(np.gradient(a, 1 / RATE)) * r0, rng)
+    p = np.stack([target[0] + r0 * np.cos(a), target[1] + r0 * np.sin(a), z + bob_v], 1)
+    tang = np.stack([-np.sin(a), np.cos(a), 0 * a], 1)
+    init = segments(t, [(T["init"][0], T["init"][1], 0.0, 0.25)])
+    osc = amp * np.sin(2 * np.pi * f * (t - g0)) * envelope(t, g0, g0 + t_g, 0.6)
+    tr, ro = hand(t, rng)
+    p = p + (init + osc + bob_l)[:, None] * tang + tr
+    yaw, pitch = look_angles(p, target)
+    g = np.radians(90)
+    off = segments(t, [(T["g1"][0], T["g1"][1], 0.0, g), (T["g1b"][0], T["g1b"][1], g, 0.0),
+                       (T["g2"][0], T["g2"][1], 0.0, -g), (T["g2b"][0], T["g2b"][1], -g, 0.0)])
+    yaw = smooth(yaw, 3) + np.radians(4) * osc / amp + off + ro[:, 0]
+    return finish(t, p, yaw, smooth(pitch, 3) + ro[:, 1], ro[:, 2],
+                  {"target": target.round(3).tolist(), "seated_z_m": round(float(zs), 2), "slide_amp_m": amp, "slide_hz": f,
+                   "glance_peak_dps": round(float(np.degrees(peak))), "phases_s": {k_: [round(v[0], 2), round(v[1], 2)] for k_, v in T.items()}})
+
+
+def scn_rapid(room, rng, k):
+    """S9: rapid hand-held motion around one view, 4 rounds of: brisk slides (4-7 s), a whip pan away and back (60-120
+    deg at peak 150-300 deg/s), a shaking burst (3-5 s), a short hold (fast-turn / blur stress; the scale windows break
+    often)"""
+    target = room.targets["centre"]
+    xy = stand_point(room, rng, target, (1.3, 2.2))
+    base = np.array([xy[0], xy[1], rng.uniform(1.2, 1.5)])
+    peak = np.radians([150, 200, 250, 300, 180, 220][k])
+    fwd = target - base
+    right = np.array([fwd[1], -fwd[0], 0]); right /= np.linalg.norm(right)
+    tc = 5.0
+    slides, pans, shakes = [], [], []
+    for _ in range(4):
+        L = rng.uniform(4, 7); slides.append((tc, tc + L, rng.uniform(0.12, 0.3), rng.uniform(0.8, 1.5))); tc += L + 0.5
+        ang = np.radians(rng.uniform(60, 120)) * rng.choice([-1, 1]); D = 1.875 * abs(ang) / peak
+        pans.append((tc, tc + D, 0.0, ang)); tc += D + rng.uniform(0.3, 1.0)
+        pans.append((tc, tc + D, ang, 0.0)); tc += D + 0.8
+        L = rng.uniform(3, 5); shakes.append((tc, tc + L)); tc += L + 1.5
+    t = timeline(tc + 2.0)
+    init = segments(t, [(2.5, 4.0, 0.0, 0.25)])
+    osc = sum(A * np.sin(2 * np.pi * f * (t - a)) * envelope(t, a, b, 0.4) for a, b, A, f in slides)
+    env = sum(envelope(t, a, b, 0.3) for a, b in shakes)
+    sh_t = bandnoise(t, rng, 0.5, 4.0, 0.02, 3) * env[:, None]
+    sh_r = bandnoise(t, rng, 0.5, 4.0, np.radians(6), 3) * env[:, None]
+    tr, ro = hand(t, rng)
+    p = base[None] + (init + osc)[:, None] * right[None] + sh_t + tr
+    yaw, pitch = look_angles(p, target)
+    yaw = smooth(yaw, 3) + segments(t, pans) + sh_r[:, 0] + ro[:, 0]
+    return finish(t, p, yaw, smooth(pitch, 3) + sh_r[:, 1] + ro[:, 1], sh_r[:, 2] * 0.5 + ro[:, 2],
+                  {"pan_peak_dps": round(float(np.degrees(peak))), "slides": [[round(a, 1), round(b, 1)] for a, b, _, _ in slides]})
+
+
+def scn_longar(room, rng, k):
+    """S10: a long AR session (~2-2.5 min) around a floor spot: still, init, brisk slides (10 s), placing, an orbit
+    (240-300 deg, 0.3 m/s) looking at it, stepping back and looking around the room (20 s), returning, the orbit back,
+    a fast 180 deg turn and back, crouching (0.5 m lower) at the spot, standing up, a final look (scale over time)"""
+    c = room.targets["board"].copy(); c[2] = 0.0
+    x0, y0, x1, y1 = room.free
+    r = [1.0, 1.1, 1.2, 0.9, 1.3, 1.0][k]
+    r = max(0.7, min(r, c[0] - x0 + 0.2, x1 - c[0] + 0.2, c[1] - y0 + 0.2, y1 - c[1] + 0.2))
+    ext = np.radians([240, 270, 300, 260, 280, 250][k]) * rng.choice([-1, 1])
+    z0 = rng.uniform(1.25, 1.5)
+    T, tc = {}, 2.5
+    T["init"] = (tc, tc + 1.5); tc += 2.5
+    g0 = tc; t_g = 10.0; tc += t_g + 0.5
+    T["place"] = (tc, tc + 3.0); tc += 3.5
+    D = abs(ext) * r / 0.3
+    T["orbit"] = (tc, tc + D); tc += D + 0.5
+    T["out"] = (tc, tc + 3.0); tc += 3.5
+    T["look"] = (tc, tc + 20.0); tc += 20.5
+    T["in"] = (tc, tc + 3.0); tc += 3.5
+    T["orbit2"] = (tc, tc + D); tc += D + 0.5
+    Dt = 1.875 * np.pi / np.radians([150, 180, 200, 160, 220, 170][k])
+    T["turn"] = (tc, tc + Dt); tc += Dt + 1.0
+    T["turnb"] = (tc, tc + Dt); tc += Dt + 1.0
+    T["crouch"] = (tc, tc + 2.0); tc += 6.0
+    T["rise"] = (tc, tc + 2.0); tc += 2.5 + 5.0
+    t = timeline(tc)
+    a0 = rng.uniform(-np.pi, np.pi)
+    a = a0 + segments(t, [(T["orbit"][0], T["orbit"][1], 0.0, ext), (T["orbit2"][0], T["orbit2"][1], ext, 0.0)])
+    rr = r + segments(t, [(T["out"][0], T["out"][1], 0.0, 0.6), (T["in"][0], T["in"][1], 0.6, 0.0)])
+    z = z0 + segments(t, [(T["crouch"][0], T["crouch"][1], 0.0, -0.5), (T["rise"][0], T["rise"][1], -0.5, 0.0)])
+    spd = np.hypot(np.gradient(a, 1 / RATE) * rr, np.gradient(rr, 1 / RATE))
+    bob_v, bob_l = gait(t, spd, rng)
+    p = np.stack([c[0] + rr * np.cos(a), c[1] + rr * np.sin(a), z + bob_v], 1)
+    tang = np.stack([-np.sin(a), np.cos(a), 0 * a], 1)
+    init = segments(t, [(T["init"][0], T["init"][1], 0.0, 0.25)])
+    osc = 0.2 * np.sin(2 * np.pi * 1.0 * (t - g0)) * envelope(t, g0, g0 + t_g, 0.6)
+    tr, ro = hand(t, rng)
+    p = p + (init + osc + bob_l)[:, None] * tang + tr
+    yaw, pitch = look_angles(p, c)
+    look_w = envelope(t, T["look"][0], T["look"][1], 1.5)
+    look = look_w * (np.radians(110) * np.sin(2 * np.pi * (t - T["look"][0]) / 20.0))
+    off = segments(t, [(T["turn"][0], T["turn"][1], 0.0, np.pi), (T["turnb"][0], T["turnb"][1], np.pi, 0.0)])
+    yaw = smooth(yaw, 3) + look + off + ro[:, 0]
+    pitch = smooth(pitch, 3) * (1 - look_w) + np.radians(-10) * look_w + ro[:, 1]
+    return finish(t, p, yaw, pitch, ro[:, 2],
+                  {"spot": c.round(3).tolist(), "radius_m": round(float(r), 2), "orbit_deg": round(float(np.degrees(ext))),
+                   "phases_s": {k_: [round(v[0], 2), round(v[1], 2)] for k_, v in T.items()}})
+
+
 SCENARIOS = {"slide": scn_slide, "gesture": scn_gesture, "shake": scn_shake, "rotate": scn_rotate,
-             "orbit": scn_orbit, "walk": scn_walk, "ar": scn_ar}
+             "orbit": scn_orbit, "walk": scn_walk, "ar": scn_ar,
+             "bedside": scn_bedside, "rapid": scn_rapid, "longar": scn_longar}  # appended: the first seven keep their seeds
 
 
 def check_motion(room, m: Motion, table_ok=False):

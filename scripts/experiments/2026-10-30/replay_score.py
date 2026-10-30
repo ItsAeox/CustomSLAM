@@ -38,4 +38,4 @@ for k in np.where(conv)[0][::5]:
 e = np.array(errs)
 first = t[np.where(conv)[0][0]] - t[np.where(ok)[0][0]] if conv.any() else None
 print(f"{out}: converged {conv.sum()} frames" + (f", first after {first:.1f} s" if first is not None else "") +
-      (f", error median {100 * np.median(e):.1f} % p90 {100 * np.percentile(e, 90):.1f} % last {100 * e[-1]:.1f} % ({len(e)} checks)" if len(e) else ", no error checks"))
+      (f", error median {100 * np.median(e):.1f} % p90 {100 * np.percentile(e, 90):.1f} % last {100 * e[-1]:.1f} % ({len(e)} checks, {int((e > 0.1).sum())} over 10 %)" if len(e) else ", no error checks"))

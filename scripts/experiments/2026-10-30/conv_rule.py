@@ -3,7 +3,8 @@
 ground truth as eval/scale_online_check.py (Sim3 of the last 30 s of the map's live positions, >= 30 cm of motion):
   basic   1-sigma < 5 %
   stable  basic and the estimate within --tol of its value --back s earlier (same map, also converged then)
-Per scenario and IMU: runs that converged, median of the per-run median errors, median time to the first converged frame.
+Per scenario and IMU: runs that converged, median of the per-run median errors, median time to the first converged frame,
+and the share of the checked converged frames that were more than 10 % off (confident wrong claims).
   conv_rule.py <results dir> <arm substring> [--tol 0.03] [--back 3]
 """
 import re
@@ -52,16 +53,19 @@ for run in sorted(R.glob(f"*/*{ARM}*/seed*")):
         if conv.any():
             m0 = np.where(ok & (mapid == mapid[np.where(conv)[0][0]]))[0][0]
             first = t[np.where(conv)[0][0]] - t[m0]
-        res[name] = (conv.any(), np.median(errs) if errs else None, first)
+        res[name] = (conv.any(), np.median(errs) if errs else None, first, sum(e > 0.1 for e in errs), len(errs))
     key = (re.match(r"[a-z]+", seq).group(0), "ideal" if "__imuideal" in seq else ("clean" if "_clean" in seq else "phone"))
     rows.setdefault(key, []).append(res)
 print(f"rule 'stable': within {100 * TOL:.0f} % of the value {BACK:.0f} s earlier")
-print("| Scenario | IMU | Runs | basic: converged, err median %, first after s | stable: converged, err median %, first after s |\n|---|---|---|---|---|")
+print("| Scenario | IMU | Runs | basic: converged, err median %, first after s, > 10 % off | stable: converged, err median %, first after s, > 10 % off |\n|---|---|---|---|---|")
 for k in sorted(rows):
     cells = []
     for name in ("basic", "stable"):
         rs = [r[name] for r in rows[k]]
         e = [x[1] for x in rs if x[1] is not None]
         f = [x[2] for x in rs if x[2] is not None]
-        cells.append(f"{sum(1 for x in rs if x[0])}, {np.median(e) * 100:.1f}, {np.median(f):.1f}" if e else f"{sum(1 for x in rs if x[0])}, -, {np.median(f):.1f}" if f else "0, -, -")
+        bad, chk = sum(x[3] for x in rs), sum(x[4] for x in rs)
+        off = f"{100 * bad / chk:.0f} % of {chk}" if chk else "-"
+        cells.append(f"{sum(1 for x in rs if x[0])}, {np.median(e) * 100:.1f}, {np.median(f):.1f}, {off}" if e else
+                     f"{sum(1 for x in rs if x[0])}, -, {np.median(f):.1f}, -" if f else "0, -, -, -")
     print(f"| {k[0]} | {k[1]} | {len(rows[k])} | {cells[0]} | {cells[1]} |")

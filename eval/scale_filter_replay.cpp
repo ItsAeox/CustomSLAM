@@ -79,6 +79,8 @@ int main(int argc, char** argv) {
   const auto tr = rows(run + "/trace.txt", ' ');
   WebScaleFilter F;
   if (const char* pr = std::getenv("PRUNE")) F.prune = std::atof(pr);  // test: the pruning threshold (header default otherwise)
+  if (const char* rs = std::getenv("RESTART")) F.restart = std::atof(rs);  // test: bank lifetime s (a new bank every RESTART / 2)
+  if (const char* sb = std::getenv("STABLEBACK")) F.stableBack = std::atof(sb);
   F.setRcb(Rbc.transpose());
   size_t k = 0;
   int mapid = 0;

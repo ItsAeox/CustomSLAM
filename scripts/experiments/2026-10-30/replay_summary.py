@@ -21,11 +21,14 @@ for f in sorted(R.glob("*.txt")):
     line = subprocess.run([sys.executable, str(S), str(L / q / arm / seed), q, str(f)], capture_output=True, text=True).stdout
     num = lambda p: float(re.search(p, line).group(1)) if re.search(p, line) else None
     key = (re.match(r"[a-z]+", q).group(0), "ideal" if "__imuideal" in q else ("clean" if "_clean" in q else "phone"))
-    rows.setdefault(key, []).append((num(r"converged (\d+) frames") or 0, num(r"error median ([\d.]+) %"), num(r"first after ([\d.]+) s")))
-print("| Scenario | IMU | Runs | Converged (runs) | Error median % | First after s |\n|---|---|---|---|---|---|")
+    rows.setdefault(key, []).append((num(r"converged (\d+) frames") or 0, num(r"error median ([\d.]+) %"), num(r"first after ([\d.]+) s"),
+                                     num(r"\((\d+) checks") or 0, num(r"(\d+) over 10 %") or 0))
+print("| Scenario | IMU | Runs | Converged (runs) | Error median % | First after s | Converged checks > 10 % off |\n|---|---|---|---|---|---|---|")
 for k in sorted(rows):
     rs = rows[k]
     e = [x[1] for x in rs if x[1] is not None]
     fa = [x[2] for x in rs if x[2] is not None]
-    print(f"| {k[0]} | {k[1]} | {len(rs)} | {sum(1 for x in rs if x[0] > 0)} | {np.median(e):.1f} | {np.median(fa):.1f} |" if e else
-          f"| {k[0]} | {k[1]} | {len(rs)} | {sum(1 for x in rs if x[0] > 0)} | - | {np.median(fa) if fa else float('nan'):.1f} |")
+    chk, bad = sum(x[3] for x in rs), sum(x[4] for x in rs)
+    off = f"{100 * bad / chk:.0f} % of {int(chk)}" if chk else "-"
+    print(f"| {k[0]} | {k[1]} | {len(rs)} | {sum(1 for x in rs if x[0] > 0)} | {np.median(e):.1f} | {np.median(fa):.1f} | {off} |" if e else
+          f"| {k[0]} | {k[1]} | {len(rs)} | {sum(1 for x in rs if x[0] > 0)} | - | {np.median(fa) if fa else float('nan'):.1f} | {off} |")
