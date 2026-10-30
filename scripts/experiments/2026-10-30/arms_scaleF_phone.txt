@@ -1,0 +1,2 @@
+# replay_arms.sh arms: WebVIO beta + the online scale as the loosely coupled filter (Web.Scale.Method 1, WebScaleFilter.h)
+beta_scaleF|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1

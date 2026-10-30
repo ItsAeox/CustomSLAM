@@ -537,7 +537,7 @@ async function start() {
   inertial = opts.imu === 'on';  // the options may have changed since the page loaded
   rec = opts.rec === 'on';
   replay = !!params.get('seq');
-  scaleOn = opts.scale === 'on' && !inertial;
+  scaleOn = (opts.scale === 'on' || opts.scale === 'filter') && !inertial;
   gyroOn = (opts.gyro === 'on' || opts.init === 'gyro' || (opts.bridge && opts.bridge !== 'off') || scaleOn) && !inertial;  // the scale needs the IMU feed too  // dataset / recording: its own IMU (seq branch)
   holdOn = opts.hold === 'gyro' && (!params.get('seq') || params.get('holdtest') === '1');  // holdtest: run the code on a dataset (no gyro: held = last pose)
   try {

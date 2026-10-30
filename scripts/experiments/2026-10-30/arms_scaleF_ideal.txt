@@ -1,0 +1,2 @@
+# replay_arms.sh arms: the same on the ideal-IMU variants (offset 0, IMU.Frequency 100)
+beta_scaleF_ideal|beta|Web.Scale.Online: 1;Web.Scale.Method: 1;-IMU.Frequency;IMU.Frequency: 100.0
