@@ -14,7 +14,8 @@
 // every restart / 2 s, banks live restart s (the oldest reports: windows of restart/2 .. restart s follow scale changes
 // of the map); a visual update whose NIS on the most likely hypothesis exceeds the gate is skipped (relocalisation jumps),
 // a bank that skips 10 in a row is dropped. The IMU between two frames is the same for every hypothesis, so the
-// transition (Phi, input u) and the noise (Q = q QA + QO) are accumulated once per frame.
+// transition (Phi, input u) and the noise (Q = q QA + QO) are accumulated once per frame; hypotheses whose
+// log-likelihood falls 30 below the best (weight < e^-30) are pruned from that bank (the next bank starts with the full grid).
 // Results on the synthetic set (EXPERIMENTS vio_filter_sweep, prototype): converged in 7 / 9 / 6 / 11 of 12 runs of ar /
 // gesture / orbit / shake (online window estimator 3 / 5 / 0 / 0), median scale error 0.7-2.5 %.
 #pragma once
@@ -154,13 +155,14 @@ class WebScaleFilter {
     std::vector<V12> x;
     std::vector<M12> P;
     std::vector<double> L, sj, qj;
+    std::vector<char> active;  // pruned: log-likelihood more than prune below the best (weight < e^-30), never updated again
     double t0;
     int nUpd = 0, skips = 0;
 
     Bank(const WebScaleFilter& F, double t, const V3& c, const V3& fm) : t0(t) {
       const int nq = (int)F.sigA.size(), J = F.nScales * nq;
       const double rate = F.imuRate();
-      x.resize(J); P.resize(J); L.assign(J, 0); sj.resize(J); qj.resize(J);
+      x.resize(J); P.resize(J); L.assign(J, 0); sj.resize(J); qj.resize(J); active.assign(J, 1);
       V3 g0 = -F.Rvb_ * fm;
       g0 = 9.81 * g0 / std::max(g0.norm(), 1e-6);
       for (int i = 0; i < F.nScales; i++) {
@@ -185,11 +187,13 @@ class WebScaleFilter {
     void predictUpdate(const WebScaleFilter& F, const V3& z) {
       const int J = (int)x.size();
       for (int j = 0; j < J; j++) {
+        if (!active[j]) continue;
         x[j] = F.Phi_ * x[j] + F.u_;
         P[j] = F.Phi_ * P[j] * F.Phi_.transpose() + qj[j] * F.QA_ + F.QO_;
       }
       // gate on the most likely hypothesis
-      const int jb = (int)(std::max_element(L.begin(), L.end()) - L.begin());
+      int jb = 0;
+      for (int j = 1; j < J; j++) if (active[j] && (!active[jb] || L[j] > L[jb])) jb = j;
       const double r2v = F.sigVis * F.sigVis;
       auto innov = [&](int j, V3& nu, M3& S) {
         nu = z - x[j].segment<3>(0) / sj[j];
@@ -202,7 +206,9 @@ class WebScaleFilter {
       }
       skips = 0;
       nUpd++;
+      double Lmax = -1e300;
       for (int j = 0; j < J; j++) {
+        if (!active[j]) continue;
         V3 nu; M3 S;
         innov(j, nu, S);
         const Eigen::LDLT<M3> ld(S);
@@ -210,9 +216,9 @@ class WebScaleFilter {
         const Eigen::Matrix<double, 12, 3> PHt = P[j].block<12, 3>(0, 0) / sj[j];
         const Eigen::Matrix<double, 12, 3> K = ld.solve(PHt.transpose()).transpose();
         x[j] += K * nu;
-        Eigen::Matrix<double, 12, 12> IKH = M12::Identity();
-        IKH.block<12, 3>(0, 0) -= K / sj[j];
-        P[j] = IKH * P[j] * IKH.transpose() + K * K.transpose() * r2v;
+        // Joseph form (I - KH) P (I - KH)^T + K R K^T, expanded: P - K (HP) - (HP)^T K^T + K S K^T (same result, ~3x cheaper)
+        const Eigen::Matrix<double, 12, 12> KHP = K * PHt.transpose();
+        P[j] += -KHP - KHP.transpose() + K * S * K.transpose();
         L[j] += -0.5 * (nu.dot(ld.solve(nu)) + std::log(std::max(S.determinant(), 1e-300)) + 3 * std::log(2 * M_PI));
         for (int it = 0; it < 2; it++) {  // |g| = 9.81
           const V3 gv = x[j].segment<3>(6);
@@ -227,18 +233,28 @@ class WebScaleFilter {
           P[j] -= Kg * PH.transpose();
         }
         P[j] = 0.5 * (P[j] + P[j].transpose()).eval();
+        Lmax = std::max(Lmax, L[j]);
+      }
+      if (nUpd >= 30) {  // the best scale's neighbours (+-3 grid steps) stay: the parabola peak needs them
+        const int nq = (int)F.sigA.size();
+        int jb2 = 0;
+        for (int j = 1; j < J; j++) if (active[j] && (!active[jb2] || L[j] > L[jb2])) jb2 = j;
+        for (int j = 0; j < J; j++)
+          if (active[j] && L[j] < Lmax - prune && std::abs(j / nq - jb2 / nq) > 3) active[j] = 0;
       }
     }
+    static constexpr double prune = 30;
 
     // marginal over the noise levels, parabola peak over ln s
     void estimate(const WebScaleFilter& F, double& s, double& sd, bool& edge) const {
       const int nq = (int)F.sigA.size(), ns = F.nScales;
       std::vector<double> Ls(ns);
-      double mx = -1e300;
-      for (double v : L) mx = std::max(mx, v);
+      double mx = -1e300;  // over the active hypotheses (pruned ones keep a stale value)
+      for (size_t j = 0; j < L.size(); j++) if (active[j]) mx = std::max(mx, L[j]);
       for (int i = 0; i < ns; i++) {
         double acc = 0;
-        for (int k = 0; k < nq; k++) acc += std::exp(L[i * nq + k] - mx);
+        for (int k = 0; k < nq; k++)
+          if (active[i * nq + k]) acc += std::exp(L[i * nq + k] - mx);
         Ls[i] = std::log(acc + 1e-300);
       }
       const int jb = (int)(std::max_element(Ls.begin(), Ls.end()) - Ls.begin());
@@ -259,7 +275,8 @@ class WebScaleFilter {
     }
 
     V3 gBest(const WebScaleFilter&) const {
-      const int jb = (int)(std::max_element(L.begin(), L.end()) - L.begin());
+      int jb = 0;
+      for (int j = 1; j < (int)L.size(); j++) if (active[j] && (!active[jb] || L[j] > L[jb])) jb = j;
       return x[jb].segment<3>(6);
     }
   };
