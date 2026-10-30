@@ -86,6 +86,11 @@ export const PRESETS = [
     note: 'Visual-inertial mode with the phone IMU: real-world scale and gravity. Experimental; ORB on every frame. Needs a calibrated camera and the IMU time offset.' },
   { key: 'imufast', label: 'IMU, tuned for speed', set: { imu: 'on', tracker: 'stock', motion: 'time', features: '600', levels: '6', map: 'light' },
     note: 'IMU plus time-scaled motion, light ORB and lighter local mapping (tests whether speed is what breaks IMU mode).' },
+  // 2026-10-30 (claude/PLAN.md 4d: full IMU, approaches B and A)
+  { key: 'betascale', label: 'WebVIO beta + metric scale (filter)', set: { kltmax: '4', motion: 'time', map: 'light', pose: 'fast', gyro: 'on', recover: 'coast', hold: 'gyro', lba: 'fast', kltpar: 'parallel', scale: 'filter' },
+    note: 'WebVIO beta with the accelerometer scale from the loosely coupled filter (Kalman filters over a scale grid; synthetic set: converged in 6-11 of 12 runs per scenario at 0.7-2.5 % median error). Tracking is the same as beta.' },
+  { key: 'imutol', label: 'IMU, tolerant start-up', set: { imu: 'on', tracker: 'stock', imustart: 'tolerant' },
+    note: 'Visual-inertial mode whose start-up keeps the map on a loss and has no motion-check reset (synthetic set: resets ~0, start-up completed far more often, but tracking still well below WebVIO beta).' },
 ];
 
 // Sets every option of `page` from a preset (unlisted keys: page default, then option default)
