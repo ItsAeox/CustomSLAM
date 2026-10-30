@@ -85,6 +85,10 @@ int main(int argc, char** argv) {
   size_t k = 0;
   int mapid = 0;
   double prevKfs = 0;
+  const double gateW = std::getenv("GATE_W") ? std::atof(std::getenv("GATE_W")) : 0.0;
+  const double gateWin = std::getenv("GATE_WIN") ? std::atof(std::getenv("GATE_WIN")) : 0.5;
+  const double gateLost = std::getenv("GATE_LOST") ? std::atof(std::getenv("GATE_LOST")) : 0.0;
+  double tLost = -1e9;
   std::ofstream o(out);
   o << "# t s sigma_ln_s tracked map (C++ WebScaleFilter.h)\n";
   for (const auto& r : tr) {
@@ -97,7 +101,16 @@ int main(int argc, char** argv) {
     const double tImuClock = t + off;                                    // the frame on the IMU clock
     while (k < ti.size() && ti[k] <= tImuClock + 1.0) { F.addImu(ti[k], ai[k], wi[k]); k++; }  // queued ahead, as live
     const bool ok = state == 2 || state == 5;
-    if (ok) {
+    if (!ok) tLost = t;
+    // test gates (G32: fast rotation / shaking makes the visual track smoother than the motion -> scale biased high):
+    // GATE_W rad/s: skip frames with a gyro rate above it within the last GATE_WIN s; GATE_LOST s: skip frames that soon
+    // after a lost frame (recoveries jump)
+    bool gated = false;
+    if (gateW > 0)
+      for (size_t j = 0; j < ti.size() && ti[j] <= tImuClock; j++)
+        if (ti[j] >= tImuClock - gateWin && wi[j].norm() > gateW) { gated = true; break; }
+    if (gateLost > 0 && t - tLost < gateLost) gated = true;
+    if (ok && !gated) {
       const Eigen::Quaterniond q(r[9], r[6], r[7], r[8]);  // trace: qx qy qz qw
       F.addFrame(tImuClock, Eigen::Vector3d(r[3], r[4], r[5]), q.toRotationMatrix(), (int)kfs);
     }
