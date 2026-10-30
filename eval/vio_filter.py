@@ -146,6 +146,136 @@ class Bank:
         return float(np.exp(est)), float(sd), j in (0, len(ls) - 1)
 
 
+class Single:
+    """One filter with the scale as a state (--method ekf / iekf / ukf; the classic loosely coupled design, Weiss &
+    Siegwart 2011): x = p (3, m), v (3), g (3), b_a (3), ln s (1). The propagation is linear (the scale does not enter
+    it); the visual measurement p_vis = p exp(-ln s) is not: EKF linearises it once, the iterated EKF re-linearises at
+    the updated state (3 iterations), the UKF uses sigma points (Julier & Uhlmann). ln s follows a random walk
+    (--s-walk), so a slowly changing map scale is followed. Started from a broad prior (--init prior: s = 1, 1-sigma
+    of ln s = 2) or from the converged bank (--init bank: its most likely scale and that hypothesis' state)."""
+
+    def __init__(self, a, x12, P12, lns, var_lns):
+        self.a = a
+        self.x = np.zeros(13)
+        self.x[:12], self.x[12] = x12, lns
+        self.P = np.zeros((13, 13))
+        self.P[:12, :12] = P12
+        pv = x12[0:6]  # p, v scale with s: d(p, v) / d ln s = (p, v)
+        self.P[0:6, 0:6] += np.outer(pv, pv) * var_lns
+        self.P[0:6, 12] = self.P[12, 0:6] = pv * var_lns
+        self.P[12, 12] = var_lns
+        self.n_upd = self.skips = 0
+        self.t0 = self.t_last = None
+
+    def propagate(self, R_vb, f, dt):
+        if dt <= 0:
+            return
+        x = self.x
+        acc = R_vb @ (f - x[9:12]) + x[6:9]
+        x[0:3] += x[3:6] * dt + 0.5 * acc * dt * dt
+        x[3:6] += acc * dt
+        F = np.eye(13)
+        F[0:3, 3:6] = np.eye(3) * dt
+        F[0:3, 6:9] = np.eye(3) * 0.5 * dt * dt
+        F[0:3, 9:12] = -0.5 * dt * dt * R_vb
+        F[3:6, 6:9] = np.eye(3) * dt
+        F[3:6, 9:12] = -dt * R_vb
+        q = self.a.qa_grid[len(self.a.qa_grid) // 2] ** 2
+        Q = np.zeros((13, 13))
+        Q[0:3, 0:3] = np.eye(3) * q * dt ** 3 / 3
+        Q[0:3, 3:6] = Q[3:6, 0:3] = np.eye(3) * q * dt ** 2 / 2
+        Q[3:6, 3:6] = np.eye(3) * q * dt
+        Q[6:9, 6:9] = np.eye(3) * 1e-6 * dt
+        Q[9:12, 9:12] = np.eye(3) * self.a.ba_walk ** 2 * dt
+        Q[12, 12] = self.a.s_walk ** 2 * dt
+        self.P = F @ self.P @ F.T + Q
+
+    @staticmethod
+    def h(x):
+        return x[0:3] * np.exp(-x[12])
+
+    @staticmethod
+    def Hj(x):
+        H = np.zeros((3, 13))
+        e = np.exp(-x[12])
+        H[:, 0:3] = np.eye(3) * e
+        H[:, 12] = -x[0:3] * e
+        return H
+
+    def update(self, z):
+        R = np.eye(3) * self.a.sig_vis ** 2
+        x0, P0 = self.x.copy(), self.P
+        if self.a.method == "ukf":
+            n, kap = 13, 0.0
+            alpha, beta = 1e-1, 2.0
+            lam = alpha ** 2 * (n + kap) - n
+            try:
+                Lc = np.linalg.cholesky((n + lam) * P0)
+            except np.linalg.LinAlgError:
+                Lc = np.linalg.cholesky((n + lam) * (P0 + 1e-9 * np.eye(n)))
+            X = np.vstack([x0, x0 + Lc.T, x0 - Lc.T])
+            wm = np.full(2 * n + 1, 1 / (2 * (n + lam)))
+            wc = wm.copy()
+            wm[0] = lam / (n + lam)
+            wc[0] = wm[0] + 1 - alpha ** 2 + beta
+            Z = np.array([self.h(xi) for xi in X])
+            zm = wm @ Z
+            dZ, dX = Z - zm, X - x0
+            S = (wc[:, None] * dZ).T @ dZ + R
+            C = (wc[:, None] * dX).T @ dZ
+            nu = z - zm
+            Si = np.linalg.inv(S)
+            if self.a.gate > 0 and self.n_upd >= 30 and nu @ Si @ nu > self.a.gate:
+                self.skips += 1
+                return
+            K = C @ Si
+            self.x = x0 + K @ nu
+            self.P = P0 - K @ S @ K.T
+        else:
+            H = self.Hj(x0)
+            S = H @ P0 @ H.T + R
+            Si = np.linalg.inv(S)
+            nu = z - self.h(x0)
+            if self.a.gate > 0 and self.n_upd >= 30 and nu @ Si @ nu > self.a.gate:
+                self.skips += 1
+                return
+            xi = x0
+            for _ in range(3 if self.a.method == "iekf" else 1):  # Gauss-Newton on the measurement (iterated EKF)
+                H = self.Hj(xi)
+                S = H @ P0 @ H.T + R
+                K = P0 @ H.T @ np.linalg.inv(S)
+                xi = x0 + K @ (z - self.h(xi) - H @ (x0 - xi))
+            self.x = xi
+            IKH = np.eye(13) - K @ H
+            self.P = IKH @ P0 @ IKH.T + K @ R @ K.T
+        self.skips = 0
+        self.n_upd += 1
+        for _ in range(2):  # |g| = 9.81
+            g = self.x[6:9]
+            nrm = np.linalg.norm(g)
+            Hg = np.zeros(13)
+            Hg[6:9] = g / nrm
+            Sg = Hg @ self.P @ Hg + 1e-4
+            Kg = self.P @ Hg / Sg
+            self.x += Kg * (G - nrm)
+            self.P = self.P - np.outer(Kg, Hg @ self.P)
+        self.P = 0.5 * (self.P + self.P.T)
+
+    def estimate(self):
+        return float(np.exp(self.x[12])), float(np.sqrt(max(self.P[12, 12], 0))), False
+
+
+def single_from_bank(bank, a):
+    """The single filter started from a converged bank: its most likely scale, that hypothesis' state and covariance."""
+    nq = len(a.qa_grid)
+    s, sd, _ = bank.estimate()
+    i_s = int(np.argmin(abs(np.log(bank.s_u) - np.log(s))))  # nearest grid scale, its most likely noise level
+    j = i_s * nq + int(np.argmax(bank.L.reshape(-1, nq)[i_s]))
+    x12 = bank.x[j].copy()
+    x12[0:6] *= s / bank.s[j]  # the hypothesis' p, v moved to the interpolated scale
+    return Single(a, x12, bank.P[j].copy(), np.log(s), sd ** 2)
+
+
 def se3_ate(est, gt):
     """RMSE (m) after a rigid (no scale) alignment of est onto gt."""
     me, mg = est.mean(0), gt.mean(0)
@@ -183,6 +313,12 @@ def main():
     ap.add_argument("--gate", type=float, default=16.27, help="skip a visual update whose NIS (3 dof) on the most likely scale "
                     "exceeds this (99.9 %%); 0 = off")
     ap.add_argument("--max-skips", type=int, default=10, help="a bank that skipped this many updates in a row is dropped")
+    ap.add_argument("--method", default="bank", choices=["bank", "ekf", "iekf", "ukf"],
+                    help="bank of Kalman filters over the scale grid, or one filter with ln s as a state (class Single)")
+    ap.add_argument("--init", default="bank", choices=["bank", "prior"], help="single filter: start from the converged "
+                    "bank (hand-over after --handover converged frames) or from a broad prior (s = 1, 1-sigma ln s 2)")
+    ap.add_argument("--handover", type=int, default=15)
+    ap.add_argument("--s-walk", type=float, default=0.01, help="single filter: random walk of ln s (1 / sqrt(s))")
     ap.add_argument("--out")
     a = ap.parse_args()
     run, seq = Path(a.run), Path(a.seq)
@@ -208,11 +344,11 @@ def main():
     sd_est = np.full(len(tr), -1.0)
     edge = np.zeros(len(tr), bool)
     k_imu = 0
-    banks, R_vb, t_rot, cur_map, t_map0 = [], None, None, -1, None
+    banks, R_vb, t_rot, cur_map, t_map0, conv_run = [], None, None, -1, None, 0
     for k in range(len(tr)):
         t = tf[k]
         if mapid[k] != cur_map:
-            banks, cur_map, t_map0 = [], mapid[k], None
+            banks, cur_map, t_map0, conv_run = [], mapid[k], None, 0
         if t_map0 is None and kfs[k] > 0:
             t_map0 = t
         # IMU samples up to this frame: propagate the banks, carry the rotation by the gyro
@@ -235,19 +371,33 @@ def main():
             for b in banks:
                 b.propagate(R_vb, f_imu[max(k_imu - 1, 0)], t - b.t_last)  # last stretch to the frame time
                 b.t_last = t
-                if a.forget > 0 and k > 0:
+                if a.forget > 0 and k > 0 and isinstance(b, Bank):
                     b.L *= np.exp(-max(t - tf[k - 1], 0) / a.forget)
                 b.update(pos[k])
-            # banks that keep rejecting the visual pose (the map jumped) or are older than --restart are dropped
-            banks = [b for b in banks if b.skips <= a.max_skips and (a.restart <= 0 or t - b.t0 <= a.restart)]
+            # filters that keep rejecting the visual pose (the map jumped) or are older than --restart are dropped
+            # (a single filter after a bank hand-over has no age limit: its scale random walk follows the map)
+            banks = [b for b in banks if b.skips <= a.max_skips and (isinstance(b, Single) or a.restart <= 0 or t - b.t0 <= a.restart)]
             settled = t_map0 is not None and kfs[k] >= a.start_kfs and t - t_map0 >= a.start_time
-            if settled and (not banks or (a.restart > 0 and t - banks[-1].t0 >= a.restart / 2)):
+            if a.method != "bank" and banks and isinstance(banks[0], Bank):
+                s0, sd0, e0 = banks[0].estimate()
+                conv_run = conv_run + 1 if (sd0 < a.sigma and not e0) else 0
+                if conv_run >= a.handover:  # --init bank: the converged bank hands over to the single filter
+                    b = single_from_bank(banks[0], a)
+                    b.t0, b.t_last = banks[0].t0, t
+                    banks, conv_run = [b], 0
+            if settled and (not banks or (isinstance(banks[-1], Bank) and a.restart > 0 and t - banks[-1].t0 >= a.restart / 2)):
                 m = (ti > t - 0.5) & (ti <= t)
                 f_mean = f_imu[m].mean(0) if m.any() else f_imu[max(k_imu - 1, 0)]
-                b = Bank(s_grid, pos[k], R_vb, f_mean, a)
+                if a.method != "bank" and a.init == "prior":
+                    g0 = -R_vb @ f_mean
+                    x12 = np.concatenate([pos[k], np.zeros(3), G * g0 / max(np.linalg.norm(g0), 1e-6), np.zeros(3)])
+                    sd = np.array([a.sig_vis] * 3 + [1.0] * 6 + [a.sig_ba] * 3)
+                    b = Single(a, x12, np.diag(sd ** 2), 0.0, 2.0 ** 2)
+                else:
+                    b = Bank(s_grid, pos[k], R_vb, f_mean, a)
                 b.t0 = b.t_last = t
                 banks.append(b)
-        if banks:  # the oldest bank (the longest window) reports
+        if banks:  # the oldest filter (the longest window) reports
             s_est[k], sd_est[k], edge[k] = banks[0].estimate()
 
     if a.out:
