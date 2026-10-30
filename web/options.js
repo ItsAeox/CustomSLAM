@@ -43,6 +43,11 @@ export const OPTIONS = [
   { key: 'kfq', label: 'Keyframes while mapping is busy', values: [['stock', 'refused (original; the map stops growing when mapping falls behind)'], ['2', 'queued, up to 2 waiting'], ['3', 'queued, up to 3 waiting']], def: 'stock' },
   { key: 'newarea', label: 'New areas when turning', values: [['stock', 'original (keyframes by tracked-point count)'], ['cov', 'extra keyframes for new textured areas'], ['cov2', 'extra keyframes + new points from smaller baselines']], def: 'stock' },
   { key: 'hold', label: 'Tree during brief tracking losses', page: 'ar', values: [['hide', 'hidden (original)'], ['gyro', 'held by the gyro for up to 0.4 s']], def: 'hide' },
+  // 2026-10-30 (claude/ISSUES.md G28): the IMU start-up of the mono-inertial mode; defaults = original
+  { key: 'imustart', label: 'IMU start-up (IMU on)', page: 'ar', when: (o) => o.imu === 'on',
+    values: [['stock', 'original (a loss in the first ~15 s of motion resets the map)'],
+             ['tolerant', 'tolerant (keep the map and relocalise, no motion-check reset, 30 inliers)'],
+             ['tolerantgyro', 'tolerant + gyro prediction and coasting before the IMU starts']], def: 'stock' },
 ];
 
 // Named presets (AR page): each sets every option; keys it does not list take the page default. Phone test plans
@@ -152,6 +157,11 @@ export function applyOptions(yaml, o) {
   if (o.bridge === 'tv' && o.imu !== 'on') extra.push('Web.Turn.Bridge: 1');  // lost after turning: map the new view in this map
   if (o.bridge === 'gyro' && o.imu !== 'on') extra.push('Web.Turn.Bridge: 2');
   if (o.voc === 'small' && o.desc !== 'teblid') extra.push('Web.BoW.LevelsUp: 3');  // L5 tree: BoW index at the stock depth
+  const add = (line) => { if (!extra.some((e) => e.split(':')[0] === line.split(':')[0])) extra.push(line); };  // no duplicate keys (OpenCV rejects them)
+  if (o.imu === 'on' && (o.imustart === 'tolerant' || o.imustart === 'tolerantgyro'))  // WebConfig.h Web.Imu.*
+    ['Web.Imu.KeepMap: 1', 'Web.Imu.MinInliersPreInit: 30', 'Web.Imu.MotionCheck: 0'].forEach(add);
+  if (o.imu === 'on' && o.imustart === 'tolerantgyro')  // the IMU samples also feed the gyro prior / coasting (stamps already shifted by imudt)
+    ['Web.Imu.WebGyro: 1', 'Web.Gyro.Prior: 1', 'Web.Track.Coast: 2', 'Web.Track.CoastTime: 3'].forEach(add);
   return extra.length ? `${y.replace(/\s*$/, '\n')}\n# web options (web/options.js)\n${extra.join('\n')}\n` : y;
 }
 

@@ -58,7 +58,11 @@ def map_score(f, gt_traj, n_frames):
            "gt_path_m": float(np.linalg.norm(np.diff(g, axis=0), axis=1).sum()), "t0": float(ref.timestamps[0]),
            "t1": float(ref.timestamps[-1])}
     se3 = copy.deepcopy(est)
-    se3.align(ref, correct_scale=False)
+    try:
+        se3.align(ref, correct_scale=False)
+    except Exception:  # evo GeometryException: all poses at one point (no alignment possible)
+        out["flag"] = "degenerate"
+        return out
     out["ate_se3_cm"] = 100 * float(np.sqrt((np.linalg.norm(se3.positions_xyz - g, axis=1) ** 2).mean()))
     sim = copy.deepcopy(est)
     _, _, s = sim.align(ref, correct_scale=True)
