@@ -14,10 +14,14 @@ For a fixed s this is linear in (p, v, g, b_a): a bank of Kalman filters over a 
 update (a constraint, not evidence). Posterior over s: the likelihoods with a flat prior in ln s; estimate = parabola
 peak of the log-likelihood around the best grid point; 1-sigma = the posterior spread of ln s (at least half a grid
 step). --forget T: the log-likelihoods decay with time constant T s (follows a slowly changing map scale; 0 = off).
-A map switch (keyframe count back to 0) restarts the bank. Lost frames: IMU propagation only.
+A map's filter starts when the map has settled (--start-kfs keyframes, --start-time s: early bundle adjustment changes
+the scale a lot); --restart: staggered banks over sliding windows follow later scale changes; --gate: visual updates
+that do not fit the most likely scale (relocalisation jumps, bad poses) are skipped. A map switch (keyframe count back
+to 0) drops the banks. Lost frames: IMU propagation only.
 
   vio_filter.py <run dir> <sequence dir> [--imu csv (default <seq>/mav0/imu0/data.csv)] [--offset-ms -88]
-               [--gt gt.txt] [--keep 30] [--sigma 0.05] [--sig-a 0.15] [--sig-vis 0.005] [--forget 0] [--out file]
+               [--gt gt.txt] [--keep 30] [--sigma 0.05] [--sig-a 0.15] [--sig-vis 0.005] [--forget 0] [--restart 30] [--gate 16.27]
+               [--start-kfs 10] [--start-time 2] [--out file]
 Prints one line: tracked s, converged s (first after s of its map), with GT |s / s_gt - 1| over converged frames
 (the reference as eval/scale_online_check.py: Sim3 of the last --keep s of the map's live positions), and the metric
 ATE (SE3 alignment, no scale) of the scaled live positions s(t) p_vis(t) over the converged frames, per largest map; the
@@ -60,6 +64,8 @@ class Bank:
         self.P = np.repeat(np.diag(sd ** 2)[None], J, 0)
         self.P[:, 0:3, 0:3] = np.eye(3) * (a.sig_vis * s_grid[:, None, None]) ** 2
         self.L = np.zeros(J)
+        self.n_upd = self.skips = 0
+        self.t0 = self.t_last = None
 
     def propagate(self, R_vb, f, dt):
         if dt <= 0:
@@ -90,6 +96,12 @@ class Bank:
         nu = z[None, :] - self.x[:, 0:3] / self.s[:, None]
         S = H @ self.P @ H.transpose(0, 2, 1) + np.eye(3)[None] * self.a.sig_vis ** 2
         Si = np.linalg.inv(S)
+        jb = int(np.argmax(self.L))  # gate on the most likely scale: a visual jump (relocalisation, bad pose) is skipped
+        if self.a.gate > 0 and self.n_upd >= 30 and nu[jb] @ Si[jb] @ nu[jb] > self.a.gate:
+            self.skips += 1
+            return
+        self.skips = 0
+        self.n_upd += 1
         K = self.P @ H.transpose(0, 2, 1) @ Si
         self.x += np.einsum("jab,jb->ja", K, nu)
         IKH = np.eye(12)[None] - K @ H
@@ -147,10 +159,17 @@ def main():
     ap.add_argument("--sig-vis", type=float, default=0.005, help="visual position noise (map units)")
     ap.add_argument("--sig-ba", type=float, default=0.1, help="accelerometer bias prior 1-sigma (m/s^2)")
     ap.add_argument("--ba-walk", type=float, default=0.002, help="accelerometer bias random walk (m/s^2 / sqrt(s))")
-    ap.add_argument("--grid", type=int, default=240)
-    ap.add_argument("--s-min", type=float, default=0.03)
-    ap.add_argument("--s-max", type=float, default=30.0)
+    ap.add_argument("--grid", type=int, default=300)
+    ap.add_argument("--s-min", type=float, default=0.01)
+    ap.add_argument("--s-max", type=float, default=1000.0)
     ap.add_argument("--forget", type=float, default=0.0)
+    ap.add_argument("--start-kfs", type=int, default=10, help="a map's filter starts once it has this many keyframes ...")
+    ap.add_argument("--start-time", type=float, default=2.0, help="... and is this many seconds old (ORB-SLAM3's IMU init: 10, 2 s)")
+    ap.add_argument("--restart", type=float, default=30.0, help="a new bank every restart/2 s, the oldest reports, banks live "
+                    "restart s (windows of restart/2 .. restart s; follows scale changes of the map); 0 = one bank per map")
+    ap.add_argument("--gate", type=float, default=16.27, help="skip a visual update whose NIS (3 dof) on the most likely scale "
+                    "exceeds this (99.9 %%); 0 = off")
+    ap.add_argument("--max-skips", type=int, default=10, help="a bank that skipped this many updates in a row is dropped")
     ap.add_argument("--out")
     a = ap.parse_args()
     run, seq = Path(a.run), Path(a.seq)
@@ -175,41 +194,47 @@ def main():
     sd_est = np.full(len(tr), -1.0)
     edge = np.zeros(len(tr), bool)
     k_imu = 0
-    bank, R_vb, t_rot, t_last, cur_map = None, None, None, None, -1
+    banks, R_vb, t_rot, cur_map, t_map0 = [], None, None, -1, None
     for k in range(len(tr)):
         t = tf[k]
         if mapid[k] != cur_map:
-            bank, cur_map = None, mapid[k]
-        # IMU samples up to this frame: propagate the bank, carry the rotation by the gyro
+            banks, cur_map, t_map0 = [], mapid[k], None
+        if t_map0 is None and kfs[k] > 0:
+            t_map0 = t
+        # IMU samples up to this frame: propagate the banks, carry the rotation by the gyro
         while k_imu < len(ti) and ti[k_imu] <= t:
             if R_vb is not None:
                 dt = ti[k_imu] - t_rot
-                if dt > 0:
-                    R_vb = R_vb @ so3exp(w_imu[k_imu - 1 if k_imu else 0] * dt)
+                if dt > 0:  # midpoint rule: rotation, rate and specific force at the middle of the interval
+                    w_mid = 0.5 * (w_imu[max(k_imu - 1, 0)] + w_imu[k_imu])
+                    R_mid = R_vb @ so3exp(w_mid * dt / 2)
+                    f = 0.5 * (f_imu[max(k_imu - 1, 0)] + f_imu[k_imu])
+                    for b in banks:
+                        b.propagate(R_mid, f, ti[k_imu] - b.t_last)
+                        b.t_last = ti[k_imu]
+                    R_vb = R_vb @ so3exp(w_mid * dt)
                     t_rot = ti[k_imu]
-                if bank is not None and t_last is not None:
-                    bank.propagate(R_vb, 0.5 * (f_imu[max(k_imu - 1, 0)] + f_imu[k_imu]), ti[k_imu] - t_last)
-            t_last = ti[k_imu] if bank is not None else None
             k_imu += 1
-        if not ok[k]:
-            if bank is not None:
-                s_est[k], sd_est[k], edge[k] = bank.estimate()
-            continue
-        R_vb = Rotation.from_quat(quat[k]).as_matrix() @ Rcb.T
-        t_rot = t
-        if bank is None:
-            m = (ti > t - 0.5) & (ti <= t)
-            f_mean = f_imu[m].mean(0) if m.any() else f_imu[max(k_imu - 1, 0)]
-            bank = Bank(s_grid, pos[k], R_vb, f_mean, a)
-            t_last = t
-        else:
-            if t_last is not None and t > t_last:  # last stretch from the latest IMU sample to the frame time
-                bank.propagate(R_vb, f_imu[max(k_imu - 1, 0)], t - t_last)
-            t_last = t
-            if a.forget > 0 and k > 0:
-                bank.L *= np.exp(-max(t - tf[k - 1], 0) / a.forget)
-            bank.update(pos[k])
-        s_est[k], sd_est[k], edge[k] = bank.estimate()
+        if ok[k]:
+            R_vb = Rotation.from_quat(quat[k]).as_matrix() @ Rcb.T
+            t_rot = t
+            for b in banks:
+                b.propagate(R_vb, f_imu[max(k_imu - 1, 0)], t - b.t_last)  # last stretch to the frame time
+                b.t_last = t
+                if a.forget > 0 and k > 0:
+                    b.L *= np.exp(-max(t - tf[k - 1], 0) / a.forget)
+                b.update(pos[k])
+            # banks that keep rejecting the visual pose (the map jumped) or are older than --restart are dropped
+            banks = [b for b in banks if b.skips <= a.max_skips and (a.restart <= 0 or t - b.t0 <= a.restart)]
+            settled = t_map0 is not None and kfs[k] >= a.start_kfs and t - t_map0 >= a.start_time
+            if settled and (not banks or (a.restart > 0 and t - banks[-1].t0 >= a.restart / 2)):
+                m = (ti > t - 0.5) & (ti <= t)
+                f_mean = f_imu[m].mean(0) if m.any() else f_imu[max(k_imu - 1, 0)]
+                b = Bank(s_grid, pos[k], R_vb, f_mean, a)
+                b.t0 = b.t_last = t
+                banks.append(b)
+        if banks:  # the oldest bank (the longest window) reports
+            s_est[k], sd_est[k], edge[k] = banks[0].estimate()
 
     if a.out:
         np.savetxt(a.out, np.c_[tf, s_est, sd_est, ok, mapid], fmt="%.6f", header="t s sigma_ln_s tracked map")

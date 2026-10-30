@@ -15,7 +15,7 @@ out = R / f"vio_filter_{TAG}.txt"
 with open(out, "w", encoding="utf-8") as fh:
     fh.write(f"# vio_filter.py {' '.join(EXTRA)}\n")
     for run in sorted(R.glob("*/beta_scale*/seed*")):
-        if not (run / "trace.txt").exists():
+        if not (run / "trace.txt").exists() or not (run / "run_info.txt").exists():  # finished runs only
             continue
         seq = run.parts[-3]
         base = seq.split("__")[0]
