@@ -243,12 +243,18 @@ def main():
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--offset-ms", type=float, default=-88)
     ap.add_argument("--rerender", action="store_true", help="only rewrite RESULTS.md from scores.json")
+    ap.add_argument("--update-live", action="store_true", help="with --rerender: recompute the live-pose scores first")
     ap.add_argument("--max-sigma", type=float, default=10, help="medians of offline ratios only over estimates whose own "
                     "1-sigma is at most this (%%)")
     A = ap.parse_args()
     A.results, A.data, A.gt = Path(A.results), Path(A.data), Path(A.gt)
     if A.rerender:  # tables only, from the scores of an earlier run of this script
         rows = json.loads((A.results / "scores.json").read_text())
+        if A.update_live:  # + the live-pose scores (cheap, one process)
+            for r in rows:
+                run = Path(r["run"])
+                r["live"] = live_score(run, A.data / r["seq"], A.gt / f"synth_{r['seq']}.txt") if (run / "trace.txt").exists() else None
+            (A.results / "scores.json").write_text(json.dumps(rows, indent=1))
     else:
         runs = sorted(str(p.parent) for p in A.results.glob("*/*/seed*/run.log"))
         with Pool(A.jobs) as pool:
