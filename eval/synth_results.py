@@ -68,6 +68,63 @@ def map_score(f, gt_traj, n_frames):
     return out
 
 
+def live_score(run, seq, gt):
+    """The poses the tracker reported live (trace.txt), per map (keyframe count back to 0 = a new or reset map): the
+    longest one (most tracked frames) against the ground truth. Resets erase maps from the saved trajectories (the
+    stock IMU mode resets often), the live poses keep them. Sim3 scale and ATE, and the SE3 ATE (metric maps)."""
+    rows = [l.split() for l in (run / "trace.txt").read_text().splitlines()]
+    tr = np.array([[float(x) for x in r[:14]] for r in rows if len(r) >= 14 and r[0].lstrip("-").isdigit()])
+    if not len(tr):
+        return None
+    cam = np.loadtxt(seq / "mav0" / "cam0" / "data.csv", delimiter=",", comments="#", usecols=0, dtype=np.int64)
+    t = cam[np.clip(tr[:, 0].astype(int), 0, len(cam) - 1)] * 1e-9
+    ok = np.isin(tr[:, 1].astype(int), [2, 5])
+    kfs = tr[:, 13]
+    mapid = np.cumsum(np.concatenate([[0], (kfs[1:] == 0) & (kfs[:-1] > 0)]))
+    g = np.loadtxt(gt, comments="#", ndmin=2)
+    best = max(np.unique(mapid), key=lambda m: (ok & (mapid == m)).sum())
+    sel = ok & (mapid == best) & (t >= g[0, 0]) & (t <= g[-1, 0])
+    if sel.sum() < 10:
+        return {"frames": int(sel.sum()), "maps": int(len(np.unique(mapid[ok]))) if ok.any() else 0}
+    gp = np.stack([np.interp(t[sel], g[:, 0], g[:, j]) for j in (1, 2, 3)], 1)
+    e = tr[sel, 3:6]
+
+    def align(src, dst, scale):
+        ms, md = src.mean(0), dst.mean(0)
+        a0, b0 = src - ms, dst - md
+        U, D, Vt = np.linalg.svd(b0.T @ a0 / len(src))
+        S = np.eye(3)
+        if np.linalg.det(U) * np.linalg.det(Vt) < 0:
+            S[2, 2] = -1
+        R = U @ S @ Vt
+        s = np.trace(np.diag(D) @ S) / max((a0 ** 2).sum(1).mean(), 1e-12) if scale else 1.0
+        return s, float(np.sqrt((np.linalg.norm(dst - (s * a0 @ R.T + md), axis=1) ** 2).mean()))
+
+    s, ate_sim = align(e, gp, True)
+    _, ate_se3 = align(e, gp, False)
+    rms = float(np.sqrt(((gp - gp.mean(0)) ** 2).sum(1).mean()))
+    return {"frames": int(sel.sum()), "share": float(sel.sum() / len(cam)), "maps": int(len(np.unique(mapid[ok]))),
+            "sim3_scale": float(s), "ate_sim3_cm": 100 * ate_sim, "ate_se3_cm": 100 * ate_se3, "gt_rms_m": rms,
+            "flag": "short" if rms < 0.05 else ("poor fit" if ate_sim > 0.3 * rms else "")}
+
+
+def live_cell(lv):
+    if not lv or "sim3_scale" not in lv:
+        return "-"
+    return (f"{100 * lv['share']:.0f} %, {lv['sim3_scale']:.3f}, {lv['ate_sim3_cm']:.1f} / {lv['ate_se3_cm']:.1f}"
+            + (f" ({lv['flag']})" if lv["flag"] else ""))
+
+
+def live_med(rs, md):
+    lv = [r["live"] for r in rs if r.get("live") and "sim3_scale" in r["live"]]
+    if not lv:
+        return "-"
+    good = [x for x in lv if x["flag"] == ""]
+    inert = any(r["inertial"] for r in rs)
+    return (f"{md([100 * x['share'] for x in lv], '{:.0f}')} %, " + (f"{md([x['sim3_scale'] for x in good])}, "
+            f"{md([x['ate_se3_cm'] for x in good], '{:.1f}')}" if inert else "-, -") + f" ({len(good)} of {len(lv)} unflagged)")
+
+
 def offline(traj, imu, tbc, gt, off):
     res = {}
     for key, tool, extra in (("align", "scale_linear_align.py", ["--dt", "0.5", "--bias-prior", "0.1"]),
@@ -105,6 +162,7 @@ def score(run):
     good = [x for x in out["maps_scored"] if "sim3_scale" in x]
     big = max(good, key=lambda x: x["poses"]) if good else None
     out["largest"] = big
+    out["live"] = live_score(run, seq, gt) if (run / "trace.txt").exists() else None
     if (run / "trace.txt").exists() and not out["inertial"]:
         line = run_tool([EVAL / "scale_online_check.py", run, seq, "--gt", gt])
         out["online"] = {"line": line, "tracked_s": num(r"tracked (\d+) s", line), "est_s": num(r"with an estimate (\d+) s", line),
@@ -127,22 +185,25 @@ def f(v, fmt="{:.3f}"):
 
 def table(rows):
     lines = ["| Sequence | IMU | Arm | Seed | Tracked % | Maps | 1st map (frame) | Largest map: frames % | Sim3 scale | "
-             "ATE Sim3 cm | ATE SE3 cm | Flag | Map resets (IMU not init / bad IMU), IMU init done | Online: converged s (after s) | Online err median / p90 / last % | "
-             "Offline phone IMU: align / w1 / w2 | Offline ideal IMU: align / w1 / w2 |", "|" + "---|" * 17]
+             "ATE Sim3 cm | ATE SE3 cm | Flag | Map resets (IMU not init / bad IMU), IMU init done | Live longest map: frames %, Sim3 scale, ATE Sim3 / SE3 cm | "
+             "Online: converged s (after s) | Online err median / p90 / last % | "
+             "Offline phone IMU: align / w1 / w2 | Offline ideal IMU: align / w1 / w2 |", "|" + "---|" * 18]
     for r in rows:
         b = r["largest"] or {}
         o = r.get("online", {})
         op, oi = r.get("offline_phone", {}), r.get("offline_ideal", {})
-        trip = lambda d: " / ".join(f(d.get(k, {}).get("ratio")) for k in ("align", "w1", "w2")) if d else "-"
+        cell = lambda e: "-" if e.get("ratio") is None else f(e["ratio"]) + (f" ±{e['sigma_pct']:.0f}%" if e.get("sigma_pct") is not None else "")
+        trip = lambda d: " / ".join(cell(d.get(k, {})) for k in ("align", "w1", "w2")) if d else "-"
         lines.append(
             f"| {r['base']} | {r['variant']} | {r['arm']} | {r['seed'][4:]} | {f(100 * (r['tracked'] or 0), '{:.0f}')} | "
             f"{len([x for x in r['maps_scored'] if 'sim3_scale' in x])} | {f(r.get('before_map'), '{:.0f}')} | "
             f"{f(100 * b['share'], '{:.0f}') if b else '-'} | {f(b.get('sim3_scale'))} | {f(b.get('ate_sim3_cm'), '{:.1f}')} | "
-            f"{f(b.get('ate_se3_cm'), '{:.1f}')} | {b.get('flag', '') if b else ('aborted' if r['aborted'] else 'no map')}"
+            f"{f(b.get('ate_se3_cm'), '{:.1f}') if r['inertial'] else '-'} | {b.get('flag', '') if b else ('aborted' if r['aborted'] else 'no map')}"
             f"{' (aborted)' if b and r['aborted'] else ''} | "
             f"{'{} ({} / {}), {}'.format(r['log']['resets'], r['log']['reset_imu_not_init'], r['log']['reset_bad_imu'], 'yes' if r['log']['viba2'] else 'no') if r['inertial'] else '-'} | "
+            f"{live_cell(r.get('live'))} | "
             f"{f(o.get('conv_s'), '{:.0f}')} ({f(o.get('first_after_s'), '{:.1f}')}) | "
-            f"{f(o.get('err_med_pct'), '{:.1f}')} / {f(o.get('err_p90_pct'), '{:.1f}')} / {f(o.get('err_last_pct'), '{:.1f}')} | "
+            f"{f(o.get('err_med_pct'), '{:.1f}')}/ {f(o.get('err_p90_pct'), '{:.1f}')} / {f(o.get('err_last_pct'), '{:.1f}')} | "
             f"{trip(op)} | {trip(oi)} |")
     return "\n".join(lines)
 
@@ -150,21 +211,24 @@ def table(rows):
 def medians(rows):
     """Per arm and IMU over a scenario's runs: medians of the raw columns (no ranking)."""
     out = ["| Arm | IMU | Runs | Tracked % | Maps | Sim3 scale (largest, unflagged) | ATE Sim3 cm | ATE SE3 cm | "
+           "Live longest map: frames %, Sim3 scale, SE3 ATE cm (mono-inertial) | "
            "Online converged in runs | Online err median % | Offline phone align / w1 / w2 | Offline ideal align / w1 / w2 |",
-           "|" + "---|" * 12]
+           "|" + "---|" * 13]
     keys = sorted({(r["arm"], r["variant"]) for r in rows})
     md = lambda xs, fmt="{:.3f}": f(float(np.median(xs)), fmt) if xs else "-"
     for arm, var in keys:
         rs = [r for r in rows if r["arm"] == arm and r["variant"] == var]
         bl = [r["largest"] for r in rs if r["largest"] and r["largest"]["flag"] == ""]
         on = [r["online"] for r in rs if r.get("online")]
-        trip = lambda key: " / ".join(md([r[key][k]["ratio"] for r in rs if r.get(key) and r[key][k]["ratio"] is not None])
+        trip = lambda key: " / ".join(md([r[key][k]["ratio"] for r in rs if r.get(key) and r[key][k]["ratio"] is not None
+                                          and (r[key][k].get("sigma_pct") or 0) <= A.max_sigma])
                                       for k in ("align", "w1", "w2"))
         out.append(f"| {arm} | {var} | {len(rs)} | {md([100 * (r['tracked'] or 0) for r in rs], '{:.0f}')} | "
                    f"{md([len([x for x in r['maps_scored'] if 'sim3_scale' in x]) for r in rs], '{:.0f}')} | "
                    f"{md([b['sim3_scale'] for b in bl]) if any(r['inertial'] for r in rs) else '-'} | "  # visual maps: arbitrary units
                    f"{md([b['ate_sim3_cm'] for b in bl], '{:.1f}')} | "
-                   f"{md([b['ate_se3_cm'] for b in bl], '{:.1f}')} | "
+                   f"{md([b['ate_se3_cm'] for b in bl], '{:.1f}') if any(r['inertial'] for r in rs) else '-'} | "
+                   f"{live_med(rs, md)} | "
                    f"{sum(1 for o in on if o.get('conv_s'))} of {len(on)} | {md([o['err_med_pct'] for o in on if o.get('err_med_pct') is not None], '{:.1f}')} | "
                    f"{trip('offline_phone')} | {trip('offline_ideal')} |")
     return "\n".join(out)
@@ -178,18 +242,26 @@ def main():
     ap.add_argument("--gt", default="/mnt/h/Research/results/gt")
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--offset-ms", type=float, default=-88)
+    ap.add_argument("--rerender", action="store_true", help="only rewrite RESULTS.md from scores.json")
+    ap.add_argument("--max-sigma", type=float, default=10, help="medians of offline ratios only over estimates whose own "
+                    "1-sigma is at most this (%%)")
     A = ap.parse_args()
     A.results, A.data, A.gt = Path(A.results), Path(A.data), Path(A.gt)
-    runs = sorted(str(p.parent) for p in A.results.glob("*/*/seed*/run.log"))
-    with Pool(A.jobs) as pool:
-        rows = pool.map(score, runs)
-    (A.results / "scores.json").write_text(json.dumps(rows, indent=1))
+    if A.rerender:  # tables only, from the scores of an earlier run of this script
+        rows = json.loads((A.results / "scores.json").read_text())
+    else:
+        runs = sorted(str(p.parent) for p in A.results.glob("*/*/seed*/run.log"))
+        with Pool(A.jobs) as pool:
+            rows = pool.map(score, runs)
+        (A.results / "scores.json").write_text(json.dumps(rows, indent=1))
     order = {"phone": 0, "clean": 1, "imuideal": 2}
     rows.sort(key=lambda r: (r["scenario"], r["base"], order.get(r["variant"], 3), r["arm"], r["seed"]))
     text = ["# Synthetic set: runs against the exact ground truth (eval/synth_results.py)", "",
             "Sim3 scale: metres per map unit of the largest map (mono-inertial arms: 1.0 = metric). Online / offline "
             "errors and ratios: estimate / that map's true scale. Flags: short = < 5 cm of motion (scale undefined), "
-            "poor fit = Sim3 ATE > 30 % of the map's motion (wrong shape); flagged maps get no offline estimate. "
+            "poor fit = Sim3 ATE > 30 % of the map's motion (wrong shape); flagged maps get no offline estimate. Offline cells: "
+            f"ratio ±its own 1-sigma; scenario medians only over estimates with 1-sigma <= {A.max_sigma:.0f} %. ATE SE3 only "
+            "for the mono-inertial arms (visual maps have no metric scale). "
             f"Offline phone IMU at {A.offset_ms:.0f} ms, ideal IMU at 0 ms.", ""]
     for sc in sorted({r["scenario"] for r in rows}):
         rs = [r for r in rows if r["scenario"] == sc]

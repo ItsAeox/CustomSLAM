@@ -51,10 +51,16 @@ def so3exp(w):
 
 
 class Bank:
-    """Kalman filters over a grid of scales; state x = p (3, m), v (3), g (3), b_a (3)."""
+    """Kalman filters over a grid of scales (x accelerometer noise levels, --sig-a-grid); state x = p (3, m), v (3),
+    g (3), b_a (3)."""
 
     def __init__(self, s_grid, p_vis, R_vb, f_mean, a):
-        self.s, self.a = s_grid, a
+        nq = len(a.qa_grid)
+        self.s_u = s_grid
+        self.s = np.repeat(s_grid, nq)  # hypothesis j: scale s_grid[j // nq], noise qa_grid[j % nq]
+        self.q = np.tile(np.asarray(a.qa_grid) ** 2, len(s_grid))
+        self.a = a
+        s_grid = self.s
         J = len(s_grid)
         self.x = np.zeros((J, 12))
         self.x[:, 0:3] = s_grid[:, None] * p_vis
@@ -80,13 +86,14 @@ class Bank:
         F[0:3, 9:12] = -0.5 * dt * dt * R_vb
         F[3:6, 6:9] = np.eye(3) * dt
         F[3:6, 9:12] = -dt * R_vb
-        q = self.a.qa ** 2  # accelerometer + model noise, continuous density (m/s^2)^2 / Hz
-        Q = np.zeros((12, 12))
-        Q[0:3, 0:3] = np.eye(3) * q * dt ** 3 / 3
-        Q[0:3, 3:6] = Q[3:6, 0:3] = np.eye(3) * q * dt ** 2 / 2
-        Q[3:6, 3:6] = np.eye(3) * q * dt
-        Q[6:9, 6:9] = np.eye(3) * 1e-6 * dt
-        Q[9:12, 9:12] = np.eye(3) * self.a.ba_walk ** 2 * dt
+        q = self.q[:, None, None]  # accelerometer + model noise, continuous density (m/s^2)^2 / Hz, per hypothesis
+        Q = np.zeros((len(self.s), 12, 12))
+        I3 = np.eye(3)[None]
+        Q[:, 0:3, 0:3] = I3 * q * dt ** 3 / 3
+        Q[:, 0:3, 3:6] = Q[:, 3:6, 0:3] = I3 * q * dt ** 2 / 2
+        Q[:, 3:6, 3:6] = I3 * q * dt
+        Q[:, 6:9, 6:9] = np.eye(3) * 1e-6 * dt
+        Q[:, 9:12, 9:12] = np.eye(3) * self.a.ba_walk ** 2 * dt
         self.P = F @ P @ F.T + Q
 
     def update(self, z):
@@ -119,10 +126,14 @@ class Bank:
         self.P = 0.5 * (self.P + self.P.transpose(0, 2, 1))
 
     def estimate(self):
-        L = self.L - self.L.max()
+        nq = len(self.a.qa_grid)  # marginal over the noise levels: log-sum-exp per scale
+        Lq = self.L.reshape(-1, nq)
+        m = Lq.max()
+        L = np.log(np.exp(Lq - m).sum(1) + 1e-300)
+        L -= L.max()
         w = np.exp(L)
         w /= w.sum()
-        ls = np.log(self.s)
+        ls = np.log(self.s_u)
         j = int(np.argmax(L))
         est = ls[j]
         if 0 < j < len(ls) - 1:  # parabola through the best grid point and its neighbours
@@ -156,6 +167,8 @@ def main():
     ap.add_argument("--keep", type=float, default=30.0)
     ap.add_argument("--sigma", type=float, default=0.05)
     ap.add_argument("--sig-a", type=float, default=0.15, help="accelerometer + model noise per sample at the IMU rate (m/s^2)")
+    ap.add_argument("--sig-a-grid", default="", help="comma list of --sig-a values: hypotheses over the noise level too, "
+                    "marginalised (the likelihood picks the level; a too high assumed level biases the scale upwards)")
     ap.add_argument("--sig-vis", type=float, default=0.005, help="visual position noise (map units)")
     ap.add_argument("--sig-ba", type=float, default=0.1, help="accelerometer bias prior 1-sigma (m/s^2)")
     ap.add_argument("--ba-walk", type=float, default=0.002, help="accelerometer bias random walk (m/s^2 / sqrt(s))")
@@ -175,7 +188,8 @@ def main():
     run, seq = Path(a.run), Path(a.seq)
     ti, w_imu, f_imu = load_imu(a.imu or seq / "mav0" / "imu0" / "data.csv")
     ti = ti - a.offset_ms * 1e-3  # camera clock
-    a.qa = a.sig_a / np.sqrt(len(ti) / (ti[-1] - ti[0]))  # per-sample sigma -> density
+    rate = len(ti) / (ti[-1] - ti[0])
+    a.qa_grid = [float(v) / np.sqrt(rate) for v in (a.sig_a_grid.split(",") if a.sig_a_grid else [a.sig_a])]  # per-sample sigma -> density
     Rcb = load_tbc(seq / "settings.yaml")[:3, :3]  # IMU.T_b_c1: camera -> body; R_vb = R_vc R_bc^T
 
     rows = [l.split() for l in (run / "trace.txt").read_text().splitlines()]
