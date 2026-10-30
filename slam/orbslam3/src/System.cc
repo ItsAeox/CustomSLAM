@@ -478,8 +478,9 @@ Sophus::SE3f System::TrackMonocular(const cv::Mat &im, const double &timestamp, 
 #endif
     }
 #ifdef ORBSLAM3_WEB
-    else if (webConfig().gyroPrior)  // visual-only: IMU samples only feed the gyro rotation prior (Web.Gyro.Prior)
-        mpTracker->WebGrabGyro(vImuMeas);
+    else if (webConfig().gyroPrior || (webConfig().scaleOnline && webConfig().scaleMethod == 1))  // visual-only: the IMU
+        mpTracker->WebGrabGyro(vImuMeas);  // feeds the gyro prior (Web.Gyro.Prior) and the online scale; the filter needs it
+                                            // without the gyro prior too (the window estimator only ever got it with it)
 #endif
 
     Sophus::SE3f Tcw = mpTracker->GrabImageMonocular(imToFeed,timestamp,filename);

@@ -3591,11 +3591,27 @@ void Tracking::WebScaleUpdate()
         mWebScale.window = cfg.scaleWindow;
         const Eigen::Matrix3f Rbc = Eigen::Map<const Eigen::Matrix<float, 3, 3, Eigen::RowMajor>>(cfg.gyroRbc);
         mWebScale.setRcb(Rbc.transpose().cast<double>());
+        mWebScaleF.reset();
+        mWebScaleF.setRcb(Rbc.transpose().cast<double>());
         mpWebScaleMap = pMap;
         mdWebScaleMapStart = mCurrentFrame.mTimeStamp;
         mdWebScaleConverged = -1;
     }
     const Sophus::SE3f Twc = mCurrentFrame.GetPose().inverse();
+    if(cfg.scaleMethod == 1)  // the filter: every tracked frame; its estimate in mWebScale's fields (trace, page, stats)
+    {
+        mWebScaleF.addFrame(mCurrentFrame.mTimeStamp + cfg.gyroTimeOffset, Twc.translation().cast<double>(),
+                            Twc.rotationMatrix().cast<double>(), (int)pMap->KeyFramesInMap());
+        mWebScale.valid = mWebScaleF.valid;
+        mWebScale.s = mWebScaleF.s;
+        mWebScale.relStd = mWebScaleF.relStd;
+        mWebScale.windows = mWebScaleF.windows;
+        mWebScale.g = mWebScaleF.g;
+        mWebScale.solves++;
+        if(mWebScale.valid && mWebScale.relStd < 0.05 && mdWebScaleConverged < 0)
+            mdWebScaleConverged = mCurrentFrame.mTimeStamp - mdWebScaleMapStart;
+        return;
+    }
     mWebScale.addPose(mCurrentFrame.mTimeStamp + cfg.gyroTimeOffset, Twc.translation().cast<double>(), Twc.rotationMatrix().cast<double>());
     if(++mnWebScaleFrames % 15 == 0 && mWebScale.solve() && mWebScale.relStd < 0.05 && mdWebScaleConverged < 0)
         mdWebScaleConverged = mCurrentFrame.mTimeStamp - mdWebScaleMapStart;
@@ -3611,7 +3627,12 @@ void Tracking::WebGrabGyro(const std::vector<IMU::Point>& v)
 {
     if(webConfig().scaleOnline)
         for(const IMU::Point& p : v)
-            mWebScale.addImu(p.t, p.a.cast<double>());
+        {
+            if(webConfig().scaleMethod == 1)
+                mWebScaleF.addImu(p.t, p.a.cast<double>(), p.w.cast<double>());
+            else
+                mWebScale.addImu(p.t, p.a.cast<double>());
+        }
     mvWebGyro.insert(mvWebGyro.end(), v.begin(), v.end());
     if(mvWebGyro.empty())
         return;

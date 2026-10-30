@@ -21,6 +21,7 @@
 #define TRACKING_H
 
 #include "WebScale.h"
+#include "WebScaleFilter.h"
 #include <opencv2/core/core.hpp>
 #include <opencv2/features2d/features2d.hpp>
 
@@ -369,6 +370,7 @@ protected:
     std::vector<IMU::Point> mvWebGyro;  // gyro samples for Web.Gyro.Prior (IMU clock, oldest first)
 public:
     WebScaleEstimator mWebScale;        // Web.Scale.Online: metric scale / gravity of the current map (WebScale.h)
+    WebScaleFilter mWebScaleF;          // Web.Scale.Method 1: the filter (WebScaleFilter.h); results copied into mWebScale
     double mdWebScaleConverged = -1;    // seconds after the map started until the scale's 1-sigma was under 5 % (-1: not yet)
 private:
     Map* mpWebScaleMap = nullptr;

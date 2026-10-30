@@ -93,6 +93,8 @@ struct WebConfig
                                // online (WebScale.h; needs the IMU samples — page gyro feed / runner --gyro — and
                                // IMU.T_b_c1); an estimate only, tracking unchanged
     double scaleWindow = 2.0;  // Web.Scale.Window: window length (s) of the scale estimator
+    int scaleMethod = 0;       // Web.Scale.Method: 0 = window least squares (WebScale.h), 1 = loosely coupled filter, a bank
+                               // of Kalman filters over a scale grid (WebScaleFilter.h, eval/vio_filter.py; PLAN 4d approach B)
     int gyroPrior = 0;         // Web.Gyro.Prior: 1 = the rotation of the frame-to-frame prediction (motion model and
                                // KLT initial flow) comes from the gyroscope integrated between the two frames
     double gyroTimeOffset = 0; // Web.Gyro.TimeOffset: seconds added to frame times to get IMU times (> 0: IMU stamps late)
@@ -212,6 +214,7 @@ inline void loadWebConfig(const std::string& settingsFile)
     readInt("Web.Gyro.Prior", c.gyroPrior);
     cv::FileNode sw = fs["Web.Scale.Window"];
     if (!sw.empty() && (sw.isInt() || sw.isReal())) c.scaleWindow = sw.real();
+    readInt("Web.Scale.Method", c.scaleMethod);
     cv::FileNode go = fs["Web.Gyro.TimeOffset"];
     if (!go.empty() && (go.isInt() || go.isReal())) c.gyroTimeOffset = go.real();
     readInt("Web.Scale.Online", c.scaleOnline);
@@ -261,7 +264,9 @@ inline void loadWebConfig(const std::string& settingsFile)
               << " (0 = stock); descriptor " << (c.descriptor == 1 ? "TEBLID-256" : "ORB") << "; reloc timeout "
               << c.relocTimeout << " s" << (c.keepMap ? " (keep map)" : "") << (c.timeScaledMotion ? "; time-scaled motion" : "")
               << (c.gyroPrior ? "; gyro prior (IMU time offset " + std::to_string(c.gyroTimeOffset * 1000) + " ms)" : std::string())
-              << (c.scaleOnline ? "; online metric scale (" + std::to_string(c.scaleWindow) + " s windows)" : std::string())
+              << (c.scaleOnline ? (c.scaleMethod == 1 ? std::string("; online metric scale (filter bank)")
+                                                      : "; online metric scale (" + std::to_string(c.scaleWindow) + " s windows)")
+                                : std::string())
               << (c.bowLevelsUp != 4 ? "; BoW levels up " + std::to_string(c.bowLevelsUp) : std::string())
               << (c.kfRefRatio > 0 ? "; KF ref ratio " + std::to_string(c.kfRefRatio) : std::string())
               << (c.kfBusyQueue > 0 ? "; keyframes queued while mapping is busy (up to " + std::to_string(c.kfBusyQueue) + ")" : std::string())
