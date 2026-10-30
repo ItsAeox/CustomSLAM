@@ -36,7 +36,8 @@ class EqvioWeb {
     // the filter's landmarks in the world (m), plus those it dropped within the last keepSeconds (their last estimate);
     // only landmarks tracked for at least minAge frames (a new landmark starts at the configured scene depth)
     std::vector<Eigen::Vector3d> points(double keepSeconds = 0) const;
-    int minAge = 15;
+    int minAge = 8;
+    const std::vector<cv::Point2f>& featurePixels() const { return pixels_; }  // tracked features, last frame (px)
 
     double cameraLag = 0;
     // main:initAverage (s): EqVIO takes its attitude (gravity) from the first IMU sample; > 0: from the mean specific force
@@ -56,4 +57,5 @@ class EqvioWeb {
     double lastStamp_ = 0;
     std::map<int, std::pair<int, Eigen::Vector3d>> current_;  // landmark id -> (frames tracked, world position)
     std::deque<std::pair<double, Eigen::Vector3d>> retired_;  // (frame time, last world position) of dropped landmarks
+    std::vector<cv::Point2f> pixels_;
 };

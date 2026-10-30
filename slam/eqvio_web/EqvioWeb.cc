@@ -53,6 +53,7 @@ void EqvioWeb::reset() {
     state_ = VIOState();
     current_.clear();
     retired_.clear();
+    pixels_.clear();
     nFeatures = 0;
 }
 
@@ -101,6 +102,8 @@ void EqvioWeb::addFrame(double t, const cv::Mat& image) {
     m.cameraPtr = camera_;
     msFeatures = msSince(t0);
     nFeatures = static_cast<int>(features.size());
+    pixels_.clear();
+    for (const auto& f : features) pixels_.push_back(f.camCoordinates);
     t0 = std::chrono::steady_clock::now();
     filter_.processVisionData(m);
     state_ = filter_.stateEstimate();

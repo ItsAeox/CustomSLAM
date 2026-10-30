@@ -6,6 +6,7 @@
 //   vio.poseTwc()   -> Float32Array(16), column-major camera-to-world (gravity-aligned world, metres)
 //   vio.points(keepSeconds) -> Float32Array(3N): the filter's landmarks in the world + those dropped within keepSeconds
 //   vio.stats()     -> Float64Array [initialised, features, GIFT ms, filter ms, speed m/s]
+//   vio.frameKeyPoints() -> Float32Array (x, y, 1) per tracked feature, input-image pixels (WebSlam's layout)
 //   vio.reset()     -> a new filter (divergence)
 //   Typed arrays are views into the wasm heap: copy them (slice()) before the next call.
 #include <emscripten/bind.h>
@@ -62,6 +63,12 @@ class WebEqvio {
         return val(typed_memory_view(5, stats_));
     }
 
+    val frameKeyPoints() {
+        kps_.clear();
+        for (const auto& p : vio_.featurePixels()) kps_.insert(kps_.end(), {p.x, p.y, 1.f});
+        return val(typed_memory_view(kps_.size(), kps_.data()));
+    }
+
     void reset() { vio_.reset(); }
     double cameraLag() const { return vio_.cameraLag; }
 
@@ -69,7 +76,7 @@ class WebEqvio {
     EqvioWeb vio_;
     cv::Mat gray_;
     float twc_[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
-    std::vector<float> pts_;
+    std::vector<float> pts_, kps_;
     double stats_[5] = {0, 0, 0, 0, 0};
 };
 
@@ -82,6 +89,7 @@ EMSCRIPTEN_BINDINGS(eqvio_web) {
         .function("poseTwc", &WebEqvio::poseTwc)
         .function("points", &WebEqvio::points)
         .function("stats", &WebEqvio::stats)
+        .function("frameKeyPoints", &WebEqvio::frameKeyPoints)
         .function("reset", &WebEqvio::reset)
         .function("cameraLag", &WebEqvio::cameraLag);
 }

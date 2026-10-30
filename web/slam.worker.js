@@ -25,7 +25,8 @@ let cal = null;  // camera calibration (calib.html)
 // ./build/eqvio.js) instead of ORB-SLAM3. eqvioSlam() wraps its WebEqvio in the WebSlam calls this worker makes, so the
 // camera / bitmap / replay paths below stay the same. A filter has no map: tracking state 2 while it has features,
 // 3 (recently lost) when it runs on the IMU alone; a speed above EQVIO_MAX_SPEED = diverged -> a new filter, reported as
-// a new map (the AR page stashes its anchors). Map points = its landmarks + those it dropped in the last 10 s.
+// a new map (the AR page stashes its anchors). Map points = its landmarks + those it dropped in the last 30 s; keypoints =
+// its tracked features.
 let createEqvio = null;
 const EQVIO_MIN_FEATURES = 8, EQVIO_MAX_SPEED = 5;  // features for 'tracking'; m/s (hand-held motion stays well below)
 function eqvioSlam(settings, config) {
@@ -54,11 +55,12 @@ function eqvioSlam(settings, config) {
     poseTwc: () => vio.poseTwc(),
     lastTrackMs: () => ms,
     loadWait: () => -1,  // no room map
-    frameKeyPoints: empty, initMatches: empty, keyFrames: empty, graphEdges: empty,
+    frameKeyPoints: () => vio.frameKeyPoints(),
+    initMatches: empty, keyFrames: empty, graphEdges: empty,
     mapStats: () => [0, nPts, st[1], maps, 1, 1],  // [KFs, points, features, maps, IMU initialised, refined]
     scaleEstimate: () => [0],
     mapPoints: () => {  // x y z flag (flag 1: in the local map, as WebSlam::mapPoints)
-      const p = vio.points(10);
+      const p = vio.points(30);
       nPts = p.length / 3;
       const out = new Float32Array(4 * nPts);
       for (let i = 0; i < nPts; i++) out.set([p[3 * i], p[3 * i + 1], p[3 * i + 2], 1], 4 * i);
