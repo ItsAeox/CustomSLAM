@@ -96,7 +96,7 @@ export const PRESETS = [
   { key: 'imutol', label: 'IMU, tolerant start-up', set: { imu: 'on', tracker: 'stock', imustart: 'tolerant' },
     note: 'Visual-inertial mode whose start-up keeps the map on a loss and has no motion-check reset (synthetic set: resets ~0, start-up completed far more often, but tracking still well below WebVIO beta).' },
   { key: 'eqvio', label: 'EqVIO filter (experimental)', set: { vio: 'eqvio' },
-    note: 'Experimental, a different engine: EqVIO, a filter that fuses camera and IMU tightly (metric size and gravity from the start; no map, so no relocalisation and slow drift). Synthetic set (phone IMU, 6 runs each): fast turns held in 4, orbit 6, AR 5; shake and walk diverged in 5. Your recordings: diverged with its original settings; with a 2 m start depth your 1 m slides measured 0.97-1.13 m, but only at the full 30 fps. Needs the IMU time offset (imudt).' },
+    note: 'Experimental, a different engine: EqVIO, a filter that fuses camera and IMU tightly (metric size and gravity from the start; no map, so no relocalisation and slow drift). Synthetic set (phone IMU, 6 runs each): fast turns held in 4, orbit 6, AR 5; shake and walk diverged in 5. Your 17 recordings: it ran away on 16-17 whatever its start depth (1 / 1.5 / 2 / 3 m); the brisk 1 m slides came out 0.89 / 1.30 / 0.97 m / ran away, and only at the full 30 fps. Expect resets. Needs the IMU time offset (imudt).' },
 ];
 
 // Sets every option of `page` from a preset (unlisted keys: page default, then option default)

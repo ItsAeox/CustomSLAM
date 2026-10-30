@@ -8,7 +8,7 @@
 set -uo pipefail
 source /opt/slam/emsdk/emsdk_env.sh > /dev/null 2>&1
 SEQS=${1:-"ar2 rotate2 slide3 orbit2 rec_20261029_202938"}
-O=/mnt/h/Research/results/eqvio_web_1030; C=/mnt/h/Research/CustomSLAM/baselines/eqvio/config_synth_phone.yaml
+O=${O:-/mnt/h/Research/results/eqvio_web_1030}; C=/mnt/h/Research/CustomSLAM/baselines/eqvio/config_synth_phone.yaml
 EV=/mnt/h/Research/CustomSLAM/eval; PY=/opt/slam/venv/bin/python
 for s in $SEQS; do
   d=/mnt/h/Research/datasets/synth/$s; [[ $s == rec_* ]] && d=/mnt/h/Research/datasets/phone/$s
