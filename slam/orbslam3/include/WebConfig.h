@@ -128,6 +128,24 @@ struct WebConfig
     int initGyro = 0;             // Web.Init.Gyro: 1 = two-view initialisation with the gyro rotation (2-point RANSAC on
                                   // the translation direction; needs Web.Gyro.Prior), stock reconstruction as fallback;
                                   // 2 = also refine rotation + translation (maps later in ginit_ab: not used)
+
+    // Visual-inertial mode (IMU_MONOCULAR: runner --mode mono_inertial, AR page IMU on). Stock by default: until the IMU
+    // start-up completes (initialisation, then the visual-inertial BA stages 1 and 2 after 5 and 15 s of motion) any
+    // tracking loss resets the whole map, and the pose has no recovery but the IMU prediction (claude/ISSUES.md G28).
+    int imuKeepMap = 0;           // Web.Imu.KeepMap: 1 = during the start-up a tracking loss does not reset the map: the
+                                  // tracker relocalises visually in it as in visual mode (Web.Track.Coast if on, then BoW
+                                  // relocalisation; after Web.Track.RelocTimeout a new map, if it has > 10 keyframes). The
+                                  // keyframe-to-keyframe IMU preintegration runs on across the gap. After the start-up: stock
+    int imuMinInliersPreInit = 50;  // Web.Imu.MinInliersPreInit: local-map inliers a frame needs before the IMU is
+                                  // initialised (stock 50 in IMU mode; visual mode needs 30)
+    int imuMotionCheck = 1;       // Web.Imu.MotionCheck: 0 = no "not enough motion" reset (stock 1: within 10 s of the IMU
+                                  // initialisation, < 2 cm between the last three keyframes resets the map)
+    double imuViba1Time = 5;      // Web.Imu.Viba1Time: seconds of motion (> 5 cm over two keyframes) after the IMU
+                                  // initialisation before visual-inertial BA stage 1 (stock 5)
+    double imuViba2Time = 15;     // Web.Imu.Viba2Time: ... before stage 2, which completes the start-up (stock 15)
+    int imuWebGyro = 0;           // Web.Imu.WebGyro: 1 = in IMU mode the IMU samples also feed the web gyro features
+                                  // (Web.Gyro.Prior before the IMU initialisation, Web.Track.Coast, Web.Init.Gyro); their
+                                  // stamps are already on the camera clock there, so Web.Gyro.TimeOffset must be 0
 };
 
 inline WebConfig& webConfig()
@@ -230,7 +248,15 @@ inline void loadWebConfig(const std::string& settingsFile)
     if (!ip.empty() && (ip.isInt() || ip.isReal())) c.initMinParallax = ip.real();
     readInt("Web.Init.MinTriangulated", c.initMinTriangulated);
     readInt("Web.Init.Gyro", c.initGyro);
-    std::cout << "Web config: LBA.MaxOptKFs " << c.lbaMaxOptKFs << ", LBA.MaxFixedKFs " << c.lbaMaxFixedKFs
+    readInt("Web.Imu.KeepMap", c.imuKeepMap);
+    readInt("Web.Imu.MinInliersPreInit", c.imuMinInliersPreInit);
+    readInt("Web.Imu.MotionCheck", c.imuMotionCheck);
+    cv::FileNode v1 = fs["Web.Imu.Viba1Time"];
+    if (!v1.empty() && (v1.isInt() || v1.isReal())) c.imuViba1Time = v1.real();
+    cv::FileNode v2 = fs["Web.Imu.Viba2Time"];
+    if (!v2.empty() && (v2.isInt() || v2.isReal())) c.imuViba2Time = v2.real();
+    readInt("Web.Imu.WebGyro", c.imuWebGyro);
+    std::cout << "Web config:LBA.MaxOptKFs " << c.lbaMaxOptKFs << ", LBA.MaxFixedKFs " << c.lbaMaxFixedKFs
               << ", LBA.Iterations " << c.lbaIterations << ", Mapping.Neighbors " << c.mappingNeighbors
               << " (0 = stock); descriptor " << (c.descriptor == 1 ? "TEBLID-256" : "ORB") << "; reloc timeout "
               << c.relocTimeout << " s" << (c.keepMap ? " (keep map)" : "") << (c.timeScaledMotion ? "; time-scaled motion" : "")
@@ -257,6 +283,13 @@ inline void loadWebConfig(const std::string& settingsFile)
                                                                                      : std::string("gyro two-view")) +
                                      ", after " + std::to_string(c.turnMinAngle) + " deg)"
                                : std::string())
+              << (c.imuKeepMap ? "; IMU start-up keeps the map on losses" : "")
+              << (c.imuMinInliersPreInit != 50 ? "; IMU pre-init inliers " + std::to_string(c.imuMinInliersPreInit) : std::string())
+              << (c.imuMotionCheck ? "" : "; no IMU motion-check reset")
+              << (c.imuViba1Time != 5 || c.imuViba2Time != 15
+                      ? "; VI-BA after " + std::to_string(c.imuViba1Time) + " / " + std::to_string(c.imuViba2Time) + " s"
+                      : std::string())
+              << (c.imuWebGyro ? "; IMU feeds the web gyro features" : "")
               << "; KLT " << (c.kltEnable ? "on" : "off");
     if (c.kltEnable)
         std::cout << " (max consecutive " << c.kltMaxConsecutive << ", min tracked " << c.kltMinTracked

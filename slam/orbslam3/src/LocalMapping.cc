@@ -146,7 +146,11 @@ void LocalMapping::Run()
                             mTinit += mpCurrentKeyFrame->mTimeStamp - mpCurrentKeyFrame->mPrevKF->mTimeStamp;
                         if(!mpCurrentKeyFrame->GetMap()->GetIniertialBA2())
                         {
+#ifdef ORBSLAM3_WEB
+                            if(webConfig().imuMotionCheck && (mTinit<10.f) && (dist<0.02))  // Web.Imu.MotionCheck (stock 1)
+#else
                             if((mTinit<10.f) && (dist<0.02))
+#endif
                             {
                                 cout << "Not enough motion for initializing. Reseting..." << endl;
                                 unique_lock<mutex> lock(mMutexReset);
@@ -216,7 +220,11 @@ void LocalMapping::Run()
                     if(mpCurrentKeyFrame->GetMap()->isImuInitialized() && mpTracker->mState==Tracking::OK) // Enter here everytime local-mapping is called
                     {
                         if(!mpCurrentKeyFrame->GetMap()->GetIniertialBA1()){
+#ifdef ORBSLAM3_WEB
+                            if (mTinit>webConfig().imuViba1Time)  // Web.Imu.Viba1Time (stock 5 s)
+#else
                             if (mTinit>5.0f)
+#endif
                             {
                                 cout << "start VIBA 1" << endl;
                                 mpCurrentKeyFrame->GetMap()->SetIniertialBA1();
@@ -229,7 +237,11 @@ void LocalMapping::Run()
                             }
                         }
                         else if(!mpCurrentKeyFrame->GetMap()->GetIniertialBA2()){
+#ifdef ORBSLAM3_WEB
+                            if (mTinit>webConfig().imuViba2Time){  // Web.Imu.Viba2Time (stock 15 s)
+#else
                             if (mTinit>15.0f){
+#endif
                                 cout << "start VIBA 2" << endl;
                                 mpCurrentKeyFrame->GetMap()->SetIniertialBA2();
                                 if (mbMonocular)

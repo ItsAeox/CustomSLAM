@@ -1,0 +1,9 @@
+# replay_arms.sh arms: the tolerant IMU start-up options (Web.Imu.*, ISSUES G28) on the phone-like IMU (--imu-dt -88),
+# page preset IMU (stock tracker) as the base; imu_stock = the same build with no option (defaults unchanged check)
+imu_stock|imu|--mode mono_inertial;--imu-dt -88
+imuA_keep|imu|--mode mono_inertial;--imu-dt -88;Web.Imu.KeepMap: 1
+imuA_inl30|imu|--mode mono_inertial;--imu-dt -88;Web.Imu.MinInliersPreInit: 30
+imuA_nomot|imu|--mode mono_inertial;--imu-dt -88;Web.Imu.MotionCheck: 0
+imuA_all|imu|--mode mono_inertial;--imu-dt -88;Web.Imu.KeepMap: 1;Web.Imu.MinInliersPreInit: 30;Web.Imu.MotionCheck: 0
+imuA_allw|imu|--mode mono_inertial;--imu-dt -88;Web.Imu.KeepMap: 1;Web.Imu.MinInliersPreInit: 30;Web.Imu.MotionCheck: 0;Web.Imu.WebGyro: 1;Web.Gyro.Prior: 1;Web.Gyro.TimeOffset: 0;Web.Track.Coast: 2;Web.Track.CoastTime: 3;Web.Track.TimeScaledMotion: 1
+imuA_allv|imu|--mode mono_inertial;--imu-dt -88;Web.Imu.KeepMap: 1;Web.Imu.MinInliersPreInit: 30;Web.Imu.MotionCheck: 0;Web.Imu.Viba1Time: 2;Web.Imu.Viba2Time: 6

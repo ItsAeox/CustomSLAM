@@ -376,6 +376,8 @@ private:
     long mnWebScaleFrames = 0;
     void WebScaleUpdate();
     bool WebGyroRotation(double t0, double t1, Eigen::Matrix3f& dR) const;  // body rotation t0 -> t1 from mvWebGyro
+    // Web.Imu.KeepMap applies: IMU mode and the map's IMU start-up (initialisation + VI-BA 1 and 2) not complete
+    bool WebImuKeep(Map* pMap) const;
     // last frame tracked OK (pose, time, map), the origin of Web.Track.Coast
     bool mbWebGood = false;
     Sophus::SE3f mWebGoodTcw;

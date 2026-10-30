@@ -2032,6 +2032,9 @@ void Tracking::Track()
                 if (!bOK)
                 {
                     if ( mCurrentFrame.mnId<=(mnLastRelocFrameId+mnFramesToResetIMU) &&
+#ifdef ORBSLAM3_WEB
+                         !WebImuKeep(pCurrentMap) &&  // Web.Imu.KeepMap: relocalise as in visual mode (below)
+#endif
                          (mSensor==System::IMU_MONOCULAR || mSensor==System::IMU_STEREO || mSensor == System::IMU_RGBD))
                     {
                         mState = LOST;
@@ -2061,7 +2064,13 @@ void Tracking::Track()
                     Verbose::PrintMess("Lost for a short time", Verbose::VERBOSITY_NORMAL);
 
                     bOK = true;
+#ifdef ORBSLAM3_WEB
+                    // Web.Imu.KeepMap: during the IMU start-up the visual recovery below (coast, BoW relocalisation)
+                    if((mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD) &&
+                       !WebImuKeep(pCurrentMap))
+#else
                     if((mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD))
+#endif
                     {
                         if(pCurrentMap->isImuInitialized())
                             PredictStateIMU();
@@ -2086,7 +2095,7 @@ void Tracking::Track()
                             if(bOK)
                                 mnWebRelocRecoveries++;
                         }
-                        if(!bOK && webConfig().turnBridge)  // turned away: map the new view inside this map
+                        if(!bOK && webConfig().turnBridge && mSensor != System::IMU_MONOCULAR)  // turned away: map the new view inside this map
                             bOK = WebTurnBridge();
                         if(bOK && mbWebLoadWait)
                         {
@@ -2275,7 +2284,11 @@ void Tracking::Track()
             if (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
             {
                 Verbose::PrintMess("Track lost for less than one second...", Verbose::VERBOSITY_NORMAL);
+#ifdef ORBSLAM3_WEB
+                if((!pCurrentMap->isImuInitialized() || !pCurrentMap->GetIniertialBA2()) && !WebImuKeep(pCurrentMap))
+#else
                 if(!pCurrentMap->isImuInitialized() || !pCurrentMap->GetIniertialBA2())
+#endif
                 {
                     cout << "IMU is not or recently initialized. Reseting active map..." << endl;
                     mpSystem->ResetActiveMap();
@@ -2423,7 +2436,11 @@ void Tracking::Track()
                 return;
             }
             if (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
+#ifdef ORBSLAM3_WEB
+                if (!pCurrentMap->isImuInitialized() && !WebImuKeep(pCurrentMap))  // Web.Imu.KeepMap: a new map below
+#else
                 if (!pCurrentMap->isImuInitialized())
+#endif
                 {
                     Verbose::PrintMess("Track lost before IMU initialisation, reseting...", Verbose::VERBOSITY_QUIET);
                     mpSystem->ResetActiveMap();
@@ -3584,6 +3601,12 @@ void Tracking::WebScaleUpdate()
         mdWebScaleConverged = mCurrentFrame.mTimeStamp - mdWebScaleMapStart;
 }
 
+bool Tracking::WebImuKeep(Map* pMap) const
+{
+    return webConfig().imuKeepMap && mSensor == System::IMU_MONOCULAR && pMap &&
+           (!pMap->isImuInitialized() || !pMap->GetIniertialBA2());
+}
+
 void Tracking::WebGrabGyro(const std::vector<IMU::Point>& v)
 {
     if(webConfig().scaleOnline)
@@ -4155,7 +4178,12 @@ bool Tracking::TrackLocalMap()
 
     if (mSensor == System::IMU_MONOCULAR)
     {
+#ifdef ORBSLAM3_WEB
+        if((mnMatchesInliers<15 && mpAtlas->isImuInitialized())||
+           (mnMatchesInliers<webConfig().imuMinInliersPreInit && !mpAtlas->isImuInitialized()))  // Web.Imu.MinInliersPreInit (stock 50)
+#else
         if((mnMatchesInliers<15 && mpAtlas->isImuInitialized())||(mnMatchesInliers<50 && !mpAtlas->isImuInitialized()))
+#endif
         {
             return false;
         }
