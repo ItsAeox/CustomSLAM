@@ -15,6 +15,27 @@ from pathlib import Path
 import numpy as np
 
 
+def turning_points(tt, x, min_gap, min_frac):
+    """Main-axis coordinate x(tt) smoothed over +-2 frames, its turning points (local extrema at least min_gap s apart
+    that move at least min_frac of the range) as (index, kind) and the distances between consecutive ones."""
+    xs = np.array([x[max(0, i - 2):i + 3].mean() for i in range(len(x))])
+    rng = xs.max() - xs.min()
+    ext = []  # (index, kind)
+    i = 0
+    while i < len(xs):
+        w = (tt >= tt[i] - min_gap / 2) & (tt <= tt[i] + min_gap / 2)
+        if xs[i] == xs[w].max() or xs[i] == xs[w].min():
+            kind = 1 if xs[i] == xs[w].max() else -1
+            if ext and ext[-1][1] == kind:  # same kind: keep the more extreme
+                if kind * xs[i] > kind * xs[ext[-1][0]]:
+                    ext[-1] = (i, kind)
+            elif not ext or abs(xs[i] - xs[ext[-1][0]]) >= min_frac * rng:
+                ext.append((i, kind))
+        i += 1
+    amps = np.array([abs(xs[ext[k + 1][0]] - xs[ext[k][0]]) for k in range(len(ext) - 1)])
+    return xs, ext, amps
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("run")
@@ -45,22 +66,7 @@ def main():
     x = c @ Vt[0]
     print(f"  main axis {np.round(Vt[0], 3)}: spread 1-sigma {S[0] / np.sqrt(len(c)):.3f} / {S[1] / np.sqrt(len(c)):.3f} / "
           f"{S[2] / np.sqrt(len(c)):.3f} units (axes 1 / 2 / 3)")
-    # smooth over +-2 frames, then turning points
-    xs = np.array([x[max(0, i - 2):i + 3].mean() for i in range(len(x))])
-    rng = xs.max() - xs.min()
-    ext = []  # (index, kind)
-    i = 0
-    while i < len(xs):
-        w = (tt >= tt[i] - a.min_gap / 2) & (tt <= tt[i] + a.min_gap / 2)
-        if xs[i] == xs[w].max() or xs[i] == xs[w].min():
-            kind = 1 if xs[i] == xs[w].max() else -1
-            if ext and ext[-1][1] == kind:  # same kind: keep the more extreme
-                if kind * xs[i] > kind * xs[ext[-1][0]]:
-                    ext[-1] = (i, kind)
-            elif not ext or abs(xs[i] - xs[ext[-1][0]]) >= a.min_frac * rng:
-                ext.append((i, kind))
-        i += 1
-    amps = np.array([abs(xs[ext[k + 1][0]] - xs[ext[k][0]]) for k in range(len(ext) - 1)])
+    xs, ext, amps = turning_points(tt, x, a.min_gap, a.min_frac)
     if a.timeline:
         for k in range(0, len(tt), max(1, int(0.5 / np.median(np.diff(tt))))):
             print(f"    t {tt[k]:6.2f}  x {xs[k]:+.3f}")

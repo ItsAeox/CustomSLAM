@@ -14,6 +14,9 @@ mkdir -p "$OUT/build" "$OUT/assets" "$OUT/vocab" "$OUT/models"
 cp "$W/ar.html" "$W/ar.js" "$W/calib.html" "$W/calib.js" "$W/slamclient.js" "$W/options.js" "$W/plane.js" "$W/imucalib.js" "$W/imuscale.js" "$W/minimap.js" "$W/slam.worker.js" "$W/coi.js" "$W/coi-sw.js" \
    "$W/selftest.html" "$W/xfeat.html" "$W/gpubench.html" "$W/gpubench.js" "$W/gpubench.worker.js" "$W/viewer.html" "$W/viewer.js" "$W/align.js" "$OUT/"
 cp "$W/build/orbslam3.js" "$W/build/orbslam3.wasm" "$W/build/orbslam3.worker.mjs" "$OUT/build/"
+# EqVIO mode (option vio=eqvio): slam/eqvio_web module + its settings (scripts/experiments/2026-10-30/build_eqvio_web.sh)
+cp "$W/build/eqvio.js" "$W/build/eqvio.wasm" "$W/build/eqvio.worker.mjs" "$OUT/build/"
+cp "$W/eqvio_phone.yaml" "$OUT/"
 if [ -f "$W/build-prof/orbslam3.wasm" ]; then  # profiling build (REGISTER_TIMES), loaded by ar.html?prof=1
   mkdir -p "$OUT/build-prof" && cp "$W/build-prof/orbslam3.js" "$W/build-prof/orbslam3.wasm" "$W/build-prof/orbslam3.worker.mjs" "$OUT/build-prof/"
 fi

@@ -21,6 +21,56 @@ let M = null;
 let slam = null;
 let cal = null;  // camera calibration (calib.html)
 
+// EqVIO mode (AR option vio=eqvio, claude/PLAN.md 4d): the pose comes from EqVIO (equivariant filter VIO, slam/eqvio_web ->
+// ./build/eqvio.js) instead of ORB-SLAM3. eqvioSlam() wraps its WebEqvio in the WebSlam calls this worker makes, so the
+// camera / bitmap / replay paths below stay the same. A filter has no map: tracking state 2 while it has features,
+// 3 (recently lost) when it runs on the IMU alone; a speed above EQVIO_MAX_SPEED = diverged -> a new filter, reported as
+// a new map (the AR page stashes its anchors). Map points = its landmarks + those it dropped in the last 10 s.
+let createEqvio = null;
+const EQVIO_MIN_FEATURES = 8, EQVIO_MAX_SPEED = 5;  // features for 'tracking'; m/s (hand-held motion stays well below)
+function eqvioSlam(settings, config) {
+  const num = (key) => Number((new RegExp(`${key.replace('.', '\\.')}:\\s*([\\d.eE+-]+)`).exec(settings) || [])[1]);
+  const tbc = /IMU\.T_b_c1:[\s\S]*?data:\s*\[([^\]]*)\]/.exec(settings);
+  const Tbc = tbc ? tbc[1].split(',').map(Number) : [1, 0, 0, 0, 0, -1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1];  // phoneImuSettings
+  const vio = new M.WebEqvio(config, [num('Camera1.fx'), num('Camera1.fy'), num('Camera1.cx'), num('Camera1.cy')],
+                             num('Camera.width'), num('Camera.height'), Tbc);
+  log(`EqVIO: ${num('Camera.width')}x${num('Camera.height')} fx ${num('Camera1.fx')}, T_b_c ${tbc ? 'from the settings' : 'phone default'}`);
+  let state = 1, maps = 1, ms = 0, st = [0, 0, 0, 0, 0], nPts = 0;
+  const empty = () => new Float32Array(0);
+  return {
+    frameBuffer: (w, h) => vio.frameBuffer(w, h),
+    setImu: (a) => { for (let i = 0; i + 6 < a.length; i += 7) vio.addImu(a[i], a[i + 4], a[i + 5], a[i + 6], a[i + 1], a[i + 2], a[i + 3]); },
+    track: (t) => {
+      const t0 = performance.now();
+      const init = vio.track(t);
+      ms = performance.now() - t0;
+      st = Array.from(vio.stats());  // [initialised, features, GIFT ms, filter ms, speed]
+      if (init && !(st[4] < EQVIO_MAX_SPEED)) {
+        log(`EqVIO: diverged at t ${t.toFixed(2)} (speed ${st[4].toFixed(1)} m/s, ${st[1]} features): reset, new filter`);
+        vio.reset(); maps++; state = 1;
+      } else state = !init ? 1 : st[1] >= EQVIO_MIN_FEATURES ? 2 : 3;
+      return state;
+    },
+    poseTwc: () => vio.poseTwc(),
+    lastTrackMs: () => ms,
+    loadWait: () => -1,  // no room map
+    frameKeyPoints: empty, initMatches: empty, keyFrames: empty, graphEdges: empty,
+    mapStats: () => [0, nPts, st[1], maps, 1, 1],  // [KFs, points, features, maps, IMU initialised, refined]
+    scaleEstimate: () => [0],
+    mapPoints: () => {  // x y z flag (flag 1: in the local map, as WebSlam::mapPoints)
+      const p = vio.points(10);
+      nPts = p.length / 3;
+      const out = new Float32Array(4 * nPts);
+      for (let i = 0; i < nPts; i++) out.set([p[3 * i], p[3 * i + 1], p[3 * i + 2], 1], 4 * i);
+      return out;
+    },
+    profile: () => [st[2], st[3]],
+    reset: () => { vio.reset(); maps++; },
+    setKeepMap: () => {},
+    saveMap: () => false,
+  };
+}
+
 // WebCodecs camera (AR page): the page hands over the camera's frame stream (MediaStreamTrackProcessor.readable). A reader
 // keeps only the newest VideoFrame (older ones are closed and counted as dropped). For tracking, the luma (Y) plane of
 // NV12 / I420 frames is the grayscale image: it is copied into the wasm frame buffer directly (no canvas, no RGBA).
@@ -120,7 +170,15 @@ function vizData(withMap) {
 self.onmessage = async (e) => {
   const msg = e.data;
   try {
-    if (msg.type === 'init') {
+    if (msg.type === 'init' && msg.vio === 'eqvio') {  // {vio, eqvioConfigUrl, settingsText | settingsUrl}: no vocabulary
+      const t0 = performance.now();
+      if (!createEqvio) createEqvio = (await import('./build/eqvio.js')).default;
+      M = await createEqvio({ print: log, printErr: log });
+      const [config, settings] = await Promise.all([fetch(msg.eqvioConfigUrl).then((r) => r.text()),
+                                                    msg.settingsText ?? fetch(msg.settingsUrl).then((r) => r.text())]);
+      slam = eqvioSlam(settings, config);
+      postMessage({ type: 'ready', ms: performance.now() - t0, vocabBytes: 0, heap: M.HEAPU8.length, mapLoaded: null });
+    } else if (msg.type === 'init') {
       const t0 = performance.now();
       await loadModule(!!msg.prof);
       M = await createOrbSlam3({ print: log, printErr: log });
