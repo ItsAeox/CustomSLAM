@@ -49,6 +49,10 @@ export const OPTIONS = [
     values: [['stock', 'original (a loss in the first ~15 s of motion resets the map)'],
              ['tolerant', 'tolerant (keep the map and relocalise, no motion-check reset, 30 inliers)'],
              ['tolerantgyro', 'tolerant + gyro prediction and coasting before the IMU starts']], def: 'stock' },
+  // 2026-10-30 (claude/PLAN.md 4d, approach D): the pose from EqVIO (equivariant filter VIO, slam/eqvio_web) instead of
+  // ORB-SLAM3; the ORB-SLAM3 options above then do nothing
+  { key: 'vio', label: 'Tracking engine', page: 'ar', values: [['webvio', 'WebVIO (ORB-SLAM3 parts; default)'],
+                                                             ['eqvio', 'EqVIO filter (experimental: metric, gravity-aligned, no map)']], def: 'webvio' },
 ];
 
 // Named presets (AR page): each sets every option; keys it does not list take the page default. Phone test plans
@@ -88,9 +92,11 @@ export const PRESETS = [
     note: 'IMU plus time-scaled motion, light ORB and lighter local mapping (tests whether speed is what breaks IMU mode).' },
   // 2026-10-30 (claude/PLAN.md 4d: full IMU, approaches B and A)
   { key: 'betascale', label: 'WebVIO beta + metric scale (filter)', set: { kltmax: '4', motion: 'time', map: 'light', pose: 'fast', gyro: 'on', recover: 'coast', hold: 'gyro', lba: 'fast', kltpar: 'parallel', scale: 'filter' },
-    note: 'WebVIO beta with the accelerometer scale from the loosely coupled filter (Kalman filters over a scale grid; synthetic set: converged in 6-11 of 12 runs per scenario at 0.7-2.5 % median error). Tracking is the same as beta.' },
+    note: 'WebVIO beta with the accelerometer scale from the loosely coupled filter (Kalman filters over a scale grid; synthetic set, phone IMU: a scale in 4-10 of 12 runs per scenario, median error 0.5-9 %, none on fast turns; your brisk 1 m slides: within 0.5 % after 17 s). Tracking is the same as beta.' },
   { key: 'imutol', label: 'IMU, tolerant start-up', set: { imu: 'on', tracker: 'stock', imustart: 'tolerant' },
     note: 'Visual-inertial mode whose start-up keeps the map on a loss and has no motion-check reset (synthetic set: resets ~0, start-up completed far more often, but tracking still well below WebVIO beta).' },
+  { key: 'eqvio', label: 'EqVIO filter (experimental)', set: { vio: 'eqvio' },
+    note: 'Experimental, a different engine: EqVIO, a filter that fuses camera and IMU tightly (metric size and gravity from the start; no map, so no relocalisation and slow drift). Synthetic set (phone IMU, 6 runs each): fast turns held in 4, orbit 6, AR 5; shake and walk diverged in 5. Your recordings: diverged with its original settings; with a 2 m start depth your 1 m slides measured 0.97-1.13 m, but only at the full 30 fps. Needs the IMU time offset (imudt).' },
 ];
 
 // Sets every option of `page` from a preset (unlisted keys: page default, then option default)

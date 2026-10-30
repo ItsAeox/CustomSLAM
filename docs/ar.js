@@ -40,7 +40,7 @@ const scaleSource = () => (imuScaleM ? 'accelerometer scale' : `phone at ${PHONE
 // the cube uses a measured scale only (accelerometer), or a height the user gave (?camh=); never the 1.4 m guess
 const CAMH_GIVEN = params.has('camh');
 const cubeMetresPerUnit = () => imuScaleM ?? (CAMH_GIVEN && floor && floor.height > 0 ? PHONE_HEIGHT_M / floor.height : null);
-const scaleNow = () => (imuScaleM ? `accelerometer, 1 unit = ${imuScaleM.toFixed(3)} m`
+const scaleNow = () => (eqvioOn ? 'EqVIO filter (metric: 1 unit = 1 m)' : imuScaleM ? `accelerometer, 1 unit = ${imuScaleM.toFixed(3)} m`
   : CAMH_GIVEN && floor ? `given height: phone ${PHONE_HEIGHT_M} m above the floor plane, 1 unit = ${(PHONE_HEIGHT_M / floor.height).toFixed(3)} m`
   : 'not measured yet (the cube does not use the 1.4 m height guess)');
 let cubeSource = '';  // ?obj=cube: the scale the placed cube was sized with
@@ -99,6 +99,7 @@ let stopRvfc = () => {};
 const decodeTimes = [];               // per frame: gray image preparation in the worker (ms)  // live camera: frames presented / replaced before tracking
 const gyroHist = [];                 // [time ms, |rotation rate| deg/s] of the last second (logged on tracking loss)
 let inertial = opts.imu === 'on';  // ORB-SLAM3 mono-inertial (experimental); re-read from the options at start()
+let eqvioOn = opts.vio === 'eqvio';  // EqVIO mode (equivariant filter instead of ORB-SLAM3, slam.worker.js eqvioSlam); set at start()
 let rec = false;                   // record gyro + poses for the time-offset estimate (option 'rec'); set at start()
 const recPoses = [], recGyro = [];  // with rec: [t, qx, qy, qz, qw, maps, x, y, z] / [t, wx, wy, wz] (last 90 s) for imucalib.js
 const recAcc = [];                  // with rec: [t, ax, ay, az] (specific force, device axes; time offset applied) for imuscale.js
@@ -111,7 +112,7 @@ let replay = false;               // a dataset or a phone recording (record.html
 let qDev = [0, 0, 0, 1], qDevT = null;  // integrated device attitude from DeviceMotion rotation rates (x, y, z, w)
 let holdRef = null, holdTwc = null;     // last tracked pose with its attitude and time; the held pose while lost
 const HOLD_MS = 400;              // eval/deadreckon_sim.py: rotation-only hold is good for blips < ~0.3-0.5 s
-const absClock = () => inertial || rec || gyroOn;  // frame times on the IMU's clock (page timeOrigin + ms) instead of camera time
+const absClock = () => inertial || rec || gyroOn || eqvioOn;  // frame times on the IMU's clock (page timeOrigin + ms) instead of camera time
 let imuPending = [];
 let imuFlags = [0, 0];               // last logged IMU initialisation flags (map stats [4], [5])                 // live IMU samples not yet sent: [t abs s, ax, ay, az (m/s^2), gx, gy, gz (rad/s)] flat
 let lastMaps = 0, lastState = 0;
@@ -163,7 +164,7 @@ function onMotion(e) {
   accLP = accLP ? accLP.map((x, i) => 0.7 * x + 0.3 * v[i]) : v;
   motionEvents++;
   const r = e.rotationRate;
-  if ((inertial || gyroOn) && !replay && r && r.alpha != null && a.x != null) {  // device axes = IMU body; rotationRate alpha/beta/gamma = z/x/y (deg/s)
+  if ((inertial || gyroOn || eqvioOn) && !replay && r && r.alpha != null && a.x != null) {  // device axes = IMU body; rotationRate alpha/beta/gamma = z/x/y (deg/s)
     const d = Math.PI / 180;
     // IMU time = reported time - the measured offset (option imudt; reported = true + offset, see estimate_time_offset.py)
     imuPending.push((performance.timeOrigin + e.timeStamp) / 1000 - Number(opts.imudt) / 1000, a.x, a.y, a.z, ...rateXYZ(r));
@@ -535,9 +536,11 @@ async function start() {
   $('go').disabled = true;
   resChoice = $('res').value;
   inertial = opts.imu === 'on';  // the options may have changed since the page loaded
+  eqvioOn = opts.vio === 'eqvio';
+  if (eqvioOn) imuScaleM = 1;  // the filter's world is metric (the cube uses it as measured)
   rec = opts.rec === 'on';
   replay = !!params.get('seq');
-  scaleOn = (opts.scale === 'on' || opts.scale === 'filter') && !inertial;
+  scaleOn = (opts.scale === 'on' || opts.scale === 'filter') && !inertial && !eqvioOn;
   gyroOn = (opts.gyro === 'on' || opts.init === 'gyro' || (opts.bridge && opts.bridge !== 'off') || scaleOn) && !inertial;  // the scale needs the IMU feed too  // dataset / recording: its own IMU (seq branch)
   holdOn = opts.hold === 'gyro' && (!params.get('seq') || params.get('holdtest') === '1');  // holdtest: run the code on a dataset (no gyro: held = last pose)
   try {
@@ -560,7 +563,7 @@ async function start() {
       // rotated into the camera frame (R_cb). At rest it is the reaction to gravity, so "down" = -a. noimu=1: none.
       const imu = params.get('noimu') ? null : await fetch(rec ? `${rec}/imu.json` : `/api/imu?dataset=${dataset}&name=${encodeURIComponent(name)}`)
         .then((r) => (r.ok ? r.json() : null)).catch(() => null);
-      const imuRaw = (inertial || gyroOn) ? await fetch(rec ? `${rec}/imu_raw.json` : `/api/imu?dataset=${dataset}&name=${encodeURIComponent(name)}&raw=1`)
+      const imuRaw = (inertial || gyroOn || eqvioOn) ? await fetch(rec ? `${rec}/imu_raw.json` : `/api/imu?dataset=${dataset}&name=${encodeURIComponent(name)}&raw=1`)
         .then((r) => (r.ok ? r.json() : null)).catch(() => null) : null;  // gyro presets: the gyro prior needs IMU.T_b_c1 in the settings (recordings have it)
       // recordings (record.html): the taps, replayed at their time and image position (same tree placement for every preset)
       if (dataset === 'phone' || dataset === 'synth') {
@@ -740,18 +743,18 @@ async function start() {
     }, 3000);
     const slam = createSlamWorker((s) => {
       console.log(s);
-      if (!/Web config|ERROR|Map|map|Loading|loaded|[Rr]eloc|[Ll]ost|[Rr]eset|[Mm]erg|[Ll]oop|Fail|Not enough|initiali|IMU|scale too small|[Tt]imestamp|VIBA|Bundle|TURN bridge|Recovered by coasting|ORB-PROF|LBA-PROFILE|LBAFAST-STATS/.test(s)) return;
+      if (!/Web config|ERROR|EqVIO|Map|map|Loading|loaded|[Rr]eloc|[Ll]ost|[Rr]eset|[Mm]erg|[Ll]oop|Fail|Not enough|initiali|IMU|scale too small|[Tt]imestamp|VIBA|Bundle|TURN bridge|Recovered by coasting|ORB-PROF|LBA-PROFILE|LBAFAST-STATS/.test(s)) return;
       if (s === lastSlamLine) { slamRepeats++; return; }  // e.g. "Lost for a short time" on every frame
       if (slamRepeats) tele(`slam: (previous line ${slamRepeats} more times)`);
       lastSlamLine = s; slamRepeats = 0;
       tele(`slam: ${s}`);
     }, onProgress);
-    if ((inertial || gyroOn) && !seq) {  // phone IMU block (+ T_b_c1 for the gyro prior) with the measured DeviceMotion rate
+    if ((inertial || gyroOn || eqvioOn) && !seq) {  // phone IMU block (+ T_b_c1 for the gyro prior) with the measured DeviceMotion rate
       const hz = imuRateHz();
       settingsText += phoneImuSettings(hz);
       tele(`IMU: DeviceMotion ${hz.toFixed(1)} Hz` + (imuN >= 10 ? ` (measured over ${imuN} events)` : ' (assumed: too few events yet)'));
     }
-    let room = $('room').value === 'saved' ? await roomGet() : null;
+    let room = $('room').value === 'saved' && !eqvioOn ? await roomGet() : null;  // rooms are ORB-SLAM3 maps
     if (room) {  // the saved map fits only the same camera and vocabulary (WebMapIO.cc checks again)
       const same = room.W === W && room.H === H && room.desc === opts.desc && room.voc === opts.voc && !inertial &&
                    ['fx', 'fy', 'cx', 'cy'].every((k) => Math.abs(room.K[k] - K[k]) <= 0.01 * Math.abs(room.K[k]));
@@ -763,6 +766,7 @@ async function start() {
     }
     const tInit = performance.now();
     const ready = await slam.request({ type: 'init', vocabUrl: vocabUrl(opts.desc, opts.voc), clahe, seed: 1, prof: params.get('prof') === '1', inertial,
+                                       vio: opts.vio, eqvioConfigUrl: new URL('./eqvio_phone.yaml', location.href).href,
                                        settingsText: withTracker(settingsText), mapBytes: room ? (room.gz ? await gzip(room.map, 'd') : room.map) : null });
     if (room) {
       tele(`room map ${ready.mapLoaded ? 'loaded' : 'NOT loaded'} (saved ${room.date}, ${(room.map.byteLength / 1048576).toFixed(1)} MB, preset ${room.preset})`);
@@ -853,7 +857,7 @@ async function start() {
       const tf = performance.now();
       let r, down = null;
       if (camMode === 'webcodecs') {
-        const imu = (inertial || gyroOn) ? new Float64Array(imuPending) : null; imuPending = [];
+        const imu = (inertial || gyroOn || eqvioOn) ? new Float64Array(imuPending) : null; imuPending = [];
         r = await slam.request({ type: 'trackCamera', viz: true, withMap: n % 10 === 0, absClock: absClock(), imu });
         if (r.cam) { camFrames = r.cam[0]; camDropped = r.cam[1]; }
       } else {
@@ -861,7 +865,7 @@ async function start() {
         down = f.down;
         if (down) motionEvents++;
         let imu = null;
-        if (inertial || gyroOn) { imu = new Float64Array(f.imu || imuPending); if (!f.imu) imuPending = []; }
+        if (inertial || gyroOn || eqvioOn) { imu = new Float64Array(f.imu || imuPending); if (!f.imu) imuPending = []; }
         r = await slam.request({ type: 'bitmap', bitmap: f.bitmap, t: f.t, viz: true, withMap: n % 10 === 0, imu }, [f.bitmap]);
         replayT = f.t;
       }
@@ -972,7 +976,7 @@ async function start() {
       if (n % 5 === 0) {
         const fpsNow = 1000 / (times.reduce((a, b) => a + b, 0) / times.length);
         const mhz = motionEvents / ((performance.now() - t0) / 1000);
-        $('hud').innerHTML = `<b>${STATE[state]}</b> · ${(opts.tracker === "klt" && !inertial) ? "hybrid" : "stock"} · ${fpsNow.toFixed(1)} fps · track ${r.trackMs.toFixed(0)} ms · ` +
+        $('hud').innerHTML = `<b>${STATE[state]}</b> · ${eqvioOn ? 'EqVIO' : (opts.tracker === "klt" && !inertial) ? "hybrid" : "stock"} · ${fpsNow.toFixed(1)} fps · track ${r.trackMs.toFixed(0)} ms · ` +
           `KFs ${stats[0]} · points ${stats[2]} · floor ${floor ? 'yes' : 'no'} · gravity ${mhz ? mhz.toFixed(0) + ' Hz' : 'n/a'} · ${W}×${H} ${seq ? 'dataset camera' : calib ? 'calibrated' : `${hfov}° FOV (assumed)`}`;
       }
       if (CUBE && n % 5 === 0) {  // ?obj=cube: the scale the cube uses, and the accelerometer estimate meanwhile
