@@ -43,6 +43,7 @@ class WebScaleFilter {
   double sigVis = 0.005;                      // visual position noise (map units)
   double sigBa = 0.1, baWalk = 0.002;         // bias prior (m/s^2), random walk (m/s^2 / sqrt(s))
   double restart = 30, gate = 16.27;
+  double stableBack = 3.0;  // s: the reported 1-sigma is at least the relative change of the estimate over this time (0 = off)
   int maxSkips = 10, startKFs = 10;
   double startTime = 2.0;
 
@@ -53,7 +54,7 @@ class WebScaleFilter {
   V3 g = V3::Zero();
 
   void reset() {
-    banks_.clear(); imu_.clear(); recent_.clear(); valid = false; s = 0; relStd = 1e9; windows = 0;
+    banks_.clear(); imu_.clear(); recent_.clear(); hist_.clear(); valid = false; s = 0; relStd = 1e9; windows = 0;
     haveR_ = false; tMap0_ = -1;
   }
   void setRcb(const M3& Rcb) { Rcb_ = Rcb; }
@@ -103,7 +104,14 @@ class WebScaleFilter {
     double sd = 0;
     bool edge = false;
     banks_.front()->estimate(*this, s, sd, edge);
-    relStd = edge ? 1e9 : sd;  // 1-sigma of ln s = relative 1-sigma of s
+    // reported 1-sigma: at least the estimate's change over the last stableBack s (the posterior alone is over-confident
+    // early: on the synthetic set 'stable within 3 % over 3 s' cut the median error of converged frames, e.g. ar 11.8 -> 3.7 %,
+    // scripts/experiments/2026-10-30/conv_rule.py); a reader's 'relStd < 5 %' then also means 'not moving'
+    hist_.push_back({t, s});
+    while (hist_.size() > 1 && hist_[1].first <= t - stableBack) hist_.pop_front();
+    const double change = (stableBack > 0 && hist_.front().first <= t - stableBack + 0.5)
+                              ? std::abs(std::log(s / hist_.front().second)) : (stableBack > 0 ? 1e9 : 0.0);
+    relStd = edge ? 1e9 : std::max(sd, change);
     g = banks_.front()->gBest(*this);
     windows = banks_.front()->nUpd;
     valid = !edge && banks_.front()->nUpd >= 10;
@@ -284,6 +292,7 @@ class WebScaleFilter {
   double imuRate() const { return nImu_ > 10 && tImu1_ > tImu0_ ? (nImu_ - 1) / (tImu1_ - tImu0_) : 60.0; }  // samples / s
 
   std::deque<Imu> imu_, recent_;
+  std::deque<std::pair<double, double>> hist_;  // (t, s) of the reported estimate over the last stableBack s
   long nImu_ = 0;
   double tImu0_ = 0, tImu1_ = 0;
   std::vector<std::unique_ptr<Bank>> banks_;
