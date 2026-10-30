@@ -107,7 +107,8 @@ async function decode(url, keepBitmap = false) {
 // Viewer payload (msg.viz): current-frame keypoints / init matches every frame; the map (points, keyframes,
 // graph) when msg.withMap. Typed arrays from the bindings are heap views, so they are copied (slice) here.
 function vizData(withMap) {
-  const v = { kps: slam.frameKeyPoints().slice(), ini: slam.initMatches().slice(), stats: Array.from(slam.mapStats()) };
+  const v = { kps: slam.frameKeyPoints().slice(), ini: slam.initMatches().slice(), stats: Array.from(slam.mapStats()),
+              scale: Array.from(slam.scaleEstimate()) };
   if (withMap) {
     v.mps = slam.mapPoints().slice();
     v.kfs = slam.keyFrames().slice();

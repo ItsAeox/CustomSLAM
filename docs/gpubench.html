@@ -15,12 +15,20 @@
   pre { white-space: pre-wrap; word-break: break-word; border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-top: 14px; font-size: 13px; }
   a { color: var(--acc); }
 </style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
 </head>
 <body>
 <a href="./">← index</a>
 <h1>WebGPU ORB benchmark</h1>
 <p>Times the GPU work a GPU version of ORB would do on one 480×640 frame (image pyramid, corner detection, blur,
-orientation and descriptors for up to 2000 corners) plus copying the results back to the CPU, 150 times. It runs in a
+orientation and descriptors for up to 2000 corners) plus copying the results back to the CPU, 150 times; then the
+two-pass version a real GPU ORB needs (corners back, keypoints chosen on the CPU, descriptors for those) on a frame
+from a phone recording. It runs in a
 worker, where the SLAM runs. About 30 seconds; keep the screen on. On the PC dev server the results are saved to
 <code>results/browser</code>.</p>
 <button id="go">Run</button> <button id="go2">Run on the main thread</button>
@@ -39,27 +47,48 @@ const start = (where) => {
   lines.length = 0;
   log(`${new Date().toString()} | ${navigator.userAgent} | ${navigator.hardwareConcurrency} cores | ${where}`);
 };
-const finish = () => { document.getElementById('go').disabled = document.getElementById('go2').disabled = false; };
-document.getElementById('go').onclick = () => {
-  start('worker');
+// a real frame from the slow-pan recording (dev server: datasets/phone; GitHub Pages: the exported recordings)
+const FRAME = location.pathname.startsWith('/web/') ? '/datasets/phone/rec_20261018_185037/mav0/cam0/data/frame_300.jpg'
+  : 'recordings/rec_20261018_185037/frames/frame_300.jpg';
+const frameUrl = new URL(new URLSearchParams(location.search).get('frame') || FRAME, location.href).href;
+const LOAD = new URLSearchParams(location.search).has('load');  // ?load: AR-page-like rendering meanwhile (gpuload.js)
+let load = null;
+const finish = () => {
+  document.getElementById('go').disabled = document.getElementById('go2').disabled = false;
+  if (load) for (const l of load.report()) log(l);
+  log('end');
+  // the whole log once more in one request (per-line beacons can arrive out of order or overlap)
+  if (location.hostname === 'localhost') fetch(`/api/result?name=${name}`, { method: 'POST', body: lines.join('\n') + '\n' }).catch(() => {});
+};
+document.getElementById('go').onclick = async () => {
+  start(LOAD ? 'worker, with AR-page-like rendering on the main thread' : 'worker');
+  if (LOAD) {
+    try {
+      load = await (await import('./gpuload.js')).startLoad(frameUrl);
+      await new Promise((r) => setTimeout(r, 6000));  // rendering alone first (baseline frame times)
+      load.setPhase('tests 1-3 (single pass)');
+    } catch (err) { log(`render load failed: ${err.message || err}`); load = null; }
+  }
   const w = new Worker('gpubench.worker.js', { type: 'module' });
   w.onmessage = (e) => {
     if (e.data.line) log(e.data.line);
+    if (load && e.data.line && e.data.line.startsWith('--- ')) load.setPhase(`two passes + stage breakdown, ${e.data.line.slice(4, 34)}`);
     if (e.data.error) { log(`ERROR ${e.data.error}`); finish(); w.terminate(); }
     if (e.data.done) { log('done'); finish(); w.terminate(); }
   };
   w.onerror = (e) => { log(`ERROR (worker) ${e.message}`); finish(); };
-  w.postMessage({ iters: 150 });
+  w.postMessage({ iters: 150, frameUrl });
 };
 document.getElementById('go2').onclick = async () => {
   start('main thread');
   try {
     const { runBench } = await import('./gpubench.js');
-    await runBench(log, 150);
+    await runBench(log, 150, 20, frameUrl);
     log('done');
   } catch (err) { log(`ERROR ${err.message || err}`); }
   finish();
 };
+if (new URLSearchParams(location.search).has('auto')) document.getElementById('go').click();  // ?auto: start on load (adb)
 </script>
 </body>
 </html>

@@ -3,7 +3,7 @@ import { runBench } from './gpubench.js';
 
 onmessage = async (e) => {
   try {
-    const r = await runBench((line) => postMessage({ line }), e.data.iters || 150);
+    const r = await runBench((line) => postMessage({ line }), e.data.iters || 150, 20, e.data.frameUrl || null);
     postMessage({ done: r });
   } catch (err) {
     postMessage({ error: String(err.message || err) });

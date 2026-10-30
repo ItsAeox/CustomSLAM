@@ -30,9 +30,20 @@ function ensureImuOffsetValue(v) {  // a measured offset (imucalib.js) need not 
 ensureImuOffsetValue(opts.imudt);
 // Metric scale prior (claude/RESEARCH.md "Metric scale"): monocular maps have no scale, but the camera height above the
 // detected floor is measured in map units; a phone held at ~1.4 m gives metres per map unit. Shown in the log only.
-const PHONE_HEIGHT_M = 1.4;
+// ?camh=<m> replaces the 1.4 m guess (test).
+const PHONE_HEIGHT_M = Number(params.get('camh')) || 1.4;
+// ?obj=cube (test): a 1 m cube instead of the tree, sized from the current metric scale at placement (the tree's size is
+// 0.6 x the camera height above the floor in map units, so it never shows whether the scale is right)
+const CUBE = params.get('obj') === 'cube';
 const metresPerUnit = () => imuScaleM ?? (floor && floor.height > 0 ? PHONE_HEIGHT_M / floor.height : null);
 const scaleSource = () => (imuScaleM ? 'accelerometer scale' : `phone at ${PHONE_HEIGHT_M} m`);
+// the cube uses a measured scale only (accelerometer), or a height the user gave (?camh=); never the 1.4 m guess
+const CAMH_GIVEN = params.has('camh');
+const cubeMetresPerUnit = () => imuScaleM ?? (CAMH_GIVEN && floor && floor.height > 0 ? PHONE_HEIGHT_M / floor.height : null);
+const scaleNow = () => (imuScaleM ? `accelerometer, 1 unit = ${imuScaleM.toFixed(3)} m`
+  : CAMH_GIVEN && floor ? `given height: phone ${PHONE_HEIGHT_M} m above the floor plane, 1 unit = ${(PHONE_HEIGHT_M / floor.height).toFixed(3)} m`
+  : 'not measured yet (the cube does not use the 1.4 m height guess)');
+let cubeSource = '';  // ?obj=cube: the scale the placed cube was sized with
 // Presets (web/options.js PRESETS) set every option at once; changing a single option shows "custom"
 const saveOptsToUrl = () => history.replaceState(null, '', `?${optionsToParams(opts, new URLSearchParams(location.search), AR_DEFAULTS)}`);
 const presetKey = () => matchPreset(opts, AR_DEFAULTS, 'ar');
@@ -94,6 +105,7 @@ const recAcc = [];                  // with rec: [t, ax, ay, az] (specific force
 let imuScaleM = null;               // metres per map unit from the accelerometer (imuscale.js), when measured
 let recCalibAt = 0;
 let gyroOn = false;               // gyro rotation prior (option 'gyro', visual-only; or gyro init); set at start()
+let scaleOn = false, liveScale = null, scaleConvSince = 0;  // option 'scale': live metric scale (Web.Scale.Online)
 let holdOn = false;               // option 'hold': show the tree through brief losses with the gyro-rotated last pose
 let replay = false;               // a dataset or a phone recording (record.html) is the camera; its IMU, not the phone's
 let qDev = [0, 0, 0, 1], qDevT = null;  // integrated device attitude from DeviceMotion rotation rates (x, y, z, w)
@@ -469,15 +481,27 @@ function placeCactus(clientX, clientY) {
   const hit = rayPlane(o, dir, plane);
   if (!hit) { hint('Tap on the floor (below the horizon).', 2500); tele('tap rejected: the ray misses the floor plane'); return; }
   if (!cactusProto) return;
+  if (CUBE) {  // 1 m edge from the scale now (frozen: the floor height keeps changing; tap again to re-place)
+    const mpu = cubeMetresPerUnit();
+    if (!mpu) {
+      hint('No measured scale yet: slide the phone briskly side to side (about 2 s per slide, no twisting) until the panel says "in use".', 3500);
+      tele('cube: waiting for the measured scale (the 1.4 m height guess is not used for the cube)');
+      return;
+    }
+    size = 1 / mpu;
+    cubeSource = scaleNow();
+  }
   if (cactus) scene.remove(cactus);
   cactus = cactusProto.clone();
   cactus.position.set(...hit);
   cactus.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(...plane.n));
   objBase = size;
-  cactus.scale.setScalar(size * sizeFactor());  // cactusProto is normalised to height 1, base at the origin
+  cactus.scale.setScalar(CUBE ? size : size * sizeFactor());  // cactusProto is normalised to height 1, base at the origin
   scene.add(cactus);
-  $('sizeRow').style.visibility = 'visible';
-  tele(`tree placed: ${floor ? 'floor plane' : 'tap plane'}, distance ${Math.hypot(hit[0] - o[0], hit[1] - o[1], hit[2] - o[2]).toFixed(2)}, size ${size.toFixed(3)} x ${sizeFactor().toFixed(2)} (map units)` +
+  $('sizeRow').style.visibility = CUBE ? 'hidden' : 'visible';  // the cube stays 1 m
+  if (CUBE) tele(`cube placed: 1 m = ${size.toFixed(3)} map units (${cubeSource}) | distance ${Math.hypot(hit[0] - o[0], hit[1] - o[1], hit[2] - o[2]).toFixed(2)} units` +
+                 `${floor ? ` | camera ${floor.height.toFixed(3)} units above the floor plane` : ''} | map ${stats[3]}`);
+  else tele(`tree placed: ${floor ? 'floor plane' : 'tap plane'}, distance ${Math.hypot(hit[0] - o[0], hit[1] - o[1], hit[2] - o[2]).toFixed(2)}, size ${size.toFixed(3)} x ${sizeFactor().toFixed(2)} (map units)` +
        ` | at ${hit.map((x) => x.toFixed(4)).join(' ')} | camera ${o.map((x) => x.toFixed(4)).join(' ')}${floor ? ` | floor height ${floor.height.toFixed(4)}` : ''} | map ${stats[3]}` +
        (metresPerUnit() ? ` | tree ~ ${(size * sizeFactor() * metresPerUnit()).toFixed(2)} m tall (${scaleSource()})` : ''));
   hint('');
@@ -513,7 +537,8 @@ async function start() {
   inertial = opts.imu === 'on';  // the options may have changed since the page loaded
   rec = opts.rec === 'on';
   replay = !!params.get('seq');
-  gyroOn = (opts.gyro === 'on' || opts.init === 'gyro' || (opts.bridge && opts.bridge !== 'off')) && !inertial;  // dataset / recording: its own IMU (seq branch)
+  scaleOn = (opts.scale === 'on' || opts.scale === 'filter') && !inertial;
+  gyroOn = (opts.gyro === 'on' || opts.init === 'gyro' || (opts.bridge && opts.bridge !== 'off') || scaleOn) && !inertial;  // the scale needs the IMU feed too  // dataset / recording: its own IMU (seq branch)
   holdOn = opts.hold === 'gyro' && (!params.get('seq') || params.get('holdtest') === '1');  // holdtest: run the code on a dataset (no gyro: held = last pose)
   try {
     if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
@@ -538,19 +563,22 @@ async function start() {
       const imuRaw = (inertial || gyroOn) ? await fetch(rec ? `${rec}/imu_raw.json` : `/api/imu?dataset=${dataset}&name=${encodeURIComponent(name)}&raw=1`)
         .then((r) => (r.ok ? r.json() : null)).catch(() => null) : null;  // gyro presets: the gyro prior needs IMU.T_b_c1 in the settings (recordings have it)
       // recordings (record.html): the taps, replayed at their time and image position (same tree placement for every preset)
-      if (dataset === 'phone') {
-        const txt = await fetch(rec ? `${rec}/touches.csv` : `/datasets/phone/${encodeURIComponent(name)}/touches.csv`).then((r) => (r.ok ? r.text() : '')).catch(() => '');
+      if (dataset === 'phone' || dataset === 'synth') {
+        const txt = await fetch(rec ? `${rec}/touches.csv` : `/datasets/${dataset}/${encodeURIComponent(name)}/touches.csv`).then((r) => (r.ok ? r.text() : '')).catch(() => '');
         replayTaps = txt.split(/\r?\n/).filter((l) => l && !l.startsWith('#')).map((l) => {
           const [t, u, v] = l.split(','); return { t: Number(BigInt(t) - BigInt(Math.round(man.tBase * 1e9))) * 1e-9, u: Number(u), v: Number(v) };
         });
         tele(`recording ${name}: ${man.frames.length} frames, ${replayTaps.length} taps to replay`);
       }
       let kRaw = 0;
+      // recordings / synthetic: the IMU time offset option applies as live (true = reported - offset); before
+      // 29 Oct replays ignored it (fed the IMU at offset 0)
+      const dtImu = (dataset === 'phone' || dataset === 'synth') ? Number(opts.imudt) / 1000 : 0;
       const imuUpTo = (t) => {  // raw dataset IMU samples up to t (inertial test mode)
         const out = [];
-        while (imuRaw && kRaw < imuRaw.t.length && imuRaw.t[kRaw] <= t) {
+        while (imuRaw && kRaw < imuRaw.t.length && imuRaw.t[kRaw] - dtImu <= t) {
           const a = imuRaw.acc[kRaw], g = imuRaw.gyro[kRaw];
-          out.push(imuRaw.t[kRaw], a[0], a[1], a[2], g[0], g[1], g[2]); kRaw++;
+          out.push(imuRaw.t[kRaw] - dtImu, a[0], a[1], a[2], g[0], g[1], g[2]); kRaw++;
         }
         return out;
       };
@@ -669,7 +697,14 @@ async function start() {
     addEventListener('popstate', () => location.reload());
     $('btnOpts').onclick = () => location.reload();
     hint('Loading SLAM…');
-    new GLTFLoader().load('./assets/tree.glb', (g) => {  // normalise: height 1, base centre at the origin
+    if (CUBE) {  // 1 x 1 x 1, base centre at the origin (scaled to 1 m at placement); see-through faces + white edges
+      const box = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0);
+      cactusProto = new THREE.Group();
+      cactusProto.add(new THREE.Mesh(box, new THREE.MeshStandardMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.3, depthWrite: false })));
+      cactusProto.add(new THREE.LineSegments(new THREE.EdgesGeometry(box), new THREE.LineBasicMaterial({ color: 0xffffff })));
+      $('ghost').querySelector('span').textContent = 'cube goes here';
+      $('cubeInfo').hidden = false;
+    } else new GLTFLoader().load('./assets/tree.glb', (g) => {  // normalise: height 1, base centre at the origin
       const box = new THREE.Box3().setFromObject(g.scene);
       const size = box.getSize(new THREE.Vector3()), centre = box.getCenter(new THREE.Vector3());
       g.scene.position.set(-centre.x, -box.min.y, -centre.z);
@@ -845,6 +880,20 @@ async function start() {
         if (!lost) lostSince = 0;
       }
       prevStats = r.viz.stats; prevTrackMs = r.trackMs;
+      const sc = r.viz.scale;  // [valid, metres per map unit, 1-sigma / s, windows, gravity x y z]
+      if (scaleOn && n % 60 === 0)  // every ~2 s: the estimate, also when not adopted (why a session never used it)
+        tele(sc && sc[0] ? `scale estimate: 1 unit = ${sc[1].toFixed(3)} m ± ${(100 * sc[2]).toFixed(1)} % (${sc[3]} windows)${imuScaleM === sc[1] ? ', in use' : ''}`
+                         : `scale estimate: none (fewer than 10 windows of tracking, or the gravity check failed)${tracking() ? '' : ', not tracking'}`);
+      const conv = scaleOn && sc && sc[0] && sc[2] < 0.05;
+      scaleConvSince = conv ? (scaleConvSince || performance.now()) : 0;
+      // adopted after 3 s of continuous convergence (scale_online_1019b: a hard sequence converged for 3 s at 2.3x)
+      if (conv && performance.now() - scaleConvSince >= 3000) {  // metres in the log and for ?obj=cube (the tree's size does not use it)
+        if (!liveScale || Math.abs(sc[1] / liveScale - 1) > 0.03)
+          tele(`scale (accelerometer, live): 1 map unit = ${sc[1].toFixed(3)} m ± ${(100 * sc[2]).toFixed(1)} % (${sc[3]} windows)` +
+               (floor ? ` -> camera ${(floor.height * sc[1]).toFixed(2)} m above the floor` : ''));
+        liveScale = sc[1];
+        imuScaleM = sc[1];
+      }
       if (r.mapWait !== mapWait) {
         if (r.mapWait === 0 && (mapWait === 1 || (mapWait === -1 && n <= 1))) tele(r.state === 2 || r.state === 5 ? 'room: relocalised into the saved map' : 'room: gave up waiting, new map');
         mapWait = r.mapWait;
@@ -925,6 +974,14 @@ async function start() {
         const mhz = motionEvents / ((performance.now() - t0) / 1000);
         $('hud').innerHTML = `<b>${STATE[state]}</b> · ${(opts.tracker === "klt" && !inertial) ? "hybrid" : "stock"} · ${fpsNow.toFixed(1)} fps · track ${r.trackMs.toFixed(0)} ms · ` +
           `KFs ${stats[0]} · points ${stats[2]} · floor ${floor ? 'yes' : 'no'} · gravity ${mhz ? mhz.toFixed(0) + ' Hz' : 'n/a'} · ${W}×${H} ${seq ? 'dataset camera' : calib ? 'calibrated' : `${hfov}° FOV (assumed)`}`;
+      }
+      if (CUBE && n % 5 === 0) {  // ?obj=cube: the scale the cube uses, and the accelerometer estimate meanwhile
+        const acc = !scaleOn ? 'accelerometer scale: off (Algorithm option "Metric scale")'
+          : sc && sc[0] ? `accelerometer estimate: 1 unit = ${sc[1].toFixed(3)} m ± ${(100 * sc[2]).toFixed(0)} % (${sc[3]} windows)` +
+                          (sc[2] >= 0.05 ? ', too uncertain (needs < 5 %)' : imuScaleM === sc[1] ? ', in use' : ', must hold 3 s')
+          : 'accelerometer estimate: not settled yet (needs ~20–30 s of unbroken tracking with brisk side-to-side slides)';
+        $('cubeInfo').innerHTML = `<b>1 m cube</b> · ${cactus ? `sized with ${cubeSource}` : 'tap the floor to place it'}` +
+          `<br>scale now: ${scaleNow()}${cactus && imuScaleM && !cubeSource.startsWith('accelerometer') ? ' (tap again to use it)' : ''}<br>${acc}`;
       }
       trackTimes.push(r.trackMs);
       if (n % 15 === 0) {  // resource panel (top right): memory, map size, tracking load, threads

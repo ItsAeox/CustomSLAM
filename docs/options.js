@@ -31,16 +31,24 @@ export const OPTIONS = [
   { key: 'kltnorm', label: 'KLT exposure normalisation', values: [['off', 'off'], ['on', 'on (cancels exposure changes)']], def: 'off', when: (o) => o.tracker === 'klt' },
   { key: 'pose', label: 'Pose solver', values: [['g2o', 'g2o (original)'], ['fast', 'fast (same result, no g2o graph)']], def: 'g2o' },
   { key: 'orbpar', label: 'ORB extraction', values: [['serial', 'one thread (original)'], ['parallel', 'pyramid levels in parallel']], def: 'serial' },
+  { key: 'orbspread', label: 'ORB keypoint spreading', values: [['octree', 'octree (original)'], ['ssc', 'square covering (SSC: strongest corners, evenly spaced)']], def: 'octree' },
   { key: 'recover', label: 'Recovery when lost', values: [['bow', 'bag-of-words relocalisation (original)'], ['coast', 'local-map search first, then bag of words']], def: 'bow' },
   { key: 'init', label: 'Map start', values: [['stock', 'original thresholds'], ['quick', 'quicker (60 matches, 0.5°, 40 points)'], ['gyro', 'gyro two-view (+ gyro prior)']], def: 'stock' },
   { key: 'kf', label: 'Keyframes', values: [['stock', 'original'], ['fewer', 'fewer (ratio 0.8)']], def: 'stock' },
   { key: 'voc', label: 'Vocabulary (download)', values: [['full', 'full (49 MB, original)'], ['small', 'small (5 MB, own k10L5)']], def: 'full', when: (o) => o.desc !== 'teblid' },
   { key: 'rot', label: 'Turning on the spot', values: [['off', 'original (no new points without sideways motion)'], ['far', 'far points (prototype 1: made-up depth)'], ['inf', 'points at infinity (prototype 2)'], ['inf3', 'points at infinity, kept out of relocalisation (prototype 3)']], def: 'off' },
   { key: 'bridge', label: 'After turning away (gyro)', values: [['off', 'original (relocalise until the timeout, then a new map)'], ['tv', 'continue this map: two-view start checked by the gyro'], ['gyro', 'continue this map: gyro two-view start']], def: 'off' },
+  { key: 'scale', label: 'Metric scale', values: [['off', 'off (original: tree size from the phone height guess)'], ['on', 'from the accelerometer (live estimate)'],
+                                                   ['filter', 'from the accelerometer, filter (Kalman filters over a scale grid)']], def: 'off' },
   { key: 'lba', label: 'Local BA solver', values: [['g2o', 'g2o (original)'], ['fast', 'fast (same result, ~3-4x less time; the map keeps growing)']], def: 'g2o' },
   { key: 'kfq', label: 'Keyframes while mapping is busy', values: [['stock', 'refused (original; the map stops growing when mapping falls behind)'], ['2', 'queued, up to 2 waiting'], ['3', 'queued, up to 3 waiting']], def: 'stock' },
   { key: 'newarea', label: 'New areas when turning', values: [['stock', 'original (keyframes by tracked-point count)'], ['cov', 'extra keyframes for new textured areas'], ['cov2', 'extra keyframes + new points from smaller baselines']], def: 'stock' },
   { key: 'hold', label: 'Tree during brief tracking losses', page: 'ar', values: [['hide', 'hidden (original)'], ['gyro', 'held by the gyro for up to 0.4 s']], def: 'hide' },
+  // 2026-10-30 (claude/ISSUES.md G28): the IMU start-up of the mono-inertial mode; defaults = original
+  { key: 'imustart', label: 'IMU start-up (IMU on)', page: 'ar', when: (o) => o.imu === 'on',
+    values: [['stock', 'original (a loss in the first ~15 s of motion resets the map)'],
+             ['tolerant', 'tolerant (keep the map and relocalise, no motion-check reset, 30 inliers)'],
+             ['tolerantgyro', 'tolerant + gyro prediction and coasting before the IMU starts']], def: 'stock' },
 ];
 
 // Named presets (AR page): each sets every option; keys it does not list take the page default. Phone test plans
@@ -78,6 +86,11 @@ export const PRESETS = [
     note: 'Visual-inertial mode with the phone IMU: real-world scale and gravity. Experimental; ORB on every frame. Needs a calibrated camera and the IMU time offset.' },
   { key: 'imufast', label: 'IMU, tuned for speed', set: { imu: 'on', tracker: 'stock', motion: 'time', features: '600', levels: '6', map: 'light' },
     note: 'IMU plus time-scaled motion, light ORB and lighter local mapping (tests whether speed is what breaks IMU mode).' },
+  // 2026-10-30 (claude/PLAN.md 4d: full IMU, approaches B and A)
+  { key: 'betascale', label: 'WebVIO beta + metric scale (filter)', set: { kltmax: '4', motion: 'time', map: 'light', pose: 'fast', gyro: 'on', recover: 'coast', hold: 'gyro', lba: 'fast', kltpar: 'parallel', scale: 'filter' },
+    note: 'WebVIO beta with the accelerometer scale from the loosely coupled filter (Kalman filters over a scale grid; synthetic set: converged in 6-11 of 12 runs per scenario at 0.7-2.5 % median error). Tracking is the same as beta.' },
+  { key: 'imutol', label: 'IMU, tolerant start-up', set: { imu: 'on', tracker: 'stock', imustart: 'tolerant' },
+    note: 'Visual-inertial mode whose start-up keeps the map on a loss and has no motion-check reset (synthetic set: resets ~0, start-up completed far more often, but tracking still well below WebVIO beta).' },
 ];
 
 // Sets every option of `page` from a preset (unlisted keys: page default, then option default)
@@ -139,15 +152,23 @@ export function applyOptions(yaml, o) {
   if (o.rot === 'inf3') extra.push('Web.Rot.FarPoints: 3');  // + kept out of relocalisation, Sim3 and keyframe culling
   if (o.pose === 'fast') extra.push('Web.Track.FastPose: 1');
   if (o.orbpar === 'parallel') extra.push('Web.ORB.Parallel: 1');
+  if (o.orbspread === 'ssc') extra.push('Web.ORB.SSC: 1');  // ORBextractor.cc WebSSC instead of DistributeOctTree
   if (o.recover === 'coast') extra.push('Web.Track.Coast: 2', 'Web.Track.CoastTime: 3');  // 3 s: looking away and back (gyro)
   if (o.init === 'quick') extra.push('Web.Init.MinMatches: 60', 'Web.Init.MinParallax: 0.5', 'Web.Init.MinTriangulated: 40');
   if (o.init === 'gyro' && o.imu !== 'on') extra.push('Web.Init.Gyro: 1');
   if (o.kf === 'fewer') extra.push('Web.KF.RefRatio: 0.8');
   if (o.lba === 'fast') extra.push('Web.LBA.Fast: 1');  // own local BA solver (Optimizer.cc WebBASolveLM, G22)
+  if ((o.scale === 'on' || o.scale === 'filter') && o.imu !== 'on') extra.push('Web.Scale.Online: 1');  // WebScale.h; an estimate, tracking unchanged
+  if (o.scale === 'filter' && o.imu !== 'on') extra.push('Web.Scale.Method: 1');  // WebScaleFilter.h (2026-10-30, PLAN 4d approach B)
   if (o.kfq === '2' || o.kfq === '3') extra.push(`Web.KF.BusyQueue: ${o.kfq}`);  // map keeps growing when mapping is slow (G22)
   if (o.bridge === 'tv' && o.imu !== 'on') extra.push('Web.Turn.Bridge: 1');  // lost after turning: map the new view in this map
   if (o.bridge === 'gyro' && o.imu !== 'on') extra.push('Web.Turn.Bridge: 2');
   if (o.voc === 'small' && o.desc !== 'teblid') extra.push('Web.BoW.LevelsUp: 3');  // L5 tree: BoW index at the stock depth
+  const add = (line) => { if (!extra.some((e) => e.split(':')[0] === line.split(':')[0])) extra.push(line); };  // no duplicate keys (OpenCV rejects them)
+  if (o.imu === 'on' && (o.imustart === 'tolerant' || o.imustart === 'tolerantgyro'))  // WebConfig.h Web.Imu.*
+    ['Web.Imu.KeepMap: 1', 'Web.Imu.MinInliersPreInit: 30', 'Web.Imu.MotionCheck: 0'].forEach(add);
+  if (o.imu === 'on' && o.imustart === 'tolerantgyro')  // the IMU samples also feed the gyro prior / coasting (stamps already shifted by imudt)
+    ['Web.Imu.WebGyro: 1', 'Web.Gyro.Prior: 1', 'Web.Track.Coast: 2', 'Web.Track.CoastTime: 3'].forEach(add);
   return extra.length ? `${y.replace(/\s*$/, '\n')}\n# web options (web/options.js)\n${extra.join('\n')}\n` : y;
 }
 
