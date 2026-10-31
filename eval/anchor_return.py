@@ -6,7 +6,8 @@ where it should be.
 
 Anchor: at the placement frame (the first tracked frame at / after the tap; synthetic ar: touches.csv, longar: the middle
 of the 'place' phase) the true spot in that frame's true camera coordinates, scaled to map units with the map's local
-Sim3 scale (tracked frames of that map from 8 s before to 1 s after), put into the map with the estimated pose: on screen
+Sim3 scale (tracked frames of that map from 8 s before to 10 s after: the walk around the spot; a map started after the
+sideways start-up has no translation before the tap), put into the map with the estimated pose: on screen
 exactly at the spot when placed, like a tap. Then, for every processed frame after it where the spot is in the true view
 (in the image, >= 0.1 m in front): shown or not, screen error (px), and the error at the spot (cm: where the object
 appears in the room from that viewpoint, via the placement scale). The gyro hold (< 0.4 s) is not modelled.
@@ -90,8 +91,8 @@ def main():
         out.update(placed=0)
         print(" ".join(f"{k}={v}" for k, v in out.items())); return
     p = cand[0]
-    w = np.where(ok & (mapid == mapid[p]) & (t >= t[p] - 8) & (t <= t[p] + 1))[0]
-    if len(w) < 20 or np.ptp(gpos[w], 0).max() < 0.05:
+    w = np.where(ok & (mapid == mapid[p]) & (t >= t[p] - 8) & (t <= t[p] + 10))[0]
+    if len(w) < 20 or np.ptp(gpos[w], 0).max() < 0.1:
         out.update(placed=0, why="no local scale")
         print(" ".join(f"{k}={v}" for k, v in out.items())); return
     s = umeyama_scale(pos[w], gpos[w])  # metres per map unit
