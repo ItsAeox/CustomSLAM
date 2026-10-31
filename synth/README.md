@@ -6,7 +6,7 @@ batch scripts and the evaluation tools run on it unchanged; the dev server lists
 
 ## Contents
 
-7 motion scenarios x 6 variants = 42 sequences (plus a clean render of variant 0 of each scenario, `*_clean`),
+7 motion scenarios x 6 variants = 42 sequences (+ S8-S10 bedside / rapid / longar and S11 flat: 31 Oct) (plus a clean render of variant 0 of each scenario, `*_clean`),
 in three procedurally textured rooms (`living` 6 x 5 m, `bedroom` 4.5 x 4 m, `office` 5 x 4 m), 15-65 s each, 29.97 fps,
 480 x 640 portrait.
 

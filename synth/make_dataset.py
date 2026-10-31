@@ -51,7 +51,7 @@ def specs():
     out = []
     for si, sc in enumerate(SCENARIOS):
         for k in range(6):
-            out.append({"name": f"{sc}{k}", "scenario": sc, "variant": k, "room": ROOMS[(si + k) % 3], "room_seed": 1,
+            out.append({"name": f"{sc}{k}", "scenario": sc, "variant": k, "room": "flat" if sc == "flat" else ROOMS[(si + k) % 3], "room_seed": 1,
                         "seed": 1000 * si + k, "index": len(out)})
     return out
 
@@ -211,7 +211,7 @@ def build(spec, out_root, gt_dir, clean=False, readout=0.02, exposure=0.012):
 
     # ---- taps (AR scenario: the floor spot during the "place" phase), settings, metadata, scene
     taps = []
-    if spec["scenario"] == "ar":
+    if spec["scenario"] in ("ar", "flat"):
         ph = m.info["phases_s"]["place"]
         tt = 0.5 * (ph[0] + ph[1])
         Rt, pt = m.pose([tt])
@@ -280,7 +280,7 @@ def main():
     jobs = [] if a.clean_only else [(s, a.out, a.gt, False) for s in sp]
     if a.clean or a.clean_only:
         jobs += [(s, a.out, a.gt, True) for s in sp if s["variant"] == 0]
-    jobs.sort(key=lambda j: -{"slide": 60, "rotate": 35, "ar": 40, "bedside": 80, "rapid": 70, "longar": 150}.get(j[0]["scenario"], 30))  # long ones first
+    jobs.sort(key=lambda j: -{"slide": 60, "rotate": 35, "ar": 40, "bedside": 80, "rapid": 70, "longar": 150, "flat": 60}.get(j[0]["scenario"], 30))  # long ones first
     t0 = time.time()
     with Pool(a.procs) as pool:
         for name, n, sec, info in pool.imap_unordered(_job, jobs):

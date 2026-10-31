@@ -266,7 +266,9 @@ class Room:
 
 
 def make_room(kind: str, seed: int) -> Room:
-    """three layouts; 'living' (default), 'bedroom', 'office'"""
+    """three layouts; 'living' (default), 'bedroom', 'office'; 'flat' = make_flat (three rooms with doors)"""
+    if kind == "flat":
+        return make_flat(seed)
     rng = np.random.default_rng(seed)
     X, Y, Z = np.eye(3)
     if kind == "living":
@@ -361,3 +363,120 @@ def make_room(kind: str, seed: int) -> Room:
         targets = {"desk": np.array([1.1, 0.7, 0.75]), "board": np.array([2.5, 1.9, 0]), "centre": np.array([2.6, 2.0, 0.5])}
     lights = np.array([[sx * 0.33, sy * 0.4, sz - 0.05], [sx * 0.7, sy * 0.6, sz - 0.05]])
     return Room(kind, (sx, sy, sz), faces, lights, free, targets, known, boxes)
+
+
+# ------------------------------------------------------------------------------------------------ a flat (31 Oct)
+FLAT_ROOMS = {"B": (0.0, 0.0, 4.5, 4.0), "K": (0.0, 4.1, 4.5, 7.6), "L": (4.6, 0.0, 10.6, 7.6)}  # x0, y0, x1, y1
+FLAT_DOORS = {"D1": ("x", 4.5, 2.4, 3.3), "D2": ("x", 4.5, 5.6, 6.5), "D3": ("y", 4.0, 2.8, 3.7)}  # wall axis, its low
+# side, span along the wall: D1 bedroom-living, D2 kitchen-living, D3 bedroom-kitchen (0.1 m walls, 2.05 m high)
+
+
+def make_flat(seed: int) -> Room:
+    """three rooms in a loop for the leave-and-come-back test (ISSUES G22): bedroom B (x 0-4.5, y 0-4), kitchen K
+    (x 0-4.5, y 4.1-7.6), living room L (x 4.6-10.6, y 0-7.6), 0.1 m walls with doors B-L (D1), K-L (D2), B-K (D3): a walk
+    B -> L -> K -> B comes back into the bedroom through another door. Each room has its own floor / ceiling / walls
+    (inward faces, cut at the doors, posters on every wall piece); the door reveals close the wall thickness; the walls
+    are also boxes (room.boxes) so check_motion keeps paths in the doorways. The 1 m board on the bedroom floor is the AR
+    spot (targets 'board')."""
+    rng = np.random.default_rng(seed)
+    X, Y, Z = np.eye(3)
+    SZ, DH, T = 2.6, 2.05, 0.1
+    eps = 0.002
+    faces, boxes = [], []
+
+    def B(x0, y0, z0, bx, by, bz, texfn, name, top=None):
+        boxes.append((name, x0, y0, z0, bx, by, bz))
+        return box(x0, y0, z0, bx, by, bz, texfn, rng, name, top=top)
+
+    def gaps_on(axis, val, lo, hi):  # door spans on the wall line axis = val (either face of the 0.1 m wall), in [lo, hi]
+        return sorted((a, b) for (ax, v, a, b) in FLAT_DOORS.values()
+                      if ax == axis and (abs(v - val) < 1e-6 or abs(v + T - val) < 1e-6) and a >= lo - 1e-6 and b <= hi + 1e-6)
+
+    def wall(q0, r, n, L, gaps, base, name):
+        """a wall seen from inside: q0 = its left end at the floor, r = right (unit), n = inward normal; gaps = door
+        spans as distances from q0 along r"""
+        q0, r, n = (np.asarray(x, float) for x in (q0, r, n))
+        pieces, a = [], 0.0
+        for (g0, g1) in sorted(gaps):
+            pieces.append((a, g0)); a = g1
+            faces.append(Face(q0 + r * g0 + Z * SZ, r * (g1 - g0), -Z * (SZ - DH), plaster(g1 - g0, SZ - DH, rng, base), f"{name}.lintel{g0:.1f}"))
+        pieces.append((a, L))
+        for (s0, s1) in pieces:
+            if s1 - s0 < 1e-3:
+                continue
+            faces.append(Face(q0 + r * s0 + Z * SZ, r * (s1 - s0), -Z * SZ, plaster(s1 - s0, SZ, rng, base), f"{name}.{s0:.1f}"))
+            a = s0 + 0.3
+            while a < s1 - 0.6:  # posters
+                w = float(rng.uniform(0.5, 1.4)); h = float(rng.uniform(0.4, 1.0))
+                if a + w > s1 - 0.2:
+                    break
+                z0 = float(rng.uniform(0.9, 1.6))
+                faces.append(Face(q0 + r * a + n * eps + Z * (z0 + h), r * w, -Z * h, poster(w, h, rng), f"poster.{name}.{a:.1f}"))
+                a += w + float(rng.uniform(0.15, 0.5))
+
+    floors = {"B": planks, "K": lambda w, h, g: tiles(w, h, g, tile=0.3), "L": tiles}
+    for k, (x0, y0, x1, y1) in FLAT_ROOMS.items():
+        sx, sy = x1 - x0, y1 - y0
+        faces.append(Face([x0, y0, 0], X * sx, Y * sy, floors[k](sx, sy, rng), f"floor.{k}"))
+        faces.append(Face([x0, y1, SZ], X * sx, -Y * sy, plaster(sx, sy, rng, 0.85), f"ceiling.{k}"))
+        base = {"B": 0.78, "K": 0.82, "L": 0.75}[k]
+        # y = y0 (inward +y, right -x), y = y1 (inward -y, right +x), x = x0 (inward +x, right +y), x = x1 (inward -x, right -y)
+        wall([x1, y0, 0], -X, Y, sx, [(x1 - b, x1 - a) for a, b in gaps_on("y", y0, x0, x1)], base, f"wall.{k}.y0")
+        wall([x0, y1, 0], X, -Y, sx, [(a - x0, b - x0) for a, b in gaps_on("y", y1, x0, x1)], base, f"wall.{k}.y1")
+        wall([x0, y0, 0], Y, X, sy, [(a - y0, b - y0) for a, b in gaps_on("x", x0, y0, y1)], base, f"wall.{k}.x0")
+        wall([x1, y1, 0], -Y, -X, sy, [(y1 - b, y1 - a) for a, b in gaps_on("x", x1, y0, y1)], base, f"wall.{k}.x1")
+    for d, (ax, v, a, b) in FLAT_DOORS.items():  # reveals (both jambs + head) and the floor strip of each doorway
+        if ax == "x":
+            faces.append(Face([v, a, DH], X * T, -Z * DH, plaster(T, DH, rng), f"{d}.jamb0"))
+            faces.append(Face([v, b, DH], X * T, -Z * DH, plaster(T, DH, rng), f"{d}.jamb1"))
+            faces.append(Face([v, a, DH], X * T, Y * (b - a), plaster(T, b - a, rng), f"{d}.head"))
+            faces.append(Face([v, a, 0], X * T, Y * (b - a), planks(T, b - a, rng), f"{d}.floor"))
+        else:
+            faces.append(Face([a, v, DH], Y * T, -Z * DH, plaster(T, DH, rng), f"{d}.jamb0"))
+            faces.append(Face([b, v, DH], Y * T, -Z * DH, plaster(T, DH, rng), f"{d}.jamb1"))
+            faces.append(Face([a, v, DH], X * (b - a), Y * T, plaster(b - a, T, rng), f"{d}.head"))
+            faces.append(Face([a, v, 0], X * (b - a), Y * T, planks(b - a, T, rng), f"{d}.floor"))
+    # wall boxes for check_motion only (not rendered): the inner walls minus the doorways
+    boxes += [("wall.BL", 4.5, 0.0, 0, T, 2.4, SZ), ("wall.BLK", 4.5, 3.3, 0, T, 2.3, SZ), ("wall.KL", 4.5, 6.5, 0, T, 1.1, SZ),
+              ("wall.BK", 0.0, 4.0, 0, 2.8, T, SZ), ("wall.BK2", 3.7, 4.0, 0, 0.8, T, SZ)]
+    known = {}
+    # bedroom (the AR spot: the board centre)
+    faces += B(0.2, 2.2, 0, 2.0, 1.6, 0.55, slats, "bed", top=stripes)
+    faces += B(0.1, 2.2, 0, 0.1, 1.6, 1.1, slats, "headboard")
+    faces += B(0.2, 1.65, 0, 0.45, 0.45, 0.5, slats, "nightstand", top=poster)
+    faces += B(1.4, 0.1, 0, 1.0, 0.5, 2.0, books, "wardrobe")
+    faces += B(3.9, 0.3, 0, 0.5, 1.2, 0.75, planks, "desk", top=poster)
+    faces += B(3.95, 0.5, 0.75, 0.3, 0.4, 0.2, books, "desk_books")
+    faces += B(2.6, 0.1, 0, 0.4, 0.4, 0.35, stripes, "laundry_box")
+    faces.append(Face([eps + 0.001, 0.3, 2.2], Y * 1.1, -Z * 1.8, curtain(1.1, 1.8, rng), "curtain.B"))
+    faces.append(Face([2.3, 2.4, eps], X * 1.2, Y * 0.9, rug(1.2, 0.9, rng), "rug.B"))
+    faces.append(Face([2.4, 1.0, eps], X * 1.0, Y * 1.0, checkerboard(1.0, 1.0), "board_1m"))
+    known["board_1m"] = {"corner": [2.4, 1.0, eps], "size_m": [1.0, 1.0], "square_m": 0.1}
+    # kitchen
+    faces += B(0.1, 6.95, 0, 3.4, 0.6, 0.9, slats, "counter", top=planks)
+    faces += B(0.1, 7.2, 1.5, 3.4, 0.35, 0.7, slats, "upper_cabinets")
+    faces += B(3.7, 6.85, 0, 0.7, 0.7, 1.85, stripes, "fridge")
+    faces += B(1.5, 5.3, 0, 1.0, 0.7, 0.75, planks, "kitchen_table", top=poster)
+    faces += B(1.8, 4.85, 0, 0.4, 0.35, 0.45, stripes, "chair.K1", top=fabric)
+    faces += B(0.1, 4.3, 0, 0.35, 0.8, 1.8, books, "shelf.K")
+    # living room
+    faces += B(9.6, 2.0, 0, 0.9, 2.4, 0.45, slats, "sofa", top=stripes)
+    faces += B(10.25, 2.0, 0.45, 0.25, 2.4, 0.45, stripes, "sofa_back")
+    faces += B(7.8, 2.4, 0, 0.6, 1.2, 0.45, planks, "coffee_table", top=poster)
+    faces += B(6.4, 0.05, 0, 1.5, 0.4, 0.5, slats, "tv_stand", top=planks)
+    faces.append(Face([7.7, 0.003, 1.6], -X * 1.1, -Z * 0.65, screen(1.1, 0.65, rng), "tv"))
+    faces += B(5.0, 0.6, 0, 0.8, 0.8, 0.45, slats, "armchair", top=stripes)
+    faces += B(5.0, 0.6, 0.45, 0.8, 0.2, 0.45, stripes, "armchair_back")
+    faces += B(6.6, 5.4, 0, 1.4, 0.9, 0.75, planks, "dining_table", top=poster)
+    faces += B(6.8, 4.95, 0, 0.4, 0.4, 0.45, stripes, "chair.L1", top=fabric)
+    faces += B(7.4, 6.35, 0, 0.4, 0.4, 0.45, stripes, "chair.L2", top=fabric)
+    faces += B(8.8, 7.15, 0, 1.6, 0.4, 1.8, books, "shelf.L")
+    faces += B(5.0, 7.1, 0, 1.2, 0.45, 0.8, slats, "sideboard", top=planks)
+    faces += B(10.1, 0.2, 0, 0.35, 0.35, 0.9, fabric, "plant")
+    faces.append(Face([10.6 - 0.003, 6.8, 2.2], -Y * 1.6, -Z * 1.9, curtain(1.6, 1.9, rng), "curtain.L"))
+    faces.append(Face([7.0, 1.8, eps], X * 2.4, Y * 2.2, rug(2.4, 2.2, rng), "rug.L"))
+    lights = np.array([[1.5, 1.3, SZ - 0.05], [3.0, 2.7, SZ - 0.05], [1.5, 5.3, SZ - 0.05], [3.0, 6.6, SZ - 0.05],
+                       [6.5, 2.0, SZ - 0.05], [8.7, 5.5, SZ - 0.05], [8.7, 2.0, SZ - 0.05], [6.5, 5.5, SZ - 0.05]])
+    targets = {"board": np.array([2.9, 1.5, 0.0]), "centre": np.array([3.1, 2.0, 0.5])}
+    free = (2.3, 0.7, 3.9, 3.7)  # the bedroom's open floor
+    return Room("flat", (10.6, 7.6, SZ), faces, lights, free, targets, known, boxes)

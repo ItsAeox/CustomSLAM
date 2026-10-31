@@ -37,7 +37,7 @@ for f in sorted(root.glob("*/*/seed*/anchor.txt")):
 print(f"# Object placed, leave, come back (eval/anchor_return.py): {root.name}\n")
 print("Per scenario and arm (medians over runs; shown % = of the frames after placement where the spot is in the true view;"
       " px / cm = the object's screen / room error while shown; wrong = shown > 50 px off; return = ar 'return' phase,"
-      " longar 'in' .. 'orbit2'):\n")
+      " longar 'in' .. 'orbit2', flat: back in the bedroom .. the end):\n")
 print("| Scenario | Arm | Runs | Placed | Shown % | px | cm | Wrong % | Return: shown % | Return px | Lost at the end | Deleted | Longest gap s |")
 print("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 for (sc, arm), v in sorted(runs.items()):

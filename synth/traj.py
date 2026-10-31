@@ -501,9 +501,111 @@ def scn_longar(room, rng, k):
                    "phases_s": {k_: [round(v[0], 2), round(v[1], 2)] for k_, v in T.items()}})
 
 
+# ------------------------------------------------------------------------------------------------ the flat (31 Oct)
+# (ISSUES G22, the user's goal: place the object in the bedroom, walk through the other rooms, come back by another door
+# and find it again; synth/scene.py make_flat)
+FLAT_START = np.array([3.6, 1.0])  # where the object is placed from (looking at the board centre, the spot)
+FLAT_PATHS = {  # waypoints (x, y) between the start and the return view, doorways crossed straight (0.5 m either side)
+    "D1out": [(3.6, 2.2), (4.05, 2.85), (4.55, 2.85), (5.05, 2.85)],
+    "L": [(5.7, 2.0), (6.9, 1.35), (8.9, 1.45), (9.2, 3.0), (8.9, 4.5), (7.4, 4.55), (6.0, 4.3)],
+    "LtoD2": [(5.2, 5.4), (5.05, 6.05), (4.55, 6.05), (4.0, 6.05)],
+    "K": [(3.1, 6.5), (2.0, 6.55), (1.0, 6.2), (0.85, 5.5), (1.2, 4.6), (2.4, 4.55), (3.25, 4.6)],
+    "D3in": [(3.25, 4.05), (3.25, 3.5)],
+    "LtoD1in": [(5.6, 3.6), (5.05, 2.85), (4.55, 2.85), (4.05, 2.85)],
+}
+FLAT_VIEW = {"D3": (3.4, 3.0), "D1": (3.7, 2.4)}  # where the camera stops to look at the spot after coming back
+
+
+def flat_route(route):
+    """waypoints for 'BLKB' (out by D1, back by D3), 'BKLB' (the reverse), 'BLB' (out and back by D1), 'BKB' (by D3)"""
+    P = FLAT_PATHS
+    rev = lambda xs: list(reversed(xs))
+    if route == "BLKB":
+        pts = P["D1out"] + P["L"] + P["LtoD2"] + P["K"] + P["D3in"]; back = "D3"
+    elif route == "BKLB":
+        pts = rev(P["D3in"]) + [(3.25, 4.6)] + rev(P["K"][:-1]) + rev(P["LtoD2"]) + rev(P["L"]) + rev(P["D1out"])[:-1]; back = "D1"
+        pts = [(3.4, 2.4)] + pts
+    elif route == "BLB":
+        pts = P["D1out"] + P["L"] + P["LtoD1in"]; back = "D1"
+    else:  # BKB
+        pts = [(3.4, 2.4)] + rev(P["D3in"]) + [(3.25, 4.6)] + rev(P["K"][:-1]) + [(3.6, 5.6), (3.25, 4.6)] + P["D3in"]; back = "D3"
+    return [tuple(FLAT_START)] + pts + [FLAT_VIEW[back]], back
+
+
+def scn_flat(room, rng, k):
+    """S11: the leave-and-come-back AR test in the three-room flat: still, sideways init, look at the floor spot and
+    place (tap), look around the bedroom, walk out through one door, through the other rooms (gait, head turns), back
+    into the bedroom (by another door in the loop variants), stop and look at the spot, walk back to the start looking
+    at it, a last look. Variants: route x walking speed"""
+    route, speed = [("BLKB", 0.6), ("BKLB", 0.6), ("BLB", 0.6), ("BLKB", 0.9), ("BKLB", 0.9), ("BKB", 0.75)][k]
+    c = room.targets["board"].copy()
+    pts, back = flat_route(route)
+    pts = np.array(pts, float)
+    z0 = rng.uniform(1.3, 1.5)
+    T, tc = {}, 2.5
+    T["init"] = (tc, tc + 1.5); tc += 2.5
+    T["place"] = (tc, tc + 2.0); tc += 2.5
+    T["look"] = (tc, tc + 4.0); tc += 4.5
+    seglen = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+    tw = tc + np.concatenate([[0.0], np.cumsum(seglen / speed)])
+    T["walk"] = (tw[0], tw[-1]); tc = tw[-1]
+    T["view"] = (tc, tc + 3.5); tc += 3.5
+    vback = np.linalg.norm(pts[-1] - FLAT_START)
+    T["toStart"] = (tc, tc + max(2.0, vback / 0.4)); tc = T["toStart"][1]
+    T["final"] = (tc, tc + 4.0); tc += 4.0
+    t = timeline(tc)
+    cs = CubicSpline(tw, pts, bc_type="clamped")
+    xy = np.repeat(FLAT_START[None, :], len(t), 0).astype(float)
+    m = (t >= tw[0]) & (t <= tw[-1])
+    xy[m] = cs(t[m])
+    after = t > tw[-1]
+    xy[after] = pts[-1]
+    w2 = segments(t, [(T["toStart"][0], T["toStart"][1], 0.0, 1.0)])
+    xy = xy + (w2[:, None] * (FLAT_START - pts[-1])[None, :]) * (t >= T["toStart"][0])[:, None]
+    v = np.gradient(xy, 1 / RATE, axis=0)
+    spd = np.linalg.norm(v, axis=1)
+    bob_v, bob_l = gait(t, spd, rng)
+    heading = np.unwrap(np.arctan2(smooth(v[:, 1], 0.5), smooth(v[:, 0], 0.5)))
+    heading = np.where(spd > 0.05, heading, np.nan)
+    idx = np.where(~np.isnan(heading))[0]
+    heading = np.interp(np.arange(len(t)), idx, heading[idx])
+    heading = smooth(heading, 1.0)
+    side = np.stack([np.sin(heading), -np.cos(heading)], 1)
+    # init: 0.3 m sideways (perpendicular to the view of the spot), like the AR scenario
+    d0 = c[:2] - FLAT_START
+    tang = np.array([-d0[1], d0[0]]) / np.linalg.norm(d0)
+    init = segments(t, [(T["init"][0], T["init"][1], 0.0, 0.3), (T["look"][0], T["look"][1], 0.3, 0.0)])  # back while looking around
+    tr, ro = hand(t, rng)
+    p = np.concatenate([xy + bob_l[:, None] * side + init[:, None] * tang[None, :], (z0 + bob_v)[:, None]], 1) + tr
+    # gaze: at the spot (still, placing, the return view, back to the start) or ahead with head turns (walking)
+    yaw_s, pitch_s = look_angles(p, c)
+    yaw_w = heading + bandnoise(t, rng, 0, 0.25, np.radians(30), 1)
+    pitch_w = np.radians(-15) + bandnoise(t, rng, 0, 0.3, np.radians(8), 1)
+    w = np.ones(len(t))
+    w = np.minimum(w, 1 - envelope(t, T["walk"][0] - 0.3, T["walk"][1] - 1.2, 1.0))  # 0 while walking
+    d = (yaw_w - yaw_s + np.pi) % (2 * np.pi) - np.pi
+    blend = (w > 1e-3) & (w < 1 - 1e-3)
+    if blend.any() and np.abs(d[blend]).max() > np.radians(150):
+        raise ValueError("gaze blend over ~180 deg")
+    look = envelope(t, T["look"][0], T["look"][1], 1.0) * np.radians(50) * np.sin(2 * np.pi * (t - T["look"][0]) / 4.0)
+    yaw = np.unwrap(yaw_s + (1 - w) * d) + look + ro[:, 0]
+    pitch = w * pitch_s + (1 - w) * pitch_w + ro[:, 1]
+    # phases on the bedroom: out (first time outside it), back (first time inside again)
+    inB = (p[:, 0] < 4.5) & (p[:, 1] < 4.0)
+    out_i = np.argmax(~inB)
+    back_i = out_i + np.argmax(inB[out_i:])
+    T["out"] = (float(t[out_i]), float(t[out_i]))
+    T["return"] = (float(t[back_i]), float(t[-1]))
+    return finish(t, p, yaw, pitch, ro[:, 2],
+                  {"spot": c.round(3).tolist(), "route": route, "back_door": back, "speed_mps": speed,
+                   "waypoints": pts.round(2).tolist(),
+                   "phases_s": {k_: [round(v_[0], 2), round(v_[1], 2)] for k_, v_ in T.items()}})
+
+
 SCENARIOS = {"slide": scn_slide, "gesture": scn_gesture, "shake": scn_shake, "rotate": scn_rotate,
              "orbit": scn_orbit, "walk": scn_walk, "ar": scn_ar,
-             "bedside": scn_bedside, "rapid": scn_rapid, "longar": scn_longar}  # appended: the first seven keep their seeds
+             "bedside": scn_bedside, "rapid": scn_rapid, "longar": scn_longar,
+             "flat": scn_flat}  # appended: the earlier ones keep their seeds
 
 
 def check_motion(room, m: Motion, table_ok=False):
