@@ -418,7 +418,7 @@ int main(int argc, char** argv) {
     std::string line;
     while (std::getline(tf, line)) {
       if (line.empty() || line[0] == '#') continue;
-      tapT = std::stoll(line.substr(0, line.find(','))) * 1e-9;
+      tapT = std::stoll(line.substr(0, line.find(','))) * 1e-9 - d.tBase;  // d.t is relative to d.tBase
       break;
     }
     cdf.open(fs::path(out) / "center_depth.txt");
