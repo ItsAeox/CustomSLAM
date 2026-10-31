@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Phone recordings (datasets/phone/labels.txt) through settings variants made from a page preset plus extra lines, WASM
 # runner, live@1.0, seeds 1-2, 4 at a time; then summary_presets.py. Each arm: name|preset|extra lines separated by ';'.
-# Usage: [TRACE=1] replay_arms.sh <snapshot tag> <out dir> <arms file>   (one arm per line; # comments)
+# Usage: [TRACE=1] [PAR=4] replay_arms.sh <snapshot tag> <out dir> <arms file>   (one arm per line; # comments; PAR runs at a time)
 #   TRACE=1: per-frame trace (--trace), eval/loss_anatomy.py and eval/map_growth.py per run (anatomy.txt, growth.txt)
 #   RECS="rec_a rec_b": only these recordings (default: all in labels.txt)
 #   e.g. "fast_cov|fast|Web.KF.Coverage: 0.4"   "grecover_dt|grecover|Web.Gyro.TimeOffset: -0.088"
@@ -44,7 +44,7 @@ run_one() {
   if [ -n "${TRACE:-}" ]; then /opt/slam/venv/bin/python eval/map_growth.py $o $PH/$r > $o/growth.txt 2>&1; fi
 }
 export -f run_one; export O PH V NODE JS TRACE MODE
-printf '%s\n' "${jobs_list[@]}" | xargs -P 4 -L 1 bash -c 'run_one $0 $1 $2'
+printf '%s\n' "${jobs_list[@]}" | xargs -P ${PAR:-4} -L 1 bash -c 'run_one $0 $1 $2'
 echo "=== runs done $(date +%T)"
 [ -f $PH/labels.txt ] && /opt/slam/venv/bin/python scripts/experiments/2026-10-18/summary_presets.py $O $PH/labels.txt
 for a in "${ARMS[@]}"; do echo "$a: turn bridges $(grep -h BRIDGE-STATS $O/*/$a/*/run.log 2>/dev/null | sed 's/.*bridges=\([0-9]*\).*/\1/' | awk '{s+=$1; n++} END{printf "%.1f per run", n ? s/n : 0}')"; done

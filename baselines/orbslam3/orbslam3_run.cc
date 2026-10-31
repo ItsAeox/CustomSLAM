@@ -327,6 +327,8 @@ int main(int argc, char** argv) {
   int seed = -1;  // -1: ORB-SLAM3 default (TwoViewReconstruction seeds with 0)
   string saveMap, loadMap;  // room map save / reload (WebMapIO.cc): the largest map at the end / a map loaded first
   double imuDtMs = 0;       // --imu-dt: IMU time = recorded IMU stamp - imu-dt (the AR page's option imudt; phone -88 ms)
+  double keepMapAt = -1;    // --keep-map-at: Web.Track.KeepMap switched on at this time after the first frame (s), as the AR
+                            // page does when the object is placed with anchor=keep (synthetic ar: tap at ~5.8 s; longar ~16.8 s)
   for (int i = 1; i < argc; ++i) {
     string a = argv[i];
     auto next = [&]() { if (i + 1 >= argc) { std::cerr << "missing value for " << a << "\n"; std::exit(2); } return string(argv[++i]); };
@@ -349,6 +351,7 @@ int main(int argc, char** argv) {
     else if (a == "--save-map") saveMap = next();
     else if (a == "--load-map") loadMap = next();
     else if (a == "--imu-dt") imuDtMs = std::stod(next());
+    else if (a == "--keep-map-at") keepMapAt = std::stod(next());
     else { std::cerr << "unknown arg " << a << "\n"; return 2; }
   }
   if (dataset.empty() || mode.empty() || seq.empty() || vocab.empty() || settings.empty() || out.empty()) {
@@ -433,6 +436,12 @@ int main(int argc, char** argv) {
                  nKf = tkp->vdNewKF_ms.size();
     const unsigned long kfId0 = ORB_SLAM3::KeyFrame::nNextId;
 #endif
+#ifdef ORBSLAM3_WEB
+    if (keepMapAt >= 0 && d.t[i] - d.t[0] >= keepMapAt && !ORB_SLAM3::webConfig().keepMap) {
+      ORB_SLAM3::webConfig().keepMap = 1;
+      std::cout << "keep map on at frame " << i << " (" << d.t[i] - d.t[0] << " s)" << std::endl;
+    }
+#endif
     auto t0 = std::chrono::steady_clock::now();
     const Sophus::SE3f Tcw = SLAM.TrackMonocular(im, d.t[i], meas);
     auto t1 = std::chrono::steady_clock::now();
@@ -486,6 +495,7 @@ int main(int argc, char** argv) {
         const Eigen::Vector3d gd = se.valid ? Eigen::Vector3d(se.g.normalized()) : Eigen::Vector3d::Zero();
         tr << " " << (se.valid ? se.s : 0.0) << " " << (se.valid ? se.relStd : -1.0) << " " << se.windows  // its 1-sigma / s,
            << " " << gd.transpose();                                                                         // windows, gravity dir
+        tr << " " << (m ? (long)m->GetId() : -1L) << " " << SLAM.WebAtlas()->CountMaps();  // + current map id, maps in the atlas
       }
 #endif
       tr << "\n";
