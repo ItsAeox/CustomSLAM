@@ -329,10 +329,10 @@ int main(int argc, char** argv) {
   double imuDtMs = 0;       // --imu-dt: IMU time = recorded IMU stamp - imu-dt (the AR page's option imudt; phone -88 ms)
   double keepMapAt = -1;    // --keep-map-at: Web.Track.KeepMap switched on at this time after the first frame (s), as the AR
                             // page does when the object is placed with anchor=keep (synthetic ar: tap at ~5.8 s; longar ~16.8 s)
-  double tapAt = -1;        // --tap-at: at the first tracked frame from this time (s after the first frame; the sequence's
-                            // touches.csv tap when it has one) log "TAP frame <i> u <u> v <v> depth <z> points <n>": the median
-                            // camera depth of the tracked map points within 60 px of the tap pixel (image centre without a
-                            // touches.csv row), i.e. where the AR page puts the object (eval/anchor_return.py)
+  double tapAt = -1;        // --tap-at: from this time (s after the first frame; the sequence's touches.csv tap when it has
+                            // one) write center_depth.txt: per tracked frame the median camera depth of the tracked map points
+                            // within 60 px of the image centre and their count - where the AR page would put an object tapped
+                            // there (eval/anchor_return.py places it at the first frame with the spot in the middle of the view)
   for (int i = 1; i < argc; ++i) {
     string a = argv[i];
     auto next = [&]() { if (i + 1 >= argc) { std::cerr << "missing value for " << a << "\n"; std::exit(2); } return string(argv[++i]); };
@@ -410,19 +410,20 @@ int main(int argc, char** argv) {
   const auto wall0 = std::chrono::steady_clock::now();
   int processed = 0, dropped = 0, lastIdx = -1;
 #ifdef ORBSLAM3_WEB
-  double tapT = 0, tu = -1, tv = -1;  // --tap-at: the tap (time on the frame clock, pixel; -1: the image centre)
+  double tapT = 0;  // --tap-at: the tap time on the frame clock
+  std::ofstream cdf;
   if (tapAt >= 0) {
     tapT = d.t[0] + tapAt;
     std::ifstream tf(fs::path(seq) / "touches.csv");
     std::string line;
     while (std::getline(tf, line)) {
       if (line.empty() || line[0] == '#') continue;
-      std::stringstream ss(line);
-      std::string a0, a1, a2;
-      std::getline(ss, a0, ','); std::getline(ss, a1, ','); std::getline(ss, a2, ',');
-      tapT = std::stoll(a0) * 1e-9; tu = std::stod(a1); tv = std::stod(a2);
+      tapT = std::stoll(line.substr(0, line.find(','))) * 1e-9;
       break;
     }
+    cdf.open(fs::path(out) / "center_depth.txt");
+    cdf << "# frame median_depth points (tracked map points within 60 px of the image centre; orbslam3_run --tap-at)
+";
   }
 #endif
   for (int i = 0; i < N; ++i) {
@@ -470,19 +471,19 @@ int main(int argc, char** argv) {
 #ifdef ORBSLAM3_WEB
     if (tapAt >= 0 && d.t[i] >= tapT && (SLAM.GetTrackingState() == 2 || SLAM.GetTrackingState() == 5)) {
       const ORB_SLAM3::Frame& F = SLAM.WebTracker()->mCurrentFrame;
-      if (tu < 0) { tu = 0.5 * (F.mnMinX + F.mnMaxX); tv = 0.5 * (F.mnMinY + F.mnMaxY); }
+      const double cu = 0.5 * (F.mnMinX + F.mnMaxX), cv_ = 0.5 * (F.mnMinY + F.mnMaxY);
       std::vector<float> zs;
       for (int k = 0; k < F.N && k < (int)F.mvKeysUn.size(); ++k) {
         ORB_SLAM3::MapPoint* mp = F.mvpMapPoints[k];
         if (!mp || F.mvbOutlier[k] || mp->isBad()) continue;
-        if (std::hypot(F.mvKeysUn[k].pt.x - tu, F.mvKeysUn[k].pt.y - tv) > 60) continue;
+        if (std::hypot(F.mvKeysUn[k].pt.x - cu, F.mvKeysUn[k].pt.y - cv_) > 60) continue;
         const Eigen::Vector3f Xc = Tcw * mp->GetWorldPos();
         if (Xc.z() > 0) zs.push_back(Xc.z());
       }
-      if (zs.size() >= 5) {
+      if (!zs.empty()) {
         std::nth_element(zs.begin(), zs.begin() + zs.size() / 2, zs.end());
-        std::cout << "TAP frame " << i << " u " << tu << " v " << tv << " depth " << zs[zs.size() / 2] << " points " << zs.size() << std::endl;
-        tapAt = -1;
+        cdf << i << " " << zs[zs.size() / 2] << " " << zs.size() << "
+";
       }
     }
 #endif

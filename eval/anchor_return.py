@@ -4,9 +4,10 @@ the AR page shows it (web/ar.js: hidden while not tracking, stashed when a new m
 drops (merge), deleted when tracking restarts from scratch) - where it appears on screen for the rest of the run vs
 where it should be.
 
-Anchor: where the page puts it when the run logged it (orbslam3_run --tap-at: the tap ray at the median depth of the
-tracked map points within 60 px of the tap pixel, at the first tracked frame from the tap); otherwise the spot as the
-map itself reconstructs it - triangulated (DLT) from the estimated camera poses of the placement
+Anchor: where the page puts it when the run logged the map's depth (orbslam3_run --tap-at, center_depth.txt): the tap ray
+through the spot at the median depth of the tracked map points around the image centre, at the first tracked frame from
+the tap with the spot in the middle of the view (the user taps once the map is there); otherwise the spot as the map
+itself reconstructs it - triangulated (DLT) from the estimated camera poses of the placement
 map and the spot's true pixel in every tracked frame of that map from 8 s before the tap (the first tracked frame at /
 after it; synthetic ar / flat: touches.csv, longar: the middle of the 'place' phase) to 2 / 5 / 10 / 20 s after, the
 shortest window whose rays span >= 3 deg (the page puts the object on the floor the map has triangulated there; a
@@ -98,19 +99,26 @@ def main():
         u_ = K3 @ (pc_ / pc_[2])
         return u_[:2] if 0 <= u_[0] < W and 0 <= u_[1] < H else None
     anchor, used = None, None
-    # the page's placement, logged by orbslam3_run --tap-at: the tap ray at the median depth of the tracked map points
-    # within 60 px of the tap pixel ("TAP frame i u v depth z points n")
-    tap = None
-    if (run / "run.log").exists():
-        for l in (run / "run.log").read_text(errors="replace").splitlines():
-            if l.startswith("TAP frame "):
-                f_ = l.split(); tap = (int(f_[2]), float(f_[4]), float(f_[6]), float(f_[8]), int(f_[10])); break
-    if tap is not None and (frame == tap[0]).any():
-        p = int(np.where(frame == tap[0])[0][0])
-        ray = np.linalg.inv(K3) @ np.array([tap[1], tap[2], 1.0])
-        anchor = quat_to_R(quat[p]) @ (ray * tap[3]) + pos[p]
-        out.update(placed=1, place_delay_s=round(t[p] - t_tap, 2), place_map=int(mapid[p]), anchor_method="tap",
-                   tap_points=tap[4])
+    # the page's placement (orbslam3_run --tap-at writes center_depth.txt: per tracked frame the median depth of the tracked
+    # map points within 60 px of the image centre): the first tracked frame from the tap with the true spot within 40 px
+    # of the centre and >= 5 such points - the user taps the spot once the map is there; the tap ray through the spot's
+    # pixel at that depth
+    cdp = run / "center_depth.txt"
+    if cdp.exists():
+        cd = {int(r_[0]): (float(r_[1]), int(r_[2])) for r_ in (l.split() for l in cdp.read_text().splitlines() if l and l[0] != "#")}
+        for j in np.where(ok & (t >= t_tap - 1e-6))[0]:
+            u_ = true_px(j)
+            if u_ is None or np.hypot(u_[0] - cx, u_[1] - cy) > 40 or cd.get(int(frame[j]), (0, 0))[1] < 5:
+                continue
+            p = int(j)
+            ray = np.linalg.inv(K3) @ np.array([u_[0], u_[1], 1.0])
+            anchor = quat_to_R(quat[p]) @ (ray * cd[int(frame[p])][0]) + pos[p]
+            out.update(placed=1, place_delay_s=round(t[p] - t_tap, 2), place_map=int(mapid[p]), anchor_method="tap",
+                       tap_points=cd[int(frame[p])][1])
+            break
+        if anchor is None:
+            out.update(placed=0, why="no map at the spot")
+            print(" ".join(f"{k}={v}" for k, v in out.items())); return
     for T_after in ((2, 5, 10, 20) if anchor is None else ()):
         w = [j for j in np.where(ok & (mapid == mapid[p]) & (t >= t[p] - 8) & (t <= t[p] + T_after))[0] if true_px(j) is not None]
         if len(w) < 10: continue
