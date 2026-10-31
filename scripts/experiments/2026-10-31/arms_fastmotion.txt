@@ -1,0 +1,7 @@
+# replay_arms.sh arms (31 Oct, ISSUES G31): WebVIO beta + scale filter, + gyro-warped KLT, + rolling-shutter correction
+# (synthetic readout 20 ms; -20 ms = flipped correction, the sign check), + both
+beta_scaleF|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1
+warp|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.KLT.GyroWarp: 1
+rs20|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.RS.Readout: 0.02
+rsneg20|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.RS.Readout: -0.02
+warp_rs20|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.KLT.GyroWarp: 1;Web.RS.Readout: 0.02

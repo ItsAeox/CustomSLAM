@@ -1,0 +1,8 @@
+# replay_arms.sh arms (31 Oct, ISSUES G22, user's top priority after the fast-motion fixes): map growth into new areas.
+# WebVIO beta + scale filter vs the existing options: extra keyframes for new textured areas (newarea=cov), + points from
+# smaller baselines (cov2), keyframes queued while mapping is busy (kfq=2), cov2 + kfq2
+beta_scaleF|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1
+cov|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.KF.Coverage: 0.4
+cov2|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.KF.Coverage: 0.4;Web.Map.MinBaseline: 0.005;Web.Map.MaxCosParallax: 0.99995
+kfq2|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.KF.BusyQueue: 2
+cov2_kfq2|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.KF.Coverage: 0.4;Web.Map.MinBaseline: 0.005;Web.Map.MaxCosParallax: 0.99995;Web.KF.BusyQueue: 2
