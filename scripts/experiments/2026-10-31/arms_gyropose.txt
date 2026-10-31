@@ -1,10 +1,11 @@
-# replay_arms.sh arms (1 Nov, ISSUES G35): the gyro rotation in the pose solve (Web.Gyro.PoseSigma, 098a8e1) vs WebVIO beta + scale
-# filter, with a wrong IMU time offset (-60 instead of -88 ms: robustness), and the ablation (gyro prior off, g2o pose solver,
-# ORB on every frame, the plain stock preset) to see which part lets the map stop translating
+# replay_arms.sh arms (1 Nov, ISSUES G35): the gyro rotation in the pose solve (Web.Gyro.PoseSigma relative to the last frame /
+# + Web.Gyro.PoseTau attitude reference, 7957aac) vs WebVIO beta + scale filter, with a wrong IMU time offset (-60 instead of -88 ms:
+# robustness), and the ablation (gyro prior off, g2o pose solver, ORB on every frame, the plain stock preset)
 beta_scaleF|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1
 gyro02|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.2
-gyro005|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.05
-gyro02_off60|beta|Web.Gyro.TimeOffset: -0.060;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.2
+gyro02_tau5|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.2;Web.Gyro.PoseTau: 5
+gyro005_tau5|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.05;Web.Gyro.PoseTau: 5
+gyro005_tau5_off60|beta|Web.Gyro.TimeOffset: -0.060;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.05;Web.Gyro.PoseTau: 5
 nogyro|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;-Web.Gyro.Prior
 stockpose|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;-Web.Track.FastPose
 noklt|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;-Web.KLT.Enable
