@@ -4,13 +4,13 @@ the AR page shows it (web/ar.js: hidden while not tracking, stashed when a new m
 drops (merge), deleted when tracking restarts from scratch) - where it appears on screen for the rest of the run vs
 where it should be.
 
-Anchor: at the placement frame (the first tracked frame at / after the tap; synthetic ar: touches.csv, longar: the middle
-of the 'place' phase) the true spot in that frame's true camera coordinates, scaled to map units with the map's local
-Sim3 scale (tracked frames of that map from 8 s before to 10 s after: the walk around the spot; a map started after the
-sideways start-up has no translation before the tap), put into the map with the estimated pose: on screen
-exactly at the spot when placed, like a tap. Then, for every processed frame after it where the spot is in the true view
-(in the image, >= 0.1 m in front): shown or not, screen error (px), and the error at the spot (cm: where the object
-appears in the room from that viewpoint, via the placement scale). The gyro hold (< 0.4 s) is not modelled.
+Anchor: the spot as the map itself reconstructs it - triangulated (DLT) from the estimated camera poses of the placement
+map and the spot's true pixel in every tracked frame of that map from 8 s before the tap (the first tracked frame at /
+after it; synthetic ar / flat: touches.csv, longar: the middle of the 'place' phase) to 2 / 5 / 10 / 20 s after, the
+shortest window whose rays span >= 3 deg (the page puts the object on the floor the map has triangulated there; a
+map-scale fit made the score depend on the map's scale errors). Then, for every processed frame after the placement
+where the spot is in the true view (in the image, >= 0.1 m in front): shown or not, screen error (px), and that error at
+the spot's true distance (cm: how far beside the spot the object appears). The gyro hold (< 0.4 s) is not modelled.
 
 trace.txt needs the map id / map count columns (orbslam3_run aa3763f+: the last two).
   anchor_return.py <run dir> <sequence dir> [--gt results/gt/synth_<seq>.txt] [--wrong-px 50]
@@ -23,8 +23,6 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from scale_from_accel import umeyama_scale
 
 
 def quat_to_R(q):  # x y z w
@@ -91,15 +89,36 @@ def main():
         out.update(placed=0)
         print(" ".join(f"{k}={v}" for k, v in out.items())); return
     p = cand[0]
-    w = np.where(ok & (mapid == mapid[p]) & (t >= t[p] - 8) & (t <= t[p] + 10))[0]
-    if len(w) < 20 or np.ptp(gpos[w], 0).max() < 0.1:
-        out.update(placed=0, why="no local scale")
+    K3 = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1.0]])
+    def true_px(j):
+        pc_ = quat_to_R(gq[j]).T @ (spot - gpos[j])
+        if pc_[2] < 0.1: return None
+        u_ = K3 @ (pc_ / pc_[2])
+        return u_[:2] if 0 <= u_[0] < W and 0 <= u_[1] < H else None
+    anchor, used = None, None
+    for T_after in (2, 5, 10, 20):
+        w = [j for j in np.where(ok & (mapid == mapid[p]) & (t >= t[p] - 8) & (t <= t[p] + T_after))[0] if true_px(j) is not None]
+        if len(w) < 10: continue
+        A = []
+        for j in w:
+            Rcw = quat_to_R(quat[j]).T
+            P = K3 @ np.hstack([Rcw, (-Rcw @ pos[j])[:, None]])
+            u_ = true_px(j)
+            A += [u_[0] * P[2] - P[0], u_[1] * P[2] - P[1]]
+        X = np.linalg.svd(np.array(A))[2][-1]
+        if abs(X[3]) < 1e-12: continue
+        X = X[:3] / X[3]
+        d = X[None, :] - pos[w]; d /= np.linalg.norm(d, axis=1, keepdims=True)
+        sub = d[:: max(1, len(d) // 60)]
+        ang = np.degrees(np.arccos(np.clip(sub @ sub.T, -1, 1))).max()
+        in_front = all((quat_to_R(quat[j]).T @ (X - pos[j]))[2] > 0 for j in w)
+        if ang >= 3.0 and in_front:
+            anchor, used = X, (T_after, len(w), ang); break
+    if anchor is None:
+        out.update(placed=0, why="collapsed")  # the map cannot triangulate the spot: its poses barely move (scale collapsed)
         print(" ".join(f"{k}={v}" for k, v in out.items())); return
-    s = umeyama_scale(pos[w], gpos[w])  # metres per map unit
-    Rcw_true = quat_to_R(gq[p]).T
-    pc = Rcw_true @ (spot - gpos[p]) / s
-    anchor = quat_to_R(quat[p]) @ pc + pos[p]
-    out.update(placed=1, place_delay_s=round(t[p] - t_tap, 2), place_map=int(mapid[p]), scale_mpu=round(s, 4))
+    out.update(placed=1, place_delay_s=round(t[p] - t_tap, 2), place_map=int(mapid[p]), anchor_window_s=used[0],
+               anchor_frames=used[1], anchor_rays_deg=round(float(used[2]), 1))
     # the page's anchor state after placement (ar.js: lastMaps / lastState logic)
     exists, stashed = True, False
     shown = np.zeros(len(t), bool)
@@ -125,8 +144,7 @@ def main():
     ue = np.stack([fx * pe[:, 0] / np.where(pe[:, 2] > 1e-9, pe[:, 2], 1e-9) + cx,
                    fy * pe[:, 1] / np.where(pe[:, 2] > 1e-9, pe[:, 2], 1e-9) + cy], 1)
     epx = np.where(pe[:, 2] > 1e-6, np.linalg.norm(ue - ut, axis=1), np.inf)
-    seen = gpos[idx] + np.einsum("nji,nj->ni", Rcw_t, pe * s)  # where the object appears in the room (Rwc = Rcw^T)
-    ecm = 100 * np.linalg.norm(seen - spot, axis=1)
+    ecm = 100 * epx / fx * pt[:, 2]  # beside the spot at its true distance
     sh = shown[idx]
     v, vs = inview, inview & sh
     def stats(m, pre=""):

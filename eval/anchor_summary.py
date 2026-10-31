@@ -38,13 +38,14 @@ print(f"# Object placed, leave, come back (eval/anchor_return.py): {root.name}\n
 print("Per scenario and arm (medians over runs; shown % = of the frames after placement where the spot is in the true view;"
       " px / cm = the object's screen / room error while shown; wrong = shown > 50 px off; return = ar 'return' phase,"
       " longar 'in' .. 'orbit2', flat: back in the bedroom .. the end):\n")
-print("| Scenario | Arm | Runs | Placed | Shown % | px | cm | Wrong % | Return: shown % | Return px | Lost at the end | Deleted | Longest gap s |")
-print("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+print("| Scenario | Arm | Runs | Placed | Map collapsed | Shown % | px | cm | Wrong % | Return: shown % | Return px | Lost at the end | Deleted | Longest gap s |")
+print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 for (sc, arm), v in sorted(runs.items()):
     d = [x[2] for x in v]
     pl = [x for x in d if x.get("placed") == 1]
     g = lambda k: [x.get(k) for x in pl if isinstance(x.get(k), float)]
-    print(f"| {sc} | {arm} | {len(d)} | {len(pl)} | {med(g('shown_pct'))} | {med(g('px_med'))} | {med(g('cm_med'))} | "
+    col = sum(1 for x in d if x.get("why") == "collapsed")
+    print(f"| {sc} | {arm} | {len(d)} | {len(pl)} | {col} | {med(g('shown_pct'))} | {med(g('px_med'))} | {med(g('cm_med'))} | "
           f"{med(g('wrong_pct'))} | {med(g('ret_shown_pct'))} | {med(g('ret_px_med'))} | "
           f"{int(sum(g('unrecovered_at_end')))} of {len(pl)} | {int(sum(g('anchor_deleted')))} | {med(g('gap_max_s'))} |")
 print("\nPer run:\n")
