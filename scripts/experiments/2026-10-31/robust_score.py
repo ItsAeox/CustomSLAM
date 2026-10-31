@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """ISSUES G32: filter estimate (replay output, converged frames) vs a robust true scale of the same map: the median of the Sim3 scales
 of 8 s windows (>= 0.15 m of motion) of the map's tracked positions vs GT (the 30 s Sim3 of replay_score.py is corrupted by bad poses in shaking / whip pans).
-  robust_score.py <replay dir> <live results dir> <seq glob>   (replay outputs <seq>__beta_scaleF__<seed>.txt)"""
+  robust_score.py <replay dir> <live results dir> <seq glob> [arm]   (replay outputs <seq>__<arm>__<seed>.txt; arm default beta_scaleF)"""
 import sys
 from pathlib import Path
 import numpy as np
 sys.path.insert(0, "H:/Research/CustomSLAM/eval")
 from scale_from_accel import umeyama_scale
 R, L, pat = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+arm = sys.argv[4] if len(sys.argv) > 4 else "beta_scaleF"
 allr = {}
-for f in sorted(R.glob(f"{pat}__beta_scaleF__seed*.txt")):
+for f in sorted(R.glob(f"{pat}__{arm}__seed*.txt")):
     q, _, seed = f.stem.split("__")
-    run = L / q / "beta_scaleF" / seed
+    run = L / q / arm / seed
     tr = np.array([[float(x) for x in l.split()[:14]] for l in (run / "trace.txt").read_text().splitlines() if len(l.split()) >= 14])
     fl = np.loadtxt(f, comments="#"); n = min(len(tr), len(fl)); tr, fl = tr[:n], fl[:n]
     cam = np.loadtxt(f"H:/Research/datasets/synth/{q}/mav0/cam0/data.csv", delimiter=",", comments="#", usecols=0, dtype=np.int64)
