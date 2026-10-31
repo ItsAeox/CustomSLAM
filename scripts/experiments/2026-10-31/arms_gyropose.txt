@@ -1,12 +1,12 @@
 # replay_arms.sh arms (1 Nov, ISSUES G35): the gyro rotation in the pose solve (Web.Gyro.PoseSigma relative to the last frame /
-# + Web.Gyro.PoseTau attitude reference, 7957aac) vs WebVIO beta + scale filter, with a wrong IMU time offset (-60 instead of -88 ms:
+# + Web.Gyro.PoseTau attitude reference, 5fe7f48) vs WebVIO beta + scale filter, with a wrong IMU time offset (-60 instead of -88 ms:
 # robustness), and the ablation (gyro prior off, g2o pose solver, ORB on every frame, the plain stock preset)
 beta_scaleF|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1
-gyro02|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.2
-gyro02_tau5|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.2;Web.Gyro.PoseTau: 5
-gyro005_tau5|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.05;Web.Gyro.PoseTau: 5
-gyro005_tau5_off60|beta|Web.Gyro.TimeOffset: -0.060;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.05;Web.Gyro.PoseTau: 5
-nogyro|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;-Web.Gyro.Prior
-stockpose|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;-Web.Track.FastPose
-noklt|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;-Web.KLT.Enable
-stock|stock|Web.Scale.Online: 0
+gyro02|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.2;--tap-at 16.8
+gyro02_tau5|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.2;Web.Gyro.PoseTau: 5;--tap-at 16.8
+gyro005_tau5|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.05;Web.Gyro.PoseTau: 5;--tap-at 16.8
+gyro005_tau5_off60|beta|Web.Gyro.TimeOffset: -0.060;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.05;Web.Gyro.PoseTau: 5;--tap-at 16.8
+nogyro|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;-Web.Gyro.Prior;--tap-at 16.8
+stockpose|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;-Web.Track.FastPose;--tap-at 16.8
+noklt|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;-Web.KLT.Enable;--tap-at 16.8
+stock|stock|Web.Scale.Online: 0;--tap-at 16.8
