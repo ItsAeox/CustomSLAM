@@ -422,8 +422,7 @@ int main(int argc, char** argv) {
       break;
     }
     cdf.open(fs::path(out) / "center_depth.txt");
-    cdf << "# frame median_depth points (tracked map points within 60 px of the image centre; orbslam3_run --tap-at)
-";
+    cdf << "# frame median_depth points (tracked map points within 60 px of the image centre; orbslam3_run --tap-at)\n";
   }
 #endif
   for (int i = 0; i < N; ++i) {
@@ -482,8 +481,7 @@ int main(int argc, char** argv) {
       }
       if (!zs.empty()) {
         std::nth_element(zs.begin(), zs.begin() + zs.size() / 2, zs.end());
-        cdf << i << " " << zs[zs.size() / 2] << " " << zs.size() << "
-";
+        cdf << i << " " << zs[zs.size() / 2] << " " << zs.size() << "\n";
       }
     }
 #endif
