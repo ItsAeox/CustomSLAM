@@ -329,6 +329,10 @@ int main(int argc, char** argv) {
   double imuDtMs = 0;       // --imu-dt: IMU time = recorded IMU stamp - imu-dt (the AR page's option imudt; phone -88 ms)
   double keepMapAt = -1;    // --keep-map-at: Web.Track.KeepMap switched on at this time after the first frame (s), as the AR
                             // page does when the object is placed with anchor=keep (synthetic ar: tap at ~5.8 s; longar ~16.8 s)
+  double tapAt = -1;        // --tap-at: at the first tracked frame from this time (s after the first frame; the sequence's
+                            // touches.csv tap when it has one) log "TAP frame <i> u <u> v <v> depth <z> points <n>": the median
+                            // camera depth of the tracked map points within 60 px of the tap pixel (image centre without a
+                            // touches.csv row), i.e. where the AR page puts the object (eval/anchor_return.py)
   for (int i = 1; i < argc; ++i) {
     string a = argv[i];
     auto next = [&]() { if (i + 1 >= argc) { std::cerr << "missing value for " << a << "\n"; std::exit(2); } return string(argv[++i]); };
@@ -352,6 +356,7 @@ int main(int argc, char** argv) {
     else if (a == "--load-map") loadMap = next();
     else if (a == "--imu-dt") imuDtMs = std::stod(next());
     else if (a == "--keep-map-at") keepMapAt = std::stod(next());
+    else if (a == "--tap-at") tapAt = std::stod(next());
     else { std::cerr << "unknown arg " << a << "\n"; return 2; }
   }
   if (dataset.empty() || mode.empty() || seq.empty() || vocab.empty() || settings.empty() || out.empty()) {
@@ -404,6 +409,22 @@ int main(int argc, char** argv) {
   if (live || rtWall) src = std::make_unique<FrameSource>(prep, d.t, N, rateScale, live);
   const auto wall0 = std::chrono::steady_clock::now();
   int processed = 0, dropped = 0, lastIdx = -1;
+#ifdef ORBSLAM3_WEB
+  double tapT = 0, tu = -1, tv = -1;  // --tap-at: the tap (time on the frame clock, pixel; -1: the image centre)
+  if (tapAt >= 0) {
+    tapT = d.t[0] + tapAt;
+    std::ifstream tf(fs::path(seq) / "touches.csv");
+    std::string line;
+    while (std::getline(tf, line)) {
+      if (line.empty() || line[0] == '#') continue;
+      std::stringstream ss(line);
+      std::string a0, a1, a2;
+      std::getline(ss, a0, ','); std::getline(ss, a1, ','); std::getline(ss, a2, ',');
+      tapT = std::stoll(a0) * 1e-9; tu = std::stod(a1); tv = std::stod(a2);
+      break;
+    }
+  }
+#endif
   for (int i = 0; i < N; ++i) {
     cv::Mat im;
     if (src) {
@@ -446,6 +467,25 @@ int main(int argc, char** argv) {
     const Sophus::SE3f Tcw = SLAM.TrackMonocular(im, d.t[i], meas);
     auto t1 = std::chrono::steady_clock::now();
     const double ttrack = std::chrono::duration<double>(t1 - t0).count();
+#ifdef ORBSLAM3_WEB
+    if (tapAt >= 0 && d.t[i] >= tapT && (SLAM.GetTrackingState() == 2 || SLAM.GetTrackingState() == 5)) {
+      const ORB_SLAM3::Frame& F = SLAM.WebTracker()->mCurrentFrame;
+      if (tu < 0) { tu = 0.5 * (F.mnMinX + F.mnMaxX); tv = 0.5 * (F.mnMinY + F.mnMaxY); }
+      std::vector<float> zs;
+      for (int k = 0; k < F.N && k < (int)F.mvKeysUn.size(); ++k) {
+        ORB_SLAM3::MapPoint* mp = F.mvpMapPoints[k];
+        if (!mp || F.mvbOutlier[k] || mp->isBad()) continue;
+        if (std::hypot(F.mvKeysUn[k].pt.x - tu, F.mvKeysUn[k].pt.y - tv) > 60) continue;
+        const Eigen::Vector3f Xc = Tcw * mp->GetWorldPos();
+        if (Xc.z() > 0) zs.push_back(Xc.z());
+      }
+      if (zs.size() >= 5) {
+        std::nth_element(zs.begin(), zs.begin() + zs.size() / 2, zs.end());
+        std::cout << "TAP frame " << i << " u " << tu << " v " << tv << " depth " << zs[zs.size() / 2] << " points " << zs.size() << std::endl;
+        tapAt = -1;
+      }
+    }
+#endif
 #ifdef REGISTER_TIMES
     {
       static std::ofstream stf(fs::path(out) / "stage_times.txt");

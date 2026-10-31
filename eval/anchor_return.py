@@ -4,7 +4,9 @@ the AR page shows it (web/ar.js: hidden while not tracking, stashed when a new m
 drops (merge), deleted when tracking restarts from scratch) - where it appears on screen for the rest of the run vs
 where it should be.
 
-Anchor: the spot as the map itself reconstructs it - triangulated (DLT) from the estimated camera poses of the placement
+Anchor: where the page puts it when the run logged it (orbslam3_run --tap-at: the tap ray at the median depth of the
+tracked map points within 60 px of the tap pixel, at the first tracked frame from the tap); otherwise the spot as the
+map itself reconstructs it - triangulated (DLT) from the estimated camera poses of the placement
 map and the spot's true pixel in every tracked frame of that map from 8 s before the tap (the first tracked frame at /
 after it; synthetic ar / flat: touches.csv, longar: the middle of the 'place' phase) to 2 / 5 / 10 / 20 s after, the
 shortest window whose rays span >= 3 deg (the page puts the object on the floor the map has triangulated there; a
@@ -96,7 +98,20 @@ def main():
         u_ = K3 @ (pc_ / pc_[2])
         return u_[:2] if 0 <= u_[0] < W and 0 <= u_[1] < H else None
     anchor, used = None, None
-    for T_after in (2, 5, 10, 20):
+    # the page's placement, logged by orbslam3_run --tap-at: the tap ray at the median depth of the tracked map points
+    # within 60 px of the tap pixel ("TAP frame i u v depth z points n")
+    tap = None
+    if (run / "run.log").exists():
+        for l in (run / "run.log").read_text(errors="replace").splitlines():
+            if l.startswith("TAP frame "):
+                f_ = l.split(); tap = (int(f_[2]), float(f_[4]), float(f_[6]), float(f_[8]), int(f_[10])); break
+    if tap is not None and (frame == tap[0]).any():
+        p = int(np.where(frame == tap[0])[0][0])
+        ray = np.linalg.inv(K3) @ np.array([tap[1], tap[2], 1.0])
+        anchor = quat_to_R(quat[p]) @ (ray * tap[3]) + pos[p]
+        out.update(placed=1, place_delay_s=round(t[p] - t_tap, 2), place_map=int(mapid[p]), anchor_method="tap",
+                   tap_points=tap[4])
+    for T_after in ((2, 5, 10, 20) if anchor is None else ()):
         w = [j for j in np.where(ok & (mapid == mapid[p]) & (t >= t[p] - 8) & (t <= t[p] + T_after))[0] if true_px(j) is not None]
         if len(w) < 10: continue
         A = []
@@ -117,8 +132,9 @@ def main():
     if anchor is None:
         out.update(placed=0, why="collapsed")  # the map cannot triangulate the spot: its poses barely move (scale collapsed)
         print(" ".join(f"{k}={v}" for k, v in out.items())); return
-    out.update(placed=1, place_delay_s=round(t[p] - t_tap, 2), place_map=int(mapid[p]), anchor_window_s=used[0],
-               anchor_frames=used[1], anchor_rays_deg=round(float(used[2]), 1))
+    if used is not None:
+        out.update(placed=1, place_delay_s=round(t[p] - t_tap, 2), place_map=int(mapid[p]), anchor_method="triangulated",
+                   anchor_window_s=used[0], anchor_frames=used[1], anchor_rays_deg=round(float(used[2]), 1))
     # the page's anchor state after placement (ar.js: lastMaps / lastState logic)
     exists, stashed = True, False
     shown = np.zeros(len(t), bool)
