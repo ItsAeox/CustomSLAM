@@ -1,0 +1,7 @@
+# replay_arms.sh arms (31 Oct, ISSUES G22, the user's goal: come back and find the object): flat (three rooms, back by another door), object placed at 5.8 s
+# (--keep-map-at: the AR page's default 'Tracking lost with a tree placed: keep the map, relocalise only' from placement)
+stock|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1
+keep|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;--keep-map-at 5.8
+keep_tv|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Turn.Bridge: 1;--keep-map-at 5.8
+keep_gyro|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Turn.Bridge: 2;--keep-map-at 5.8
+keep_cov2|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.KF.Coverage: 0.4;Web.Map.MinBaseline: 0.005;Web.Map.MaxCosParallax: 0.99995;--keep-map-at 5.8
