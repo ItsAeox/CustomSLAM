@@ -1,5 +1,5 @@
 # replay_arms.sh arms (1 Nov, G22 / G35): the flat return test again with the page's placement logged (--tap-at, touches.csv) and
-# the gyro attitude prior (Web.Gyro.PoseSigma / PoseTau, 9e699fc): stock (new map after a loss) and keep map, with / without
+# the gyro attitude prior (Web.Gyro.PoseSigma / PoseTau, bcdf2a3): stock (new map after a loss) and keep map, with / without
 stock|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;--tap-at 5.8
 keep|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;--keep-map-at 5.8;--tap-at 5.8
 stock_g005t5|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.05;Web.Gyro.PoseTau: 5;--tap-at 5.8
