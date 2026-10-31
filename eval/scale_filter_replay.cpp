@@ -88,7 +88,11 @@ int main(int argc, char** argv) {
   const double gateW = std::getenv("GATE_W") ? std::atof(std::getenv("GATE_W")) : 0.0;
   const double gateWin = std::getenv("GATE_WIN") ? std::atof(std::getenv("GATE_WIN")) : 0.5;
   const double gateLost = std::getenv("GATE_LOST") ? std::atof(std::getenv("GATE_LOST")) : 0.0;
+  const double gateA = std::getenv("GATE_A") ? std::atof(std::getenv("GATE_A")) : 0.0;
   double tLost = -1e9;
+  const double qualN = std::getenv("QUAL_N") ? std::atof(std::getenv("QUAL_N")) : 0.0;
+  const double qualKlt = std::getenv("QUAL_KLT") ? std::atof(std::getenv("QUAL_KLT")) : 0.0;
+  const double sigVis0 = F.sigVis;
   std::ofstream o(out);
   o << "# t s sigma_ln_s tracked map (C++ WebScaleFilter.h)\n";
   for (const auto& r : tr) {
@@ -110,6 +114,16 @@ int main(int argc, char** argv) {
       for (size_t j = 0; j < ti.size() && ti[j] <= tImuClock; j++)
         if (ti[j] >= tImuClock - gateWin && wi[j].norm() > gateW) { gated = true; break; }
     if (gateLost > 0 && t - tLost < gateLost) gated = true;
+    if (gateA > 0)  // GATE_A m/s^2: skip frames with | |specific force| - 9.81 | above it within the last GATE_WIN s (violent motion)
+      for (size_t j = 0; j < ti.size() && ti[j] <= tImuClock; j++)
+        if (ti[j] >= tImuClock - gateWin && std::abs(ai[j].norm() - 9.81) > gateA) { gated = true; break; }
+    // test: tracking-quality weighting of the visual position noise (QUAL_N: frames with fewer tracked points than this get
+    // sigVis x QUAL_N / n, capped at x10; QUAL_KLT: KLT frames x this factor)
+    double sv = sigVis0;
+    const double nTracked = r[2];
+    if (qualN > 0 && nTracked < qualN) sv *= std::min(10.0, qualN / std::max(nTracked, 1.0));
+    if (qualKlt > 0 && state == 5) sv *= qualKlt;
+    F.sigVis = sv;
     if (ok && !gated) {
       const Eigen::Quaterniond q(r[9], r[6], r[7], r[8]);  // trace: qx qy qz qw
       F.addFrame(tImuClock, Eigen::Vector3d(r[3], r[4], r[5]), q.toRotationMatrix(), (int)kfs);
