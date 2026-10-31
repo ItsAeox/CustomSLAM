@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 1 Nov (ISSUES G35): the gyro rotation in the pose solve and the ablation (arms_gyropose.txt) on the synthetic orbit / ar /
-# longar / walk v0-v5 (phone IMU), WASM snap-0a5443f, live@1.0 (4 at a time), seeds 1-2, trace; then eval/scale_collapse.py
+# longar / walk v0-v5 (phone IMU), WASM snap-9e699fc, live@1.0 (4 at a time), seeds 1-2, trace; then eval/scale_collapse.py
 # (COLLAPSE.md), eval/anchor_return.py (ar / longar; keep map is not on here: stock anchor logic), synth_results.py.
 # Usage: gyropose_run.sh
 cd /mnt/h/Research/CustomSLAM
@@ -9,7 +9,7 @@ D=/mnt/h/Research/datasets/synth O=/mnt/h/Research/results/${OUT:-gyropose_1101}
 export PH=$D TRACE=1 SEEDS="${SEEDS:-1 2}"
 mkdir -p $O
 RECS="${RECS:-$(cd $D && ls -d */ | tr -d / | grep -E '^(orbit|ar|longar|walk)[0-9]$')}" \
-  bash scripts/experiments/2026-10-18/replay_arms.sh 0a5443f $O $X/arms_gyropose.txt > $O/run.log 2>&1
+  bash scripts/experiments/2026-10-18/replay_arms.sh 9e699fc $O $X/arms_gyropose.txt > $O/run.log 2>&1
 for r in $O/ar*/*/seed* $O/longar*/*/seed*; do
   q=$(basename $(dirname $(dirname $r)))
   [ -s $r/anchor.txt ] || /opt/slam/venv/bin/python eval/anchor_return.py $r $D/$q --gt /mnt/h/Research/results/gt/synth_$q.txt > $r/anchor.txt 2>&1
