@@ -4,6 +4,7 @@
 # tap at 5.8 s), WASM snap-aa3763f, seeds 1-2, trace; live@1.0 (4 at a time) and phone pace (rate-scale 0.25, 2 at a time);
 # eval/anchor_return.py -> anchor_summary.py, eval/synth_results.py. Usage: flat_return_run.sh
 cd /mnt/h/Research/CustomSLAM
+while [ -e /tmp/webvio_build.lock ]; do sleep 15; done  # a build in progress would disturb live@1.0 timing
 D=/mnt/h/Research/datasets/synth X=scripts/experiments/2026-10-31
 export PH=$D TRACE=1 SEEDS="${SEEDS:-1 2}"
 for pace in live phone; do

@@ -1132,9 +1132,38 @@ struct WebPoseObs
     Eigen::Vector3d Cam(const Sophus::SE3d& T) const { return inf ? Eigen::Vector3d(T.so3() * Xw) : Eigen::Vector3d(T * Xw); }
 };
 
+// Web.Gyro.PoseSigma in the g2o pose solve: unary edge on the pose vertex, error Log(R Rp^T); VertexSE3Expmap updates
+// on the left with [omega, upsilon], so the Jacobian is [I 0] (first order)
+class EdgeWebRotPrior : public g2o::BaseUnaryEdge<3, Eigen::Vector3d, g2o::VertexSE3Expmap>
+{
+public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    Eigen::Matrix3d Rp = Eigen::Matrix3d::Identity();
+    bool read(std::istream&) override { return false; }
+    bool write(std::ostream&) const override { return false; }
+    void computeError() override
+    {
+        const g2o::VertexSE3Expmap* v = static_cast<const g2o::VertexSE3Expmap*>(_vertices[0]);
+        _error = Sophus::SO3d::fitToSO3(v->estimate().rotation().toRotationMatrix() * Rp.transpose()).log();
+    }
+    void linearizeOplus() override
+    {
+        _jacobianOplusXi.setZero();
+        _jacobianOplusXi.leftCols<3>().setIdentity();
+    }
+};
+
+// Web.Gyro.PoseSigma: the gyro-predicted rotation as a prior, residual Log(R Rp^T) with weight 1 / sigma^2 (rad)
+struct WebRotPrior
+{
+    Sophus::SO3d Rcw;
+    double w;
+};
+
 // robust chi2 at T over the active observations; with H/b also the normal equations (b = -J^T W e, as g2o)
 double WebPoseCost(const std::vector<WebPoseObs>& vObs, const std::vector<char>& vActive, const Sophus::SE3d& T,
-                   GeometricCamera* cam, bool robust, Eigen::Matrix<double, 6, 6>* H, Eigen::Matrix<double, 6, 1>* b)
+                   GeometricCamera* cam, bool robust, Eigen::Matrix<double, 6, 6>* H, Eigen::Matrix<double, 6, 1>* b,
+                   const WebRotPrior* prior = nullptr)
 {
     const double delta2 = 5.991, delta = std::sqrt(5.991);
     double chi = 0;
@@ -1169,6 +1198,16 @@ double WebPoseCost(const std::vector<WebPoseObs>& vObs, const std::vector<char>&
             b->noalias() -= w * J.transpose() * e;
         }
     }
+    if(prior)  // rotation prior: left perturbation, d Log(Exp(omega) R Rp^T) / d omega ~ I
+    {
+        const Eigen::Vector3d r = (T.so3() * prior->Rcw.inverse()).log();
+        chi += prior->w * r.squaredNorm();
+        if(H)
+        {
+            H->topLeftCorner<3, 3>().diagonal().array() += prior->w;
+            b->head<3>() -= prior->w * r;
+        }
+    }
     return chi;
 }
 
@@ -1182,7 +1221,7 @@ inline Sophus::SE3d WebPoseOplus(const Eigen::Matrix<double, 6, 1>& x, const Sop
 
 // Levenberg-Marquardt as g2o::OptimizationAlgorithmLevenberg (ORB-SLAM3's version, including its stop criterion)
 Sophus::SE3d WebPoseLM(const std::vector<WebPoseObs>& vObs, const std::vector<char>& vActive, Sophus::SE3d T,
-                       GeometricCamera* cam, bool robust, int iterations)
+                       GeometricCamera* cam, bool robust, int iterations, const WebRotPrior* prior = nullptr)
 {
     Eigen::Matrix<double, 6, 6> H;
     Eigen::Matrix<double, 6, 1> b;
@@ -1190,7 +1229,7 @@ Sophus::SE3d WebPoseLM(const std::vector<WebPoseObs>& vObs, const std::vector<ch
     int nBad = 0;
     for(int it = 0; it < iterations; it++)
     {
-        double currentChi = WebPoseCost(vObs, vActive, T, cam, robust, &H, &b);
+        double currentChi = WebPoseCost(vObs, vActive, T, cam, robust, &H, &b, prior);
         const double iniChi = currentChi;
         if(it == 0)
         {
@@ -1207,7 +1246,7 @@ Sophus::SE3d WebPoseLM(const std::vector<WebPoseObs>& vObs, const std::vector<ch
             const Eigen::Matrix<double, 6, 1> x = ldlt.solve(b);
             const bool ok = ldlt.info() == Eigen::Success && x.allFinite();
             const Sophus::SE3d Tn = ok ? WebPoseOplus(x, T) : T;
-            double tempChi = ok ? WebPoseCost(vObs, vActive, Tn, cam, robust, nullptr, nullptr)
+            double tempChi = ok ? WebPoseCost(vObs, vActive, Tn, cam, robust, nullptr, nullptr, prior)
                                 : std::numeric_limits<double>::max();
             const double scale = x.dot(lambda * x + b) + 1e-3;
             rho = (currentChi - tempChi) / scale;
@@ -1281,9 +1320,13 @@ int WebPoseOptimization(Frame* pFrame)
     std::vector<char> vActive(n, 1);
     Sophus::SE3d T = T0;
     int nBad = 0;
+    WebRotPrior prior;
+    const bool bPrior = pFrame->mbWebRotPrior && pFrame->mfWebRotPriorSigma > 0;
+    if(bPrior)
+        prior = {pFrame->mWebRotPrior.cast<double>(), 1.0 / (double(pFrame->mfWebRotPriorSigma) * pFrame->mfWebRotPriorSigma)};
     for(int it = 0; it < 4; it++)
     {
-        T = WebPoseLM(vObs, vActive, (webConfig().fastPoseWarm && it > 0) ? T : T0, cam, it < 3, 10);
+        T = WebPoseLM(vObs, vActive, (webConfig().fastPoseWarm && it > 0) ? T : T0, cam, it < 3, 10, bPrior ? &prior : nullptr);
         nBad = 0;
         for(int k = 0; k < n; k++)
         {
@@ -1382,6 +1425,16 @@ int Optimizer::PoseOptimization(Frame *pFrame)
     vSE3->setId(0);
     vSE3->setFixed(false);
     optimizer.addVertex(vSE3);
+#ifdef ORBSLAM3_WEB
+    if(pFrame->mbWebRotPrior && pFrame->mfWebRotPriorSigma > 0)  // Web.Gyro.PoseSigma
+    {
+        EdgeWebRotPrior* eR = new EdgeWebRotPrior();
+        eR->Rp = pFrame->mWebRotPrior.matrix().cast<double>();
+        eR->setVertex(0, vSE3);
+        eR->setInformation(Eigen::Matrix3d::Identity() / (double(pFrame->mfWebRotPriorSigma) * pFrame->mfWebRotPriorSigma));
+        optimizer.addEdge(eR);
+    }
+#endif
 
     // Set MapPoint vertices
     const int N = pFrame->N;

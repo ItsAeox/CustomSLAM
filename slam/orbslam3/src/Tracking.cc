@@ -2904,8 +2904,10 @@ void Tracking::CreateMapInAtlas()
 // camera centre keeps the constant-velocity displacement. Fast rotations are where handheld tracking is lost (phone
 // logs: losses at gyro peaks > 90 deg/s), and there the per-frame velocity model is most wrong. Without gyro samples
 // covering the interval the model prediction is used.
-Sophus::SE3f Tracking::WebMotionPrediction(double tNow) const
+Sophus::SE3f Tracking::WebMotionPrediction(double tNow, bool* pGyro) const
 {
+    if(pGyro)
+        *pGyro = false;
     Sophus::SE3f V = mVelocity;
     if(webConfig().timeScaledMotion && mWebVelocityDt > 0)
     {
@@ -2923,8 +2925,21 @@ Sophus::SE3f Tracking::WebMotionPrediction(double tNow) const
         const Eigen::Vector3f c = -(V.so3().inverse() * V.translation());  // camera displacement (last camera frame)
         const Sophus::SO3f R = dRc.inverse();
         V = Sophus::SE3f(R, -(R * c));
+        if(pGyro)
+            *pGyro = true;
     }
     return V;
+}
+
+void Tracking::WebSetRotPrior(Frame& F, bool bGyro)
+{
+    const WebConfig& cfg = webConfig();
+    F.mbWebRotPrior = bGyro && cfg.gyroPrior && cfg.gyroPoseSigma > 0;
+    if(!F.mbWebRotPrior)
+        return;
+    F.mWebRotPrior = F.GetPose().so3();
+    const double dt = F.mTimeStamp - mLastFrame.mTimeStamp;
+    F.mfWebRotPriorSigma = static_cast<float>(cfg.gyroPoseSigma * M_PI / 180.0 * std::max(1.0, std::sqrt(std::max(dt, 0.0) / 0.0334)));
 }
 
 // web port (Web.Track.Coast): loss recovery without place recognition. While recently lost (monocular, visual-only),
@@ -2952,6 +2967,7 @@ void Tracking::WebAdoptLoadedMap(Map* pMap)
 bool Tracking::WebCoastTrack()
 {
     const WebConfig& cfg = webConfig();
+    mCurrentFrame.mbWebRotPrior = false;  // Web.Gyro.PoseSigma: none for coasting (its own gyro hypotheses)
     const double dt = mCurrentFrame.mTimeStamp - mdWebGoodTime;
     if(!mbWebGood || mpWebGoodMap != mpAtlas->GetCurrentMap() || mvpLocalMapPoints.empty() || dt < 0 ||
        dt > cfg.coastMaxTime)
@@ -3733,7 +3749,8 @@ bool Tracking::TrackKLT(const cv::Mat& im, double timestamp)
 
     // last frame's map-point observations and their predicted positions in this image
     const Sophus::SE3f Tlw = mLastFrame.GetPose();
-    const Sophus::SE3f Tcw = WebMotionPrediction(timestamp) * Tlw;
+    bool bGyroPred = false;
+    const Sophus::SE3f Tcw = WebMotionPrediction(timestamp, &bGyroPred) * Tlw;
     vector<int> vIdx;
     vector<cv::Point2f> vPrev, vCur;
     for(int i = 0; i < mLastFrame.N; i++)
@@ -3868,6 +3885,7 @@ bool Tracking::TrackKLT(const cv::Mat& im, double timestamp)
     WebRollingShutter(F, timestamp, im.rows);
     F.mpReferenceKF = mpReferenceKF;
     F.SetPose(Tcw);
+    WebSetRotPrior(F, bGyroPred);
     const auto tCopy = std::chrono::steady_clock::now();
     Optimizer::PoseOptimization(&F);
     const auto tPose = std::chrono::steady_clock::now();
@@ -4079,7 +4097,11 @@ bool Tracking::TrackWithMotionModel()
     else
     {
 #ifdef ORBSLAM3_WEB
-        mCurrentFrame.SetPose(WebMotionPrediction(mCurrentFrame.mTimeStamp) * mLastFrame.GetPose());
+    {
+        bool bGyroPred = false;
+        mCurrentFrame.SetPose(WebMotionPrediction(mCurrentFrame.mTimeStamp, &bGyroPred) * mLastFrame.GetPose());
+        WebSetRotPrior(mCurrentFrame, bGyroPred);
+    }
 #else
         mCurrentFrame.SetPose(mVelocity * mLastFrame.GetPose());
 #endif
@@ -4878,6 +4900,9 @@ void Tracking::UpdateLocalKeyFrames()
 bool Tracking::Relocalization()
 {
     Verbose::PrintMess("Starting relocalization", Verbose::VERBOSITY_NORMAL);
+#ifdef ORBSLAM3_WEB
+    mCurrentFrame.mbWebRotPrior = false;  // Web.Gyro.PoseSigma: no rotation prior for relocalisation
+#endif
     // Compute Bag of Words Vector
     mCurrentFrame.ComputeBoW();
 

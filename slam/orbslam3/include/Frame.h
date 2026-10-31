@@ -313,6 +313,11 @@ public:
     // frame time + (r / (rows - 1) - 0.5) * readout; while the camera turns at wc (rad/s, camera frame) a point seen in that
     // row is moved to where it would be at the frame time (middle row): x' = K Exp(wc dt) K^-1 x. Re-grids the keypoints.
     void WebRollingShutter(const Eigen::Matrix3f& K, const Eigen::Vector3f& wc, float readout, int rows);
+    // web port (Web.Gyro.PoseSigma): the gyro-predicted rotation of this frame (Rcw), a prior of the pose solve with this
+    // 1-sigma (rad); set by the motion-model / KLT prediction only (Tracking::WebSetRotPrior), not copied with the frame
+    bool mbWebRotPrior = false;
+    Sophus::SO3f mWebRotPrior;
+    float mfWebRotPriorSigma = 0.f;
 #endif
 
 private:

@@ -372,7 +372,8 @@ protected:
 #ifdef ORBSLAM3_WEB
     double mWebVelocityDt = 0;  // interval (s) of the two frames that define mVelocity
     // mVelocity, rescaled to tNow (Web.Track.TimeScaledMotion), its rotation from the gyro (Web.Gyro.Prior)
-    Sophus::SE3f WebMotionPrediction(double tNow) const;
+    Sophus::SE3f WebMotionPrediction(double tNow, bool* pGyro = nullptr) const;  // *pGyro: the rotation came from the gyro
+    void WebSetRotPrior(Frame& F, bool bGyro);  // Web.Gyro.PoseSigma: F's predicted rotation as a prior of its pose solve
     std::vector<IMU::Point> mvWebGyro;  // gyro samples for Web.Gyro.Prior (IMU clock, oldest first)
 public:
     WebScaleEstimator mWebScale;        // Web.Scale.Online: metric scale / gravity of the current map (WebScale.h)

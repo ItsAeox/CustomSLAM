@@ -107,6 +107,12 @@ struct WebConfig
     int gyroPrior = 0;         // Web.Gyro.Prior: 1 = the rotation of the frame-to-frame prediction (motion model and
                                // KLT initial flow) comes from the gyroscope integrated between the two frames
     double gyroTimeOffset = 0; // Web.Gyro.TimeOffset: seconds added to frame times to get IMU times (> 0: IMU stamps late)
+    double gyroPoseSigma = 0;  // Web.Gyro.PoseSigma: > 0 = the gyro-predicted rotation (last frame's rotation and the gyro
+                               // rotation since) is also a prior of the pose solve, with this 1-sigma in degrees per frame
+                               // interval (x sqrt(dt / 33 ms) for longer gaps); needs Web.Gyro.Prior. Motion-model and KLT
+                               // frames only (not relocalisation, coasting, the reference-keyframe fallback). ISSUES G35: a
+                               // purely visual solve can explain walking around a floor spot as turning about the line
+                               // of sight, ignoring the gyro; then the map stops translating. 0 = off (stock)
     float gyroRbc[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};  // camera -> IMU body rotation, row-major (from IMU.T_b_c1)
 
     // Loss recovery by coasting (monocular, visual-only; see Tracking::WebCoastTrack). Off by default = stock.
@@ -231,6 +237,8 @@ inline void loadWebConfig(const std::string& settingsFile)
     readInt("Web.Scale.Method", c.scaleMethod);
     cv::FileNode go = fs["Web.Gyro.TimeOffset"];
     if (!go.empty() && (go.isInt() || go.isReal())) c.gyroTimeOffset = go.real();
+    cv::FileNode gps = fs["Web.Gyro.PoseSigma"];
+    if (!gps.empty() && (gps.isInt() || gps.isReal())) c.gyroPoseSigma = gps.real();
     readInt("Web.Scale.Online", c.scaleOnline);
     if (c.gyroPrior || c.scaleOnline) {  // camera -> body rotation from the IMU extrinsics (same key as ORB-SLAM3's inertial settings)
         cv::Mat Tbc;
@@ -278,6 +286,7 @@ inline void loadWebConfig(const std::string& settingsFile)
               << " (0 = stock); descriptor " << (c.descriptor == 1 ? "TEBLID-256" : "ORB") << "; reloc timeout "
               << c.relocTimeout << " s" << (c.keepMap ? " (keep map)" : "") << (c.timeScaledMotion ? "; time-scaled motion" : "")
               << (c.gyroPrior ? "; gyro prior (IMU time offset " + std::to_string(c.gyroTimeOffset * 1000) + " ms)" : std::string())
+              << (c.gyroPrior && c.gyroPoseSigma > 0 ? "; gyro rotation in the pose solve (" + std::to_string(c.gyroPoseSigma) + " deg)" : std::string())
               << (c.rsReadout != 0 ? "; rolling-shutter correction (readout " + std::to_string(c.rsReadout * 1000) + " ms)" : std::string())
               << (c.scaleOnline ? (c.scaleMethod == 1 ? std::string("; online metric scale (filter bank)")
                                                       : "; online metric scale (" + std::to_string(c.scaleWindow) + " s windows)")
