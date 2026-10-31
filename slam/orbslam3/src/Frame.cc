@@ -810,6 +810,10 @@ void Frame::WebRollingShutter(const Eigen::Matrix3f& K, const Eigen::Vector3f& w
         const Eigen::Vector3f q = K * (Sophus::SO3f::exp(wc * dt).matrix() * (Kinv * Eigen::Vector3f(mvKeysUn[i].pt.x, mvKeysUn[i].pt.y, 1.f)));
         mvKeysUn[i].pt = cv::Point2f(q(0) / q(2), q(1) / q(2));
     }
+    // AssignFeaturesToGrid appends: without clearing, every feature sits twice in the grid and every ratio test fails
+    for(unsigned int i = 0; i < FRAME_GRID_COLS; i++)
+        for(unsigned int j = 0; j < FRAME_GRID_ROWS; j++)
+            mGrid[i][j].clear();
     AssignFeaturesToGrid();
 }
 
