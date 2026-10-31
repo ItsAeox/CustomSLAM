@@ -1,7 +1,7 @@
 # replay_arms.sh arms (1 Nov, ISSUES G35): the gyro rotation in the pose solve (Web.Gyro.PoseSigma relative to the last frame /
 # + Web.Gyro.PoseTau attitude reference, 5fe7f48) vs WebVIO beta + scale filter, with a wrong IMU time offset (-60 instead of -88 ms:
 # robustness), and the ablation (gyro prior off, g2o pose solver, ORB on every frame, the plain stock preset)
-beta_scaleF|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1
+beta_scaleF|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;--tap-at 16.8
 gyro02|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.2;--tap-at 16.8
 gyro02_tau5|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.2;Web.Gyro.PoseTau: 5;--tap-at 16.8
 gyro005_tau5|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.05;Web.Gyro.PoseTau: 5;--tap-at 16.8
