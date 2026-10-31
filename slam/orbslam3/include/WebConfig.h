@@ -113,6 +113,9 @@ struct WebConfig
                                // frames only (not relocalisation, coasting, the reference-keyframe fallback). ISSUES G35: a
                                // purely visual solve can explain walking around a floor spot as turning about the line
                                // of sight, ignoring the gyro; then the map stops translating. 0 = off (stock)
+    double gyroPoseTau = 0;    // Web.Gyro.PoseTau: > 0 = the prior is a gyro attitude (Tracking::mWebAttRcw) integrated
+                               // across frames and pulled towards each good frame's pose with this time constant (s), so a
+                               // small per-frame visual bias cannot accumulate; 0 = relative to the last frame's pose
     float gyroRbc[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};  // camera -> IMU body rotation, row-major (from IMU.T_b_c1)
 
     // Loss recovery by coasting (monocular, visual-only; see Tracking::WebCoastTrack). Off by default = stock.
@@ -239,6 +242,8 @@ inline void loadWebConfig(const std::string& settingsFile)
     if (!go.empty() && (go.isInt() || go.isReal())) c.gyroTimeOffset = go.real();
     cv::FileNode gps = fs["Web.Gyro.PoseSigma"];
     if (!gps.empty() && (gps.isInt() || gps.isReal())) c.gyroPoseSigma = gps.real();
+    cv::FileNode gpt = fs["Web.Gyro.PoseTau"];
+    if (!gpt.empty() && (gpt.isInt() || gpt.isReal())) c.gyroPoseTau = gpt.real();
     readInt("Web.Scale.Online", c.scaleOnline);
     if (c.gyroPrior || c.scaleOnline) {  // camera -> body rotation from the IMU extrinsics (same key as ORB-SLAM3's inertial settings)
         cv::Mat Tbc;
@@ -286,7 +291,8 @@ inline void loadWebConfig(const std::string& settingsFile)
               << " (0 = stock); descriptor " << (c.descriptor == 1 ? "TEBLID-256" : "ORB") << "; reloc timeout "
               << c.relocTimeout << " s" << (c.keepMap ? " (keep map)" : "") << (c.timeScaledMotion ? "; time-scaled motion" : "")
               << (c.gyroPrior ? "; gyro prior (IMU time offset " + std::to_string(c.gyroTimeOffset * 1000) + " ms)" : std::string())
-              << (c.gyroPrior && c.gyroPoseSigma > 0 ? "; gyro rotation in the pose solve (" + std::to_string(c.gyroPoseSigma) + " deg)" : std::string())
+              << (c.gyroPrior && c.gyroPoseSigma > 0 ? "; gyro rotation in the pose solve (" + std::to_string(c.gyroPoseSigma) + " deg" +
+                  (c.gyroPoseTau > 0 ? ", attitude tau " + std::to_string(c.gyroPoseTau) + " s)" : ")") : std::string())
               << (c.rsReadout != 0 ? "; rolling-shutter correction (readout " + std::to_string(c.rsReadout * 1000) + " ms)" : std::string())
               << (c.scaleOnline ? (c.scaleMethod == 1 ? std::string("; online metric scale (filter bank)")
                                                       : "; online metric scale (" + std::to_string(c.scaleWindow) + " s windows)")

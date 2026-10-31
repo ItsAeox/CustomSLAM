@@ -388,6 +388,12 @@ private:
     // Web.Imu.KeepMap applies: IMU mode and the map's IMU start-up (initialisation + VI-BA 1 and 2) not complete
     bool WebImuKeep(Map* pMap) const;
     // last frame tracked OK (pose, time, map), the origin of Web.Track.Coast
+    // Web.Gyro.PoseTau: the gyro attitude reference (Rcw in the map) of the pose prior: integrated by the gyro from frame
+    // to frame, pulled towards each good frame's pose (time constant tau); restarted from the pose after a gap / new map
+    bool mbWebAtt = false;
+    Sophus::SO3f mWebAttRcw;
+    double mdWebAttTime = 0;
+    Map* mpWebAttMap = nullptr;
     bool mbWebGood = false;
     Sophus::SE3f mWebGoodTcw;
     double mdWebGoodTime = 0;

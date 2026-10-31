@@ -2274,6 +2274,20 @@ void Tracking::Track()
         {
             mState = OK;
 #ifdef ORBSLAM3_WEB
+            if(webConfig().gyroPoseTau > 0)  // Web.Gyro.PoseTau: pull the attitude reference towards this pose
+            {
+                const Sophus::SO3f Rest = mCurrentFrame.GetPose().so3();
+                if(mCurrentFrame.mbWebRotPrior && mCurrentFrame.mbWebRotPriorAtt)
+                {
+                    const float a = static_cast<float>(std::min(1.0, (mCurrentFrame.mTimeStamp - mdWebAttTime) / webConfig().gyroPoseTau));
+                    mWebAttRcw = mCurrentFrame.mWebRotPrior * Sophus::SO3f::exp(a * (mCurrentFrame.mWebRotPrior.inverse() * Rest).log());
+                }
+                else
+                    mWebAttRcw = Rest;
+                mbWebAtt = true;
+                mdWebAttTime = mCurrentFrame.mTimeStamp;
+                mpWebAttMap = pCurrentMap;
+            }
             mbWebGood = true;
             mWebGoodTcw = mCurrentFrame.GetPose();
             mdWebGoodTime = mCurrentFrame.mTimeStamp;
@@ -2938,6 +2952,17 @@ void Tracking::WebSetRotPrior(Frame& F, bool bGyro)
     if(!F.mbWebRotPrior)
         return;
     F.mWebRotPrior = F.GetPose().so3();
+    F.mbWebRotPriorAtt = false;
+    Eigen::Matrix3f dRb;
+    const double d = cfg.gyroTimeOffset;
+    if(cfg.gyroPoseTau > 0 && mbWebAtt && mpWebAttMap == mpAtlas->GetCurrentMap() && mdWebAttTime >= mLastFrame.mTimeStamp - 1e-6 &&
+       WebGyroRotation(mdWebAttTime + d, F.mTimeStamp + d, dRb))
+    {
+        const Sophus::SO3f Rbc = Sophus::SO3f::fitToSO3(Eigen::Map<const Eigen::Matrix<float, 3, 3, Eigen::RowMajor>>(cfg.gyroRbc));
+        const Sophus::SO3f dRc = Rbc.inverse() * Sophus::SO3f::fitToSO3(dRb) * Rbc;  // current camera in the reference's frame
+        F.mWebRotPrior = dRc.inverse() * mWebAttRcw;
+        F.mbWebRotPriorAtt = true;
+    }
     const double dt = F.mTimeStamp - mLastFrame.mTimeStamp;
     F.mfWebRotPriorSigma = static_cast<float>(cfg.gyroPoseSigma * M_PI / 180.0 * std::max(1.0, std::sqrt(std::max(dt, 0.0) / 0.0334)));
 }

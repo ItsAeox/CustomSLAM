@@ -316,6 +316,7 @@ public:
     // web port (Web.Gyro.PoseSigma): the gyro-predicted rotation of this frame (Rcw), a prior of the pose solve with this
     // 1-sigma (rad); set by the motion-model / KLT prediction only (Tracking::WebSetRotPrior), not copied with the frame
     bool mbWebRotPrior = false;
+    bool mbWebRotPriorAtt = false;  // the prior came from the attitude reference (Web.Gyro.PoseTau)
     Sophus::SO3f mWebRotPrior;
     float mfWebRotPriorSigma = 0.f;
 #endif
