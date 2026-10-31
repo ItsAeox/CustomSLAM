@@ -234,6 +234,12 @@ protected:
     // Returns true and sets mCurrentFrame (a descriptor-free frame with pose) on success; false -> use ORB.
     bool TrackKLT(const cv::Mat& im, double timestamp);
     std::vector<cv::Mat> mvWebPrevPyr, mvWebCurPyr;  // LK pyramids of the previous / current image
+    std::vector<cv::Mat> mvWebWarpPyr;  // Web.KLT.GyroWarp: pyramid of the previous image warped by the predicted rotation
+    long mnWebKLTWarps = 0;             // KLT frames tracked from a warped image
+    // Web.RS.Readout: rolling-shutter correction of frame F's keypoints with the gyro rate at timestamp t (camera frame);
+    // false (nothing done) without gyro samples covering the readout before t
+    bool WebRollingShutter(Frame& F, double t, int rows);
+    long mnWebRSFrames = 0;
     bool mbWebForceORB = false;        // a keyframe was needed on a KLT frame: the next frame must be an ORB frame
     int mnWebConsecutiveKLT = 0;
     int mnWebLastORBInliers = 0;      // map-point inliers of the last ORB-tracked frame (quality gate)

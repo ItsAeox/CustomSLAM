@@ -69,6 +69,15 @@ struct WebConfig
     int kltNormalize = 0;      // Web.KLT.Normalize: 1 = the LK pyramid is built from the image with its global mean and
                                // contrast normalised (128 / 48): cancels exposure (gain/offset) changes between frames,
                                // which plain LK's brightness-constancy model does not handle. ORB frames are unaffected
+    double rsReadout = 0;      // Web.RS.Readout: rolling-shutter readout time (s; top to bottom row) for the gyro-based
+                               // keypoint correction (Frame::WebRollingShutter; needs gyro samples); 0 = off. A negative
+                               // value flips the correction (sign check). Synthetic set: 0.02
+    int kltGyroWarp = 0;       // Web.KLT.GyroWarp: 1 = under fast rotation, LK runs from the last image warped by the
+                               // rotation-only homography of the predicted pose (K R_cl K^-1; R_cl from the gyro with
+                               // Web.Gyro.Prior): patches then match this frame's appearance (roll, foreshortening) up to
+                               // the translation parallax (ISSUES G31, 31 Oct)
+    double kltGyroWarpDeg = 2.0;  // Web.KLT.GyroWarpDeg: only when the predicted rotation since the last frame exceeds
+                               // this (deg; the warp + its pyramid cost a few ms)
 
     int bowLevelsUp = 4;       // Web.BoW.LevelsUp: tree levels above the leaves for the BoW direct index (FeatureVector)
                                // used by SearchByBoW (Frame/KeyFrame::ComputeBoW; stock 4, made for L = 6 trees). A smaller
@@ -185,6 +194,11 @@ inline void loadWebConfig(const std::string& settingsFile)
     readInt("Web.KLT.Iterations", c.kltIterations);
     readInt("Web.KLT.Normalize", c.kltNormalize);
     readInt("Web.KLT.Parallel", c.kltParallel);
+    readInt("Web.KLT.GyroWarp", c.kltGyroWarp);
+    cv::FileNode rsr = fs["Web.RS.Readout"];
+    if (!rsr.empty() && (rsr.isInt() || rsr.isReal())) c.rsReadout = rsr.real();
+    cv::FileNode gw = fs["Web.KLT.GyroWarpDeg"];
+    if (!gw.empty() && (gw.isInt() || gw.isReal())) c.kltGyroWarpDeg = gw.real();
     cv::FileNode rt = fs["Web.Track.RelocTimeout"];
     if (!rt.empty() && (rt.isInt() || rt.isReal())) c.relocTimeout = rt.real();
     readInt("Web.Rot.FarPoints", c.rotFar);
@@ -264,6 +278,7 @@ inline void loadWebConfig(const std::string& settingsFile)
               << " (0 = stock); descriptor " << (c.descriptor == 1 ? "TEBLID-256" : "ORB") << "; reloc timeout "
               << c.relocTimeout << " s" << (c.keepMap ? " (keep map)" : "") << (c.timeScaledMotion ? "; time-scaled motion" : "")
               << (c.gyroPrior ? "; gyro prior (IMU time offset " + std::to_string(c.gyroTimeOffset * 1000) + " ms)" : std::string())
+              << (c.rsReadout != 0 ? "; rolling-shutter correction (readout " + std::to_string(c.rsReadout * 1000) + " ms)" : std::string())
               << (c.scaleOnline ? (c.scaleMethod == 1 ? std::string("; online metric scale (filter bank)")
                                                       : "; online metric scale (" + std::to_string(c.scaleWindow) + " s windows)")
                                 : std::string())
@@ -301,7 +316,8 @@ inline void loadWebConfig(const std::string& settingsFile)
                   << ", min inliers " << c.kltMinInliers << ", win " << c.kltWinSize << ", levels " << c.kltLevels
                   << ", FB " << c.kltFBThreshold << " px, iterations " << c.kltIterations << ", max flow " << c.kltMaxFlow
                   << " px, min inlier frac " << c.kltMinInlierFrac << (c.kltNormalize ? ", exposure-normalised" : "")
-                  << (c.kltParallel ? (c.kltParallel == 1 ? ", LK on 4 threads" : ", LK serial vs 4 threads (compare)") : "") << ")";
+                  << (c.kltParallel ? (c.kltParallel == 1 ? ", LK on 4 threads" : ", LK serial vs 4 threads (compare)") : "")
+                  << (c.kltGyroWarp ? ", gyro-warped from " + std::to_string(c.kltGyroWarpDeg) + " deg" : "") << ")";
     std::cout << std::endl;
 }
 

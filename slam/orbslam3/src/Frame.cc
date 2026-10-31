@@ -799,6 +799,20 @@ void Frame::UndistortKeyPoints()
 }
 
 #ifdef ORBSLAM3_WEB
+void Frame::WebRollingShutter(const Eigen::Matrix3f& K, const Eigen::Vector3f& wc, float readout, int rows)
+{
+    if(mvKeysUn.size() != mvKeys.size() || rows < 2)
+        return;
+    const Eigen::Matrix3f Kinv = K.inverse();
+    for(size_t i = 0; i < mvKeysUn.size(); i++)
+    {
+        const float dt = (mvKeys[i].pt.y / static_cast<float>(rows - 1) - 0.5f) * readout;
+        const Eigen::Vector3f q = K * (Sophus::SO3f::exp(wc * dt).matrix() * (Kinv * Eigen::Vector3f(mvKeysUn[i].pt.x, mvKeysUn[i].pt.y, 1.f)));
+        mvKeysUn[i].pt = cv::Point2f(q(0) / q(2), q(1) / q(2));
+    }
+    AssignFeaturesToGrid();
+}
+
 void Frame::WebSetTrackedFeatures(const vector<cv::KeyPoint>& keys, const vector<MapPoint*>& mapPoints,
                                   double timestamp)
 {

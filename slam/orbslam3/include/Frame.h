@@ -309,6 +309,10 @@ public:
     // BoW stay empty, so such a frame must never become a keyframe or be matched by descriptor.
     void WebSetTrackedFeatures(const std::vector<cv::KeyPoint>& keys, const std::vector<MapPoint*>& mapPoints,
                                double timestamp);
+    // web port (Web.RS.Readout): rolling-shutter correction of the undistorted keypoints (monocular). Row r was read at
+    // frame time + (r / (rows - 1) - 0.5) * readout; while the camera turns at wc (rad/s, camera frame) a point seen in that
+    // row is moved to where it would be at the frame time (middle row): x' = K Exp(wc dt) K^-1 x. Re-grids the keypoints.
+    void WebRollingShutter(const Eigen::Matrix3f& K, const Eigen::Vector3f& wc, float readout, int rows);
 #endif
 
 private:

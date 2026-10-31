@@ -1613,6 +1613,10 @@ Sophus::SE3f Tracking::GrabImageMonocular(const cv::Mat &im, const double &times
             mCurrentFrame = Frame(mImGray,timestamp,mpORBextractorLeft,mpORBVocabulary,mpCamera,mDistCoef,mbf,mThDepth,&mLastFrame,*mpImuCalib);
     }
 
+#ifdef ORBSLAM3_WEB
+    if(mSensor == System::MONOCULAR && !mbWebKLTFrame)
+        WebRollingShutter(mCurrentFrame, timestamp, mImGray.rows);
+#endif
     if (mState==NO_IMAGES_YET)
         t0=timestamp;
 
@@ -3554,6 +3558,23 @@ bool Tracking::WebGyroTwoView(Sophus::SE3f& T21, vector<cv::Point3f>& vP3D, vect
 // Gyro rotation of the IMU body from t0 to t1 (IMU clock): the rate is linear between samples, integrated on each
 // sub-interval (knots at t0, t1 and every sample in between) with its mean rate. Up to 50 ms beyond the newest sample
 // is extrapolated with the last rate (a browser delivers motion events late). False without coverage.
+bool Tracking::WebRollingShutter(Frame& F, double t, int rows)
+{
+    const WebConfig& cfg = webConfig();
+    if(cfg.rsReadout == 0 || mSensor != System::MONOCULAR)
+        return false;
+    // angular velocity over the readout before the frame time (the samples after it may not have arrived yet, live)
+    const double win = std::max(std::abs(cfg.rsReadout), 0.02), d = cfg.gyroTimeOffset;
+    Eigen::Matrix3f dRb;
+    if(!WebGyroRotation(t + d - win, t + d, dRb))
+        return false;
+    const Eigen::Vector3f wb = Sophus::SO3f::fitToSO3(dRb).log() / static_cast<float>(win);
+    const Sophus::SO3f Rbc = Sophus::SO3f::fitToSO3(Eigen::Map<const Eigen::Matrix<float, 3, 3, Eigen::RowMajor>>(cfg.gyroRbc));
+    F.WebRollingShutter(mpCamera->toK_(), Rbc.inverse() * wb, static_cast<float>(cfg.rsReadout), rows);
+    mnWebRSFrames++;
+    return true;
+}
+
 bool Tracking::WebGyroRotation(double t0, double t1, Eigen::Matrix3f& dR) const
 {
     const std::vector<IMU::Point>& g = mvWebGyro;
@@ -3748,6 +3769,36 @@ bool Tracking::TrackKLT(const cv::Mat& im, double timestamp)
         }
     }
 
+    // Web.KLT.GyroWarp: under fast rotation a patch also rotates (roll) and foreshortens between frames, which
+    // translation-only LK does not model. Warp the last image by the rotation-only homography of the predicted pose
+    // (H = K R_cl K^-1, R_cl from the gyro with Web.Gyro.Prior) and track from there: the patches then look as in this
+    // frame up to the translation parallax. vPrev / the previous pyramid are replaced by the warped ones below.
+    const vector<cv::Mat>* pPrevPyr = &mvWebPrevPyr;
+    if(cfg.kltGyroWarp && !mvWebPrevPyr.empty())
+    {
+        const Sophus::SO3f Rcl = Tcw.so3() * Tlw.so3().inverse();
+        if(Rcl.log().norm() * 180.0f / static_cast<float>(M_PI) >= cfg.kltGyroWarpDeg)
+        {
+            const Eigen::Matrix3f K = mpCamera->toK_();
+            const Eigen::Matrix3f H = K * Rcl.matrix() * K.inverse();
+            cv::Mat Hcv(3, 3, CV_64F);
+            for(int r = 0; r < 3; r++)
+                for(int c = 0; c < 3; c++)
+                    Hcv.at<double>(r, c) = H(r, c);
+            const cv::Mat& prev0 = mvWebPrevPyr[0];
+            cv::Mat warped;
+            cv::warpPerspective(prev0, warped, Hcv, prev0.size(), cv::INTER_LINEAR, cv::BORDER_REPLICATE);
+            cv::buildOpticalFlowPyramid(warped, mvWebWarpPyr, win, cfg.kltLevels);
+            pPrevPyr = &mvWebWarpPyr;
+            for(auto& p : vPrev)
+            {
+                const Eigen::Vector3f q = H * Eigen::Vector3f(p.x, p.y, 1.0f);
+                p = cv::Point2f(q(0) / q(2), q(1) / q(2));
+            }
+            mnWebKLTWarps++;
+        }
+    }
+
     const cv::TermCriteria crit(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, cfg.kltIterations, 0.01);
     vector<uchar> vStatus;
     if(cfg.kltParallel == 2)  // compare: serial and pooled LK on the same input; the serial result is used
@@ -3755,9 +3806,9 @@ bool Tracking::TrackKLT(const cv::Mat& im, double timestamp)
         vector<cv::Point2f> vCurP = vCur;
         vector<uchar> vStatusP;
         const auto c0 = std::chrono::steady_clock::now();
-        WebLK(mvWebPrevPyr, mvWebCurPyr, vPrev, vCur, vStatus, win, cfg.kltLevels, crit, false);
+        WebLK(*pPrevPyr, mvWebCurPyr, vPrev, vCur, vStatus, win, cfg.kltLevels, crit, false);
         const auto c1 = std::chrono::steady_clock::now();
-        WebLK(mvWebPrevPyr, mvWebCurPyr, vPrev, vCurP, vStatusP, win, cfg.kltLevels, crit, true);
+        WebLK(*pPrevPyr, mvWebCurPyr, vPrev, vCurP, vStatusP, win, cfg.kltLevels, crit, true);
         const auto c2 = std::chrono::steady_clock::now();
         mnWebLKCalls++;
         mnWebLKPoints += (long)vCur.size();
@@ -3768,7 +3819,7 @@ bool Tracking::TrackKLT(const cv::Mat& im, double timestamp)
                 mnWebLKMismatch++;
     }
     else
-        WebLK(mvWebPrevPyr, mvWebCurPyr, vPrev, vCur, vStatus, win, cfg.kltLevels, crit, cfg.kltParallel == 1);
+        WebLK(*pPrevPyr, mvWebCurPyr, vPrev, vCur, vStatus, win, cfg.kltLevels, crit, cfg.kltParallel == 1);
     // forward-backward check on the forward survivors
     vector<int> vFwd;
     vector<cv::Point2f> vCurF, vBack;
@@ -3790,7 +3841,7 @@ bool Tracking::TrackKLT(const cv::Mat& im, double timestamp)
     vector<uchar> vStatusB(vCurF.size(), 1);
     const bool bFB = cfg.kltFBThreshold > 0;  // forward-backward check (doubles the LK cost)
     if(bFB)
-        WebLK(mvWebCurPyr, mvWebPrevPyr, vCurF, vBack, vStatusB, win, cfg.kltLevels, crit, cfg.kltParallel == 1);
+        WebLK(mvWebCurPyr, *pPrevPyr, vCurF, vBack, vStatusB, win, cfg.kltLevels, crit, cfg.kltParallel == 1);
     vector<cv::KeyPoint> vKeys;
     vector<MapPoint*> vMPs;
     const float fb2 = (float)(cfg.kltFBThreshold * cfg.kltFBThreshold);
@@ -3814,6 +3865,7 @@ bool Tracking::TrackKLT(const cv::Mat& im, double timestamp)
     const auto tFlow = std::chrono::steady_clock::now();
     Frame F(mLastFrame);
     F.WebSetTrackedFeatures(vKeys, vMPs, timestamp);
+    WebRollingShutter(F, timestamp, im.rows);
     F.mpReferenceKF = mpReferenceKF;
     F.SetPose(Tcw);
     const auto tCopy = std::chrono::steady_clock::now();
