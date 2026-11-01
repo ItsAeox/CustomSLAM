@@ -41,6 +41,7 @@ def main():
     ap.add_argument("seq")
     ap.add_argument("--gt", help="per-frame camera GT (t = reported frame stamp; default results/gt/synth_<seq>.txt)")
     ap.add_argument("--wrong-px", type=float, default=50.0, help="shown more than this far off = a wrong placement")
+    ap.add_argument("--dump", help="per-frame file: t (motion clock, s), spot in view, object shown, px error, cm error")
     a = ap.parse_args()
     run, seq = Path(a.run), Path(a.seq)
     name = seq.name
@@ -188,6 +189,11 @@ def main():
         if len(rv):
             rs = rv[sh[rv]]
             out.update(ret_wait_s=round(float(tt[rs[0]] - tt[rv[0]]), 1) if len(rs) else -1)
+    if a.dump:
+        with open(a.dump, "w") as fh:
+            fh.write("# t_s in_view shown px cm\n")
+            for j in range(len(idx)):
+                fh.write(f"{t[idx[j]] - t0:.3f} {int(v[j])} {int(sh[j])} {epx[j]:.1f} {ecm[j]:.1f}\n")
     # gaps: stretches of in-view frames where the object is not shown
     gaps, cur = [], None
     for j in range(len(idx)):
