@@ -3343,6 +3343,7 @@ bool Tracking::WebTurnBridge()
     const int nmatches = matcher.SearchForInitialization(mInitialFrame, mCurrentFrame, mvbPrevMatched, mvIniMatches, 100);
     if(nmatches < cfg.initMinMatches || mCurrentFrame.mvKeys.size() <= 100 || mCurrentFrame.mTimeStamp - mInitialFrame.mTimeStamp > 3.0)
     {
+        mnWebBridgeFewMatches++;
         setRef();  // too little overlap with the reference left (or it is old): start again from this frame
         return false;
     }
@@ -3369,7 +3370,10 @@ bool Tracking::WebTurnBridge()
         }
     }
     if(!bTwoView)
+    {
+        mnWebBridgeNoTwoView++;
         return false;
+    }
 
     // scale: the triangulated points' median depth (unit baseline) -> the median depth seen at the loss
     vector<float> vZ;
@@ -3381,7 +3385,10 @@ bool Tracking::WebTurnBridge()
             vZ.push_back(vP3D[i].z);
     }
     if((int)vZ.size() < std::min(50, cfg.initMinTriangulated))
+    {
+        mnWebBridgeFewPoints++;
         return false;
+    }
     nth_element(vZ.begin(), vZ.begin() + vZ.size() / 2, vZ.end());
     const float zMed = vZ[vZ.size() / 2];
     if(!(zMed > 0))
@@ -4439,7 +4446,12 @@ bool Tracking::NeedNewKeyFrame()
     const int nKFs = mpAtlas->KeyFramesInMap();
 
     // Do not insert keyframes if not enough frames have passed from last relocalisation
+#ifdef ORBSLAM3_WEB
+    const int nAfterReloc = webConfig().kfAfterReloc >= 0 ? webConfig().kfAfterReloc : mMaxFrames;  // Web.KF.AfterReloc
+    if(mCurrentFrame.mnId<mnLastRelocFrameId+nAfterReloc && nKFs>mMaxFrames)
+#else
     if(mCurrentFrame.mnId<mnLastRelocFrameId+mMaxFrames && nKFs>mMaxFrames)
+#endif
     {
         return false;
     }
@@ -4811,7 +4823,16 @@ void Tracking::SearchLocalPoints()
             th=15; // 15
 
         int matches = matcher.SearchByProjection(mCurrentFrame, mvpLocalMapPoints, th, mpLocalMapper->mbFarPoints, mpLocalMapper->mThFarPoints);
+#ifdef ORBSLAM3_WEB
+        mnWebLocalMatched = matches;
+#endif
     }
+#ifdef ORBSLAM3_WEB
+    if(nToMatch <= 0)
+        mnWebLocalMatched = 0;
+    mnWebLocalInView = nToMatch;
+    mnWebLocalFrame = mCurrentFrame.mnId;
+#endif
 }
 
 void Tracking::UpdateLocalMap()

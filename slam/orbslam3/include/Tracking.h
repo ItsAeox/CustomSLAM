@@ -151,6 +151,9 @@ public:
     long mnWebCovKFs = 0;  // keyframes requested by Web.KF.Coverage
     long mnWebKFBusy = 0;  // NeedNewKeyFrame: a keyframe was due while local mapping was busy (diagnostics, --trace)
     size_t WebLocalMapSize() const { return mvpLocalMapPoints.size(); }  // diagnostics (orbslam3_run --trace)
+    // SearchLocalPoints of frame mnWebLocalFrame: local map points in the view, matched by projection (diagnostics, --trace)
+    int mnWebLocalInView = 0, mnWebLocalMatched = 0;
+    unsigned long mnWebLocalFrame = 0;
     double mdWebLKSerialMs = 0, mdWebLKParallelMs = 0;
     // room map reload (System::WebLoadMap): the first frames relocalise into the loaded map instead of initialising
     void WebAdoptLoadedMap(Map* pMap);
@@ -420,6 +423,7 @@ private:
     unsigned long mnWebBridgeFrame = 0;   // frame of the last bridge: no motion model from the lost frame before it
 public:
     long mnWebBridges = 0, mnWebBridgeTries = 0, mnWebBridgeRejects = 0;  // Web.Turn.Bridge statistics
+    long mnWebBridgeFewMatches = 0, mnWebBridgeNoTwoView = 0, mnWebBridgeFewPoints = 0;  // why tries failed
     unsigned long mnWebBridgeAnchorKF = 0;  // reference keyframe id of the latest bridge (0: none yet)
     int WebOldPointsTracked() const;      // tracked points first seen before the latest bridge (-1: no bridge yet)
 protected:

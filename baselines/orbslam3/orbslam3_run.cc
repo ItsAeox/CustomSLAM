@@ -562,6 +562,15 @@ int main(int argc, char** argv) {
         const Eigen::Vector3d gd = se.valid ? Eigen::Vector3d(se.g.normalized()) : Eigen::Vector3d::Zero();
         tr << " " << (se.valid ? se.s : 0.0) << " " << (se.valid ? se.relStd : -1.0) << " " << se.windows  // its 1-sigma / s,
            << " " << gd.transpose();                                                                         // windows, gravity dir
+        {  // + local map points in the view and matched by projection in this frame (-1: no local-map search), tracked
+           //   points first seen by one of the map's 10 newest keyframes (are new points tracked? ISSUES G22, walk_loss.py)
+          const bool lsearch = tk->mnWebLocalFrame == F.mnId;
+          const long maxKF = m ? (long)m->GetMaxKFid() : 0;
+          int young = 0;
+          for (int k = 0; k < F.N && k < (int)F.mvpMapPoints.size(); ++k)
+            if (F.mvpMapPoints[k] && !F.mvbOutlier[k] && F.mvpMapPoints[k]->mnFirstKFid + 10 > maxKF) ++young;
+          tr << " " << (lsearch ? tk->mnWebLocalInView : -1) << " " << (lsearch ? tk->mnWebLocalMatched : -1) << " " << young;
+        }
         tr << " " << (m ? (long)m->GetId() : -1L) << " " << SLAM.WebAtlas()->CountMaps();  // + current map id, maps in the atlas
       }
 #endif

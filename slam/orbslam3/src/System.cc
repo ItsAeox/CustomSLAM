@@ -566,7 +566,8 @@ void System::Shutdown()
         cout << "COV-STATS coverage_keyframes=" << mpTracker->mnWebCovKFs << endl;
     if(webConfig().turnBridge)
         cout << "BRIDGE-STATS bridges=" << mpTracker->mnWebBridges << " tries=" << mpTracker->mnWebBridgeTries
-             << " rejected_rotation=" << mpTracker->mnWebBridgeRejects << endl;
+             << " rejected_rotation=" << mpTracker->mnWebBridgeRejects << " few_matches=" << mpTracker->mnWebBridgeFewMatches
+             << " no_two_view=" << mpTracker->mnWebBridgeNoTwoView << " few_points=" << mpTracker->mnWebBridgeFewPoints << endl;
     if(mpTracker->mbWebLoadedMap)
         cout << "WEBMAP-STATS reloc_after_s=" << mpTracker->mdWebLoadRelocTime << endl;
 #endif

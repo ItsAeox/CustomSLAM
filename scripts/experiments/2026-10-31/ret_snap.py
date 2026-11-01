@@ -2,21 +2,25 @@
 from the first return frame with the spot in view, the time until the object is shown within <px> px of the spot and
 stays so for 2 s of shown frames (-1: never), and the median px of the shown frames in the first 5 s of the return.
 Covers both ways back: relocalisation / merge (shown late) and tracking through with drift until a loop closure
-(shown early but off). Medians per scenario and arm. Usage: ret_snap.py <batch dir> [px=15]"""
+(shown early but off). Medians per scenario and arm. Usage: ret_snap.py <batch dir> [px=15] [placement args of
+anchor_return.py, e.g. --place floor --refine or --anchor-oracle: dump anchor_dump_<args>.txt]"""
 import sys, json, re, subprocess, numpy as np
 from pathlib import Path
 from collections import defaultdict
 
-root = Path(sys.argv[1]); PX = float(sys.argv[2]) if len(sys.argv) > 2 else 15.0
+pos = [x for x in sys.argv[1:] if not x.startswith("-") and x not in ("floor", "centre")]
+EXTRA = [x for x in sys.argv[1:] if x not in pos]
+root = Path(pos[0]); PX = float(pos[1]) if len(pos) > 1 else 15.0
+SUF = "".join("_" + x.lstrip("-") for x in EXTRA)
 D = Path("H:/Research/datasets/synth"); here = Path(__file__).resolve().parents[3]
 R = defaultdict(lambda: {"ok": [], "never": 0, "early": [], "n": 0})
 for sd in sorted(root.glob("*/*/seed*")):
     seq, arm = sd.parts[-3], sd.parts[-2]
     if not (D / seq / "meta.json").exists(): continue
-    dump = sd / "anchor_dump.txt"
+    dump = sd / f"anchor_dump{SUF}.txt"
     if not dump.exists():
         subprocess.run([sys.executable, str(here / "eval/anchor_return.py"), str(sd), str(D / seq),
-                        "--gt", f"H:/Research/results/gt/synth_{seq}.txt", "--dump", str(dump)], capture_output=True)
+                        "--gt", f"H:/Research/results/gt/synth_{seq}.txt", "--dump", str(dump)] + EXTRA, capture_output=True)
     if not dump.exists(): continue
     a = np.loadtxt(dump, comments="#", ndmin=2)
     ph = json.loads((D / seq / "meta.json").read_text())["synthetic"]["motion"]["phases_s"]
