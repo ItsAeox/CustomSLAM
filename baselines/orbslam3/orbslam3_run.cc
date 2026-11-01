@@ -334,6 +334,10 @@ int main(int argc, char** argv) {
                             // one) write center_depth.txt: per tracked frame the median camera depth of the tracked map points
                             // within 60 px of the image centre and their count - where the AR page would put an object tapped
                             // there (eval/anchor_return.py places it at the first frame with the spot in the middle of the view)
+  bool dumpLocal = false;   // --dump-local (with --tap-at): local_pts.bin, the AR page's localPts (the active map's reference
+                            // map points without far points, bindings.cc mapPoints) at tracked frames from 2 s before the tap:
+                            // every 0.2 s for 15 s after the tap, then every 0.5 s - eval/anchor_return.py --place floor fits
+                            // the page's floor plane (ar.js detectFloor) on them; records: int32 frame, int32 n, n x 3 float32
   for (int i = 1; i < argc; ++i) {
     string a = argv[i];
     auto next = [&]() { if (i + 1 >= argc) { std::cerr << "missing value for " << a << "\n"; std::exit(2); } return string(argv[++i]); };
@@ -358,6 +362,7 @@ int main(int argc, char** argv) {
     else if (a == "--imu-dt") imuDtMs = std::stod(next());
     else if (a == "--keep-map-at") keepMapAt = std::stod(next());
     else if (a == "--tap-at") tapAt = std::stod(next());
+    else if (a == "--dump-local") dumpLocal = true;
     else { std::cerr << "unknown arg " << a << "\n"; return 2; }
   }
   if (dataset.empty() || mode.empty() || seq.empty() || vocab.empty() || settings.empty() || out.empty()) {
@@ -425,6 +430,9 @@ int main(int argc, char** argv) {
     cdf.open(fs::path(out) / "center_depth.txt");
     cdf << "# frame median_depth points (tracked map points within 60 px of the image centre; orbslam3_run --tap-at)\n";
   }
+  std::ofstream lpf;
+  double lastDumpT = -1e9;
+  if (tapAt >= 0 && dumpLocal) lpf.open(fs::path(out) / "local_pts.bin", std::ios::binary);
 #endif
   for (int i = 0; i < N; ++i) {
     cv::Mat im;
@@ -481,6 +489,20 @@ int main(int argc, char** argv) {
         cdf << i << " " << zs[zs.size() / 2] << " " << zs.size() << "\n";
       }
       centerPts = (int)zs.size();
+    }
+    if (lpf.is_open() && trackedNow && d.t[i] >= tapT - 2 && d.t[i] - lastDumpT >= (d.t[i] < tapT + 15 ? 0.2 : 0.5) - 1e-6) {
+      ORB_SLAM3::Map* map = SLAM.WebAtlas()->GetCurrentMap();
+      std::vector<float> xyz;
+      if (map)
+        for (ORB_SLAM3::MapPoint* mp : map->GetReferenceMapPoints()) {
+          if (!mp || mp->isBad() || mp->mbWebFar) continue;
+          const Eigen::Vector3f p = mp->GetWorldPos();
+          xyz.insert(xyz.end(), {p.x(), p.y(), p.z()});
+        }
+      const int32_t hdr[2] = {i, (int32_t)(xyz.size() / 3)};
+      lpf.write(reinterpret_cast<const char*>(hdr), sizeof hdr);
+      lpf.write(reinterpret_cast<const char*>(xyz.data()), xyz.size() * sizeof(float));
+      lastDumpT = d.t[i];
     }
     // the page turns keep on once the object is placed, which needs a tracked map (ar.js: a tap before that waits): from
     // the first tracked frame at / after --keep-map-at (with --tap-at: >= 5 map points in the middle, as the scorer
