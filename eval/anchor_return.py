@@ -164,9 +164,9 @@ def main():
         # the page's floor (ar.js detectFloor), per map: gravity summed over the tracked frames (here the true down direction
         # in the camera, seen through the estimated rotation), the RANSAC floor on the local points below the camera at each
         # dump, an earlier floor kept unless the new one has >= 0.8x its inliers
-        state, hist = {}, []  # hist: (trace index, map id, n, d) at every floor change
+        fstate, hist = {}, []  # per map; hist: (trace index, map id, n, d) at every floor change
         for j in np.where(ok)[0]:
-            s = state.setdefault(int(mapid[j]), {"down": np.zeros(3), "floor": None, "pts": None})
+            s = fstate.setdefault(int(mapid[j]), {"down": np.zeros(3), "floor": None, "pts": None})
             s["down"] += Re[j] @ (quat_to_R(gq[j]).T @ np.array([0, 0, -1.0]))
             P = recs.get(int(frame[j]))
             if P is None: continue
