@@ -4321,7 +4321,14 @@ bool Tracking::TrackLocalMap()
     }
     else
     {
+#ifdef ORBSLAM3_WEB
+        // Web.Gyro.MinInliers: with the gyro rotation held in the pose solve, fewer points suffice (G22)
+        const int minInliers = (webConfig().gyroMinInliers > 0 && mCurrentFrame.mbWebRotPrior && mSensor == System::MONOCULAR)
+                               ? webConfig().gyroMinInliers : 30;
+        if(mnMatchesInliers<minInliers)
+#else
         if(mnMatchesInliers<30)
+#endif
             return false;
         else
             return true;
