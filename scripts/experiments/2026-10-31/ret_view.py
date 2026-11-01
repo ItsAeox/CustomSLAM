@@ -36,4 +36,8 @@ for run in sys.argv[1:]:
         return f"{t[i]-t0:5.1f}s: {dist.min():.2f} m from the nearest KF, best view angle to a KF within 1 m {ang:5.1f} deg, {np.linalg.norm(spot - p):.2f} m from the spot"
     print(f"{run}: wait {kv.get('ret_wait_s')} s")
     print("   spot in view  " + desc(i0))
+    vm = t0 + 0.5 * sum(meta["phases_s"]["view"])
+    iw = int(np.argmin(np.abs(t - vm)))
+    sp = np.linalg.norm(np.diff(g[max(iw - 5, 0):iw + 6, 1:4], axis=0), axis=1).sum() / (t[min(iw + 5, len(t) - 1)] - t[max(iw - 5, 0)])
+    print(f"   still at the door, mid 'view' (state {stt[iw]}, {sp:.2f} m/s) " + desc(iw))
     print("   tracked again " + (desc(i1) if i1 is not None else "never"))
