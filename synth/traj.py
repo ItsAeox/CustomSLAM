@@ -514,6 +514,10 @@ FLAT_PATHS = {  # waypoints (x, y) between the start and the return view, doorwa
     "LtoD1in": [(5.6, 3.6), (5.05, 2.85), (4.55, 2.85), (4.05, 2.85)],
 }
 FLAT_VIEW = {"D3": (3.4, 3.0), "D1": (3.7, 2.4)}  # where the camera stops to look at the spot after coming back
+# S12 'flatmap' (1 Nov, ISSUES G22): after placing, the user maps the bedroom first - a slow loop inside it looking at the
+# spot with slow pans (both doorway views, the far side, back to the start), then the same walk as 'flat'
+FLAT_SURVEY = [(3.6, 1.0), (3.7, 2.4), (3.4, 3.0), (2.6, 3.4), (2.5, 2.0), (1.4, 1.4), (2.4, 0.9), (3.6, 1.0)]
+FLAT_SURVEY_SPEED = 0.3
 
 
 def flat_route(route):
@@ -532,7 +536,7 @@ def flat_route(route):
     return [tuple(FLAT_START)] + pts + [FLAT_VIEW[back]], back
 
 
-def scn_flat(room, rng, k):
+def scn_flat(room, rng, k, survey=False):
     """S11: the leave-and-come-back AR test in the three-room flat: still, sideways init, look at the floor spot and
     place (tap), look around the bedroom, walk out through one door, through the other rooms (gait, head turns), back
     into the bedroom (by another door in the loop variants), stop and look at the spot, walk back to the start looking
@@ -546,6 +550,10 @@ def scn_flat(room, rng, k):
     T["init"] = (tc, tc + 1.5); tc += 2.5
     T["place"] = (tc, tc + 2.0); tc += 2.5
     T["look"] = (tc, tc + 4.0); tc += 4.5
+    if survey:
+        sp = np.array(FLAT_SURVEY, float)
+        ts = tc + np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(sp, axis=0), axis=1) / FLAT_SURVEY_SPEED)])
+        T["survey"] = (ts[0], ts[-1]); tc = ts[-1] + 0.5
     seglen = np.linalg.norm(np.diff(pts, axis=0), axis=1)
     tw = tc + np.concatenate([[0.0], np.cumsum(seglen / speed)])
     T["walk"] = (tw[0], tw[-1]); tc = tw[-1]
@@ -560,6 +568,9 @@ def scn_flat(room, rng, k):
     xy[m] = cs(t[m])
     after = t > tw[-1]
     xy[after] = pts[-1]
+    if survey:
+        ms = (t >= ts[0]) & (t <= ts[-1])
+        xy[ms] = CubicSpline(ts, sp, bc_type="clamped")(t[ms])
     w2 = segments(t, [(T["toStart"][0], T["toStart"][1], 0.0, 1.0)])
     xy = xy + (w2[:, None] * (FLAT_START - pts[-1])[None, :]) * (t >= T["toStart"][0])[:, None]
     v = np.gradient(xy, 1 / RATE, axis=0)
@@ -588,6 +599,8 @@ def scn_flat(room, rng, k):
     if blend.any() and np.abs(d[blend]).max() > np.radians(150):
         raise ValueError("gaze blend over ~180 deg")
     look = envelope(t, T["look"][0], T["look"][1], 1.0) * np.radians(50) * np.sin(2 * np.pi * (t - T["look"][0]) / 4.0)
+    if survey:  # slow pans across the room while walking the loop
+        look = look + envelope(t, T["survey"][0], T["survey"][1], 1.5) * np.radians(45) * np.sin(2 * np.pi * (t - T["survey"][0]) / 7.0)
     yaw = np.unwrap(yaw_s + (1 - w) * d) + look + ro[:, 0]
     pitch = w * pitch_s + (1 - w) * pitch_w + ro[:, 1]
     # phases on the bedroom: out (first time outside it), back (first time inside again)
@@ -598,14 +611,14 @@ def scn_flat(room, rng, k):
     T["return"] = (float(t[back_i]), float(t[-1]))
     return finish(t, p, yaw, pitch, ro[:, 2],
                   {"spot": c.round(3).tolist(), "route": route, "back_door": back, "speed_mps": speed,
-                   "waypoints": pts.round(2).tolist(),
+                   "waypoints": pts.round(2).tolist(), "survey": bool(survey),
                    "phases_s": {k_: [round(v_[0], 2), round(v_[1], 2)] for k_, v_ in T.items()}})
 
 
 SCENARIOS = {"slide": scn_slide, "gesture": scn_gesture, "shake": scn_shake, "rotate": scn_rotate,
              "orbit": scn_orbit, "walk": scn_walk, "ar": scn_ar,
              "bedside": scn_bedside, "rapid": scn_rapid, "longar": scn_longar,
-             "flat": scn_flat}  # appended: the earlier ones keep their seeds
+             "flat": scn_flat, "flatmap": lambda room, rng, k: scn_flat(room, rng, k, survey=True)}  # appended: the earlier ones keep their seeds
 
 
 def check_motion(room, m: Motion, table_ok=False):
