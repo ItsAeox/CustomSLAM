@@ -43,6 +43,8 @@ export const OPTIONS = [
   { key: 'lba', label: 'Local BA solver', values: [['g2o', 'g2o (original)'], ['fast', 'fast (same result, ~3-4x less time; the map keeps growing)']], def: 'g2o' },
   { key: 'kfq', label: 'Keyframes while mapping is busy', values: [['stock', 'refused (original; the map stops growing when mapping falls behind)'], ['2', 'queued, up to 2 waiting'], ['3', 'queued, up to 3 waiting']], def: 'stock' },
   { key: 'newarea', label: 'New areas when turning', values: [['stock', 'original (keyframes by tracked-point count)'], ['cov', 'extra keyframes for new textured areas'], ['cov2', 'extra keyframes + new points from smaller baselines']], def: 'stock' },
+  { key: 'refine', label: 'Tree depth follows the floor estimate', page: 'ar',
+    values: [['off', 'off (original: fixed where tapped)'], ['on', 'on (re-placed along the tap ray as the floor improves)']], def: 'off' },
   { key: 'hold', label: 'Tree during brief tracking losses', page: 'ar', values: [['hide', 'hidden (original)'], ['gyro', 'held by the gyro for up to 0.4 s']], def: 'hide' },
   // 2026-11-01 (claude/ISSUES.md G35): the gyro rotation in the pose solve, held to a gyro attitude (map collapse fix)
   { key: 'gyropose', label: 'Gyro in the pose solve (map collapse fix)', when: (o) => o.gyro === 'on' && o.imu !== 'on',

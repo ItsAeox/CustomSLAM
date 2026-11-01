@@ -85,6 +85,7 @@ let localPts = [];                  // local map points [[x,y,z]]
 let kps = null;
 let floor = null, floorMesh = null;  // plane {n (up), d, height}
 let cactusProto = null, cactus = null;  // the placed object (now a tree: assets/tree.glb)
+let tapRay = null;  // option refine: the placement ray {o, dir, depth} when the tree went on the floor plane
 let objBase = 1;                     // placement size (map units); the Size slider scales it
 const sizeFactor = () => 2 ** Number($('size').value);
 let downSum = [0, 0, 0], downN = 0;  // gravity direction in the SLAM world frame (sum of unit vectors)
@@ -243,6 +244,7 @@ function resetAnchors(reason) {
   floor = null;
   if (floorMesh) { scene.remove(floorMesh); floorMesh = null; }
   if (cactus) { scene.remove(cactus); cactus = null; }
+  tapRay = null;
   downSum = [0, 0, 0]; downN = 0;
   if (reason) hint(reason, 3000);
 }
@@ -253,10 +255,10 @@ function resetAnchors(reason) {
 function stashAnchors() {
   if (!cactus && !floor) return;
   if (stash) { if (stash.cactus) scene.remove(stash.cactus); if (stash.floorMesh) scene.remove(stash.floorMesh); }
-  stash = { cactus, floor, floorMesh, downSum, downN };
+  stash = { cactus, floor, floorMesh, downSum, downN, tapRay };
   if (cactus) cactus.visible = false;
   if (floorMesh) floorMesh.visible = false;
-  cactus = null; floor = null; floorMesh = null; downSum = [0, 0, 0]; downN = 0;
+  cactus = null; floor = null; floorMesh = null; downSum = [0, 0, 0]; downN = 0; tapRay = null;
   tele('anchors stashed (new map after tracking loss)');
   hint('Tracking lost: new map started. Go back to where the tree was to recover it.', 4000);
 }
@@ -264,7 +266,7 @@ function restoreAnchors() {
   if (!stash) return;
   if (cactus) scene.remove(cactus);
   if (floorMesh) scene.remove(floorMesh);
-  ({ cactus, floor, floorMesh, downSum, downN } = stash);
+  ({ cactus, floor, floorMesh, downSum, downN, tapRay } = stash);
   stash = null;
   if (cactus) cactus.visible = true;
   tele('anchors restored (maps merged)');
@@ -292,6 +294,21 @@ function detectFloor() {
   }
   floor = { n: pl.n, d: pl.d, height, inliers: pl.inliers.length, centroid: pl.centroid };
   placeFloorMesh();
+  refineTree();
+}
+// Option refine: a tree placed on the floor is re-placed where its tap ray meets the newest floor estimate (the map is
+// young at the tap: its depth there can be well off). It slides along the ray, so from the placing view it stays put.
+function refineTree() {
+  if (opts.refine !== 'on' || !cactus || !tapRay || !floor) return;
+  const h = rayPlane(tapRay.o, tapRay.dir, floor);
+  if (!h) return;
+  const depth = dot([h[0] - tapRay.o[0], h[1] - tapRay.o[1], h[2] - tapRay.o[2]], tapRay.dir);
+  if (depth < 0.5 * tapRay.depth || depth > 2 * tapRay.depth) return;  // not the same floor
+  const p = cactus.position;
+  if (Math.hypot(h[0] - p.x, h[1] - p.y, h[2] - p.z) < 1e-3 * tapRay.depth) return;
+  cactus.position.set(...h);
+  cactus.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(...floor.n));
+  tele(`tree refined: depth along the tap ray ${depth.toFixed(3)} (placed at ${tapRay.depth.toFixed(3)}), floor ${floor.inliers} points`);
 }
 function placeFloorMesh() {
   if (!floorMesh) {
@@ -495,6 +512,7 @@ function placeCactus(clientX, clientY) {
   if (cactus) scene.remove(cactus);
   cactus = cactusProto.clone();
   cactus.position.set(...hit);
+  tapRay = plane === floor ? { o, dir, depth: dot([hit[0] - o[0], hit[1] - o[1], hit[2] - o[2]], dir) } : null;
   cactus.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(...plane.n));
   objBase = size;
   cactus.scale.setScalar(CUBE ? size : size * sizeFactor());  // cactusProto is normalised to height 1, base at the origin
