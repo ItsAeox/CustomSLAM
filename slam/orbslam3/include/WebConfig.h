@@ -137,6 +137,10 @@ struct WebConfig
     int relocGlobal = 0;       // Web.Reloc.Global: N > 0 = try on every Nth frame while lost; 0 = off
     int relocGlobalDesc = 0;   // Web.Reloc.GlobalDesc: 0 = each point's representative descriptor, 1 = the descriptors of all
                                // its observations (the point as seen from each keyframe: more tolerant of a new viewpoint)
+    int loopMinCoincidences = 3;  // Web.Loop.MinCoincidences: keyframes that must see the same common region (the current
+                               // one and its covisible ones, or consecutive ones) before a loop closure / map merge is
+                               // accepted (LoopClosing::NewDetectCommonRegions); stock 3. G22: coming back, the place is
+                               // recognised a few keyframes before the loop closes and the object snaps back
 
     // Turn bridge (monocular, visual-only, needs Web.Gyro.Prior; see Tracking::WebTurnBridge). Off by default = stock.
     // While lost after turning away (gyro rotation from the last good pose >= MinAngle, coasting and relocalisation
@@ -278,6 +282,7 @@ inline void loadWebConfig(const std::string& settingsFile)
     readInt("Web.Track.CoastMinInliers", c.coastMinInliers);
     readInt("Web.Reloc.Global", c.relocGlobal);
     readInt("Web.Reloc.GlobalDesc", c.relocGlobalDesc);
+    readInt("Web.Loop.MinCoincidences", c.loopMinCoincidences);
     readInt("Web.Turn.Bridge", c.turnBridge);
     for (auto [key, v] : {std::pair<const char*, double*>{"Web.Turn.MinAngle", &c.turnMinAngle}, {"Web.Turn.MaxRotDiff", &c.turnMaxRotDiff}}) {
         cv::FileNode n = fs[key];
@@ -324,6 +329,8 @@ inline void loadWebConfig(const std::string& settingsFile)
                           : std::string())
               << (c.relocGlobal > 0 ? "; whole-map relocalisation every " + std::to_string(c.relocGlobal) + " lost frames" +
                   std::string(c.relocGlobalDesc ? " (all observation descriptors)" : "") : std::string())
+              << (c.loopMinCoincidences != 3 ? "; loop / merge after " + std::to_string(c.loopMinCoincidences) + " coinciding keyframes"
+                                             : std::string())
               << (c.fastPose ? (c.fastPose == 1 ? "; fast pose solver" : "; fast pose solver (compare with g2o)") : "")
               << (c.fastPose && c.fastPoseWarm ? " (warm start)" : "")
               << (c.orbSSC ? "; SSC keypoint selection" : "")

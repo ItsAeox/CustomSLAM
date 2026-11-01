@@ -24,6 +24,12 @@
 #include "Optimizer.h"
 #include "ORBmatcher.h"
 #include "G2oTypes.h"
+#ifdef ORBSLAM3_WEB
+#include "WebConfig.h"
+#define WEB_LOOP_MIN (ORB_SLAM3::webConfig().loopMinCoincidences)  // Web.Loop.MinCoincidences (stock 3)
+#else
+#define WEB_LOOP_MIN 3
+#endif
 
 #include<mutex>
 #include<thread>
@@ -393,7 +399,7 @@ bool LoopClosing::NewDetectCommonRegions()
             mvpLoopMatchedMPs = vpMatchedMPs;
 
 
-            mbLoopDetected = mnLoopNumCoincidences >= 3;
+            mbLoopDetected = mnLoopNumCoincidences >= WEB_LOOP_MIN;
             mnLoopNumNotFound = 0;
 
             if(!mbLoopDetected)
@@ -441,7 +447,7 @@ bool LoopClosing::NewDetectCommonRegions()
             mg2oMergeSlw = gScw;
             mvpMergeMatchedMPs = vpMatchedMPs;
 
-            mbMergeDetected = mnMergeNumCoincidences >= 3;
+            mbMergeDetected = mnMergeNumCoincidences >= WEB_LOOP_MIN;
         }
         else
         {
@@ -877,7 +883,7 @@ bool LoopClosing::DetectCommonRegionsFromBoW(std::vector<KeyFrame*> &vpBowCand, 
         vpMPs = vpBestMapPoints;
         vpMatchedMPs = vpBestMatchedMapPoints;
 
-        return nNumCoincidences >= 3;
+        return nNumCoincidences >= WEB_LOOP_MIN;
     }
     else
     {
