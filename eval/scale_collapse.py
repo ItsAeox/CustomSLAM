@@ -3,7 +3,9 @@
 (trace map id column, orbslam3_run aa3763f+): the Sim3 scale (metres per map unit) of every 3 s window of tracked
 frames with >= 0.15 m of true camera motion; the map's spread = largest / smallest window scale. Healthy maps stay
 within ~1.5x; a collapse shows as 5-500x (the map's camera barely moves). Per run: the largest spread over its maps
-with >= 3 windows, and whether it exceeds --ratio (default 5).
+with >= 3 windows, and whether it exceeds --ratio (default 5). A map merge (the atlas map count drops) re-expresses the
+surviving map in the merged map's coordinates under the same id, so each map is split at merges (1 Nov: before, every
+merged run read as a collapse).
   scale_collapse.py <results dir> [--ratio 5]   (<dir>/<seq>/<arm>/seed<N>/trace.txt, synthetic sequences)
 Prints per-run lines and a table per scenario and arm.
 """
@@ -29,7 +31,7 @@ for tf in sorted(Path(a.root).glob("*/*/seed*/trace.txt")):
     if not (run / "run_info.txt").exists():
         continue
     seq, arm = run.parts[-3], run.parts[-2]
-    tr = np.array([[float(x) for x in l.split()[:6]] + [float(l.split()[-2])] for l in tf.read_text().splitlines() if len(l.split()) >= 34])
+    tr = np.array([[float(x) for x in l.split()[:6]] + [float(l.split()[-2]), float(l.split()[-1])] for l in tf.read_text().splitlines() if len(l.split()) >= 34])
     if not len(tr):
         continue
     st = np.loadtxt(f"{a.data}/{seq}/mav0/cam0/data.csv", delimiter=",", comments="#", usecols=0, dtype=np.int64)
@@ -37,9 +39,10 @@ for tf in sorted(Path(a.root).glob("*/*/seed*/trace.txt")):
     gt = np.loadtxt(f"{a.gt}/synth_{seq}.txt", comments="#")
     g = gt[np.clip(np.searchsorted(gt[:, 0], t - 1e-6), 0, len(gt) - 1), 1:4]
     ok = np.isin(tr[:, 1].astype(int), [2, 5])
+    epoch = np.concatenate([[0], np.cumsum(np.diff(tr[:, 7]) < 0)])  # +1 at every merge
     worst, nwin = 1.0, 0
-    for m in np.unique(tr[ok, 6]):
-        sel = ok & (tr[:, 6] == m)
+    for m, e in sorted(set(zip(tr[ok, 6], epoch[ok]))):
+        sel = ok & (tr[:, 6] == m) & (epoch == e)
         ts = t[sel]
         sc = []
         for w0 in np.arange(ts[0], ts[-1] - 1.5, 1.5):
