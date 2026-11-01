@@ -327,8 +327,9 @@ int main(int argc, char** argv) {
   int seed = -1;  // -1: ORB-SLAM3 default (TwoViewReconstruction seeds with 0)
   string saveMap, loadMap;  // room map save / reload (WebMapIO.cc): the largest map at the end / a map loaded first
   double imuDtMs = 0;       // --imu-dt: IMU time = recorded IMU stamp - imu-dt (the AR page's option imudt; phone -88 ms)
-  double keepMapAt = -1;    // --keep-map-at: Web.Track.KeepMap switched on at this time after the first frame (s), as the AR
-                            // page does when the object is placed with anchor=keep (synthetic ar: tap at ~5.8 s; longar ~16.8 s)
+  double keepMapAt = -1;    // --keep-map-at: Web.Track.KeepMap switched on at the first tracked frame from this time after the
+                            // first frame (s), as the AR page does when the object is placed with anchor=keep (synthetic ar:
+                            // tap at ~5.8 s; longar ~16.8 s); with --tap-at also >= 5 map points in the middle of the view
   double tapAt = -1;        // --tap-at: from this time (s after the first frame; the sequence's touches.csv tap when it has
                             // one) write center_depth.txt: per tracked frame the median camera depth of the tracked map points
                             // within 60 px of the image centre and their count - where the AR page would put an object tapped
@@ -457,18 +458,14 @@ int main(int argc, char** argv) {
                  nKf = tkp->vdNewKF_ms.size();
     const unsigned long kfId0 = ORB_SLAM3::KeyFrame::nNextId;
 #endif
-#ifdef ORBSLAM3_WEB
-    if (keepMapAt >= 0 && d.t[i] - d.t[0] >= keepMapAt && !ORB_SLAM3::webConfig().keepMap) {
-      ORB_SLAM3::webConfig().keepMap = 1;
-      std::cout << "keep map on at frame " << i << " (" << d.t[i] - d.t[0] << " s)" << std::endl;
-    }
-#endif
     auto t0 = std::chrono::steady_clock::now();
     const Sophus::SE3f Tcw = SLAM.TrackMonocular(im, d.t[i], meas);
     auto t1 = std::chrono::steady_clock::now();
     const double ttrack = std::chrono::duration<double>(t1 - t0).count();
 #ifdef ORBSLAM3_WEB
-    if (tapAt >= 0 && d.t[i] >= tapT && (SLAM.GetTrackingState() == 2 || SLAM.GetTrackingState() == 5)) {
+    const bool trackedNow = SLAM.GetTrackingState() == 2 || SLAM.GetTrackingState() == 5;
+    int centerPts = 0;
+    if (tapAt >= 0 && d.t[i] >= tapT && trackedNow) {
       const ORB_SLAM3::Frame& F = SLAM.WebTracker()->mCurrentFrame;
       const double cu = 0.5 * (F.mnMinX + F.mnMaxX), cv_ = 0.5 * (F.mnMinY + F.mnMaxY);
       std::vector<float> zs;
@@ -483,6 +480,15 @@ int main(int argc, char** argv) {
         std::nth_element(zs.begin(), zs.begin() + zs.size() / 2, zs.end());
         cdf << i << " " << zs[zs.size() / 2] << " " << zs.size() << "\n";
       }
+      centerPts = (int)zs.size();
+    }
+    // the page turns keep on once the object is placed, which needs a tracked map (ar.js: a tap before that waits): from
+    // the first tracked frame at / after --keep-map-at (with --tap-at: >= 5 map points in the middle, as the scorer
+    // places it); before 2 Nov keep went on at the time itself, so a map started later was kept from its first frame
+    if (keepMapAt >= 0 && d.t[i] - d.t[0] >= keepMapAt && !ORB_SLAM3::webConfig().keepMap && trackedNow &&
+        (tapAt < 0 || centerPts >= 5)) {
+      ORB_SLAM3::webConfig().keepMap = 1;
+      std::cout << "keep map on at frame " << i << " (" << d.t[i] - d.t[0] << " s)" << std::endl;
     }
 #endif
 #ifdef REGISTER_TIMES
