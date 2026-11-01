@@ -536,11 +536,12 @@ def flat_route(route):
     return [tuple(FLAT_START)] + pts + [FLAT_VIEW[back]], back
 
 
-def scn_flat(room, rng, k, survey=False):
+def scn_flat(room, rng, k, survey=False, survey_first=False):
     """S11: the leave-and-come-back AR test in the three-room flat: still, sideways init, look at the floor spot and
     place (tap), look around the bedroom, walk out through one door, through the other rooms (gait, head turns), back
     into the bedroom (by another door in the loop variants), stop and look at the spot, walk back to the start looking
-    at it, a last look. Variants: route x walking speed"""
+    at it, a last look. Variants: route x walking speed. survey: a slow loop around the bedroom with pans after the look
+    (S12 flatmap); survey_first: that loop before placing (S13 flatfirst: the room mapped first, then the object)"""
     route, speed = [("BLKB", 0.6), ("BKLB", 0.6), ("BLB", 0.6), ("BLKB", 0.9), ("BKLB", 0.9), ("BKB", 0.75)][k]
     c = room.targets["board"].copy()
     pts, back = flat_route(route)
@@ -548,12 +549,18 @@ def scn_flat(room, rng, k, survey=False):
     z0 = rng.uniform(1.3, 1.5)
     T, tc = {}, 2.5
     T["init"] = (tc, tc + 1.5); tc += 2.5
+    survey = survey or survey_first
+    sp = np.array(FLAT_SURVEY, float)
+    def add_survey(tc):
+        ts = tc + np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(sp, axis=0), axis=1) / FLAT_SURVEY_SPEED)])
+        T["survey"] = (ts[0], ts[-1])
+        return ts, ts[-1] + 0.5
+    if survey_first:
+        ts, tc = add_survey(tc)
     T["place"] = (tc, tc + 2.0); tc += 2.5
     T["look"] = (tc, tc + 4.0); tc += 4.5
-    if survey:
-        sp = np.array(FLAT_SURVEY, float)
-        ts = tc + np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(sp, axis=0), axis=1) / FLAT_SURVEY_SPEED)])
-        T["survey"] = (ts[0], ts[-1]); tc = ts[-1] + 0.5
+    if survey and not survey_first:
+        ts, tc = add_survey(tc)
     seglen = np.linalg.norm(np.diff(pts, axis=0), axis=1)
     tw = tc + np.concatenate([[0.0], np.cumsum(seglen / speed)])
     T["walk"] = (tw[0], tw[-1]); tc = tw[-1]
@@ -585,7 +592,8 @@ def scn_flat(room, rng, k, survey=False):
     # init: 0.3 m sideways (perpendicular to the view of the spot), like the AR scenario
     d0 = c[:2] - FLAT_START
     tang = np.array([-d0[1], d0[0]]) / np.linalg.norm(d0)
-    init = segments(t, [(T["init"][0], T["init"][1], 0.0, 0.3), (T["look"][0], T["look"][1], 0.3, 0.0)])  # back while looking around
+    back = (T["survey"][0], T["survey"][0] + 1.0) if survey_first else T["look"]  # survey first: back before the loop
+    init = segments(t, [(T["init"][0], T["init"][1], 0.0, 0.3), (back[0], back[1], 0.3, 0.0)])  # back while looking around
     tr, ro = hand(t, rng)
     p = np.concatenate([xy + bob_l[:, None] * side + init[:, None] * tang[None, :], (z0 + bob_v)[:, None]], 1) + tr
     # gaze: at the spot (still, placing, the return view, back to the start) or ahead with head turns (walking)
@@ -611,14 +619,15 @@ def scn_flat(room, rng, k, survey=False):
     T["return"] = (float(t[back_i]), float(t[-1]))
     return finish(t, p, yaw, pitch, ro[:, 2],
                   {"spot": c.round(3).tolist(), "route": route, "back_door": back, "speed_mps": speed,
-                   "waypoints": pts.round(2).tolist(), "survey": bool(survey),
+                   "waypoints": pts.round(2).tolist(), "survey": bool(survey), "survey_first": bool(survey_first),
                    "phases_s": {k_: [round(v_[0], 2), round(v_[1], 2)] for k_, v_ in T.items()}})
 
 
 SCENARIOS = {"slide": scn_slide, "gesture": scn_gesture, "shake": scn_shake, "rotate": scn_rotate,
              "orbit": scn_orbit, "walk": scn_walk, "ar": scn_ar,
              "bedside": scn_bedside, "rapid": scn_rapid, "longar": scn_longar,
-             "flat": scn_flat, "flatmap": lambda room, rng, k: scn_flat(room, rng, k, survey=True)}  # appended: the earlier ones keep their seeds
+             "flat": scn_flat, "flatmap": lambda room, rng, k: scn_flat(room, rng, k, survey=True),
+             "flatfirst": lambda room, rng, k: scn_flat(room, rng, k, survey_first=True)}  # appended: the earlier ones keep their seeds
 
 
 def check_motion(room, m: Motion, table_ok=False):

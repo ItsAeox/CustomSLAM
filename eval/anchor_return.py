@@ -134,7 +134,7 @@ def main():
         ret = (t0 + ph["return"][0], t0 + ph["return"][1])
     elif meta["scenario"] == "longar":
         ret = (t0 + ph["in"][0], t0 + ph["orbit2"][1])
-    elif meta["scenario"] in ("flat", "flatmap"):  # back in the bedroom (by the other door in the loop routes) to the end
+    elif meta["scenario"] in ("flat", "flatmap", "flatfirst"):  # back in the bedroom (by the other door in the loop routes) to the end
         ret = (t0 + ph["return"][0], t0 + ph["return"][1])
     else:
         ret = None
