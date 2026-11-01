@@ -129,6 +129,14 @@ struct WebConfig
                                // that fails, match the frame against the whole local map by descriptor + MLPnP RANSAC
     double coastMaxTime = 1.5; // Web.Track.CoastTime: seconds after the last good frame during which coasting is tried
     int coastMinInliers = 50;  // Web.Track.CoastMinInliers: pose inliers to accept the coasted pose (relocalisation: 50)
+    // Whole-map relocalisation (monocular, visual-only; Tracking::WebGlobalReloc). Off by default = stock. ISSUES G22: coming
+    // back into a room from another side, no keyframe has a similar view, so BoW relocalisation finds no candidate; here,
+    // while lost (after coasting and BoW relocalisation failed), every Nth frame's keypoints are matched by descriptor
+    // against every point of the current map, then MLPnP RANSAC, the local map around the inliers and the stock 50-inlier
+    // check of a relocalisation (and of the frames after it).
+    int relocGlobal = 0;       // Web.Reloc.Global: N > 0 = try on every Nth frame while lost; 0 = off
+    int relocGlobalDesc = 0;   // Web.Reloc.GlobalDesc: 0 = each point's representative descriptor, 1 = the descriptors of all
+                               // its observations (the point as seen from each keyframe: more tolerant of a new viewpoint)
 
     // Turn bridge (monocular, visual-only, needs Web.Gyro.Prior; see Tracking::WebTurnBridge). Off by default = stock.
     // While lost after turning away (gyro rotation from the last good pose >= MinAngle, coasting and relocalisation
@@ -268,6 +276,8 @@ inline void loadWebConfig(const std::string& settingsFile)
     cv::FileNode ct = fs["Web.Track.CoastTime"];
     if (!ct.empty() && (ct.isInt() || ct.isReal())) c.coastMaxTime = ct.real();
     readInt("Web.Track.CoastMinInliers", c.coastMinInliers);
+    readInt("Web.Reloc.Global", c.relocGlobal);
+    readInt("Web.Reloc.GlobalDesc", c.relocGlobalDesc);
     readInt("Web.Turn.Bridge", c.turnBridge);
     for (auto [key, v] : {std::pair<const char*, double*>{"Web.Turn.MinAngle", &c.turnMinAngle}, {"Web.Turn.MaxRotDiff", &c.turnMaxRotDiff}}) {
         cv::FileNode n = fs[key];
@@ -312,6 +322,8 @@ inline void loadWebConfig(const std::string& settingsFile)
               << (c.cullRedundancy > 0 ? "; KF cull redundancy " + std::to_string(c.cullRedundancy) : std::string())
               << (c.coast ? "; coast " + std::to_string(c.coastMaxTime) + " s, " + std::to_string(c.coastMinInliers) + " inliers"
                           : std::string())
+              << (c.relocGlobal > 0 ? "; whole-map relocalisation every " + std::to_string(c.relocGlobal) + " lost frames" +
+                  std::string(c.relocGlobalDesc ? " (all observation descriptors)" : "") : std::string())
               << (c.fastPose ? (c.fastPose == 1 ? "; fast pose solver" : "; fast pose solver (compare with g2o)") : "")
               << (c.fastPose && c.fastPoseWarm ? " (warm start)" : "")
               << (c.orbSSC ? "; SSC keypoint selection" : "")

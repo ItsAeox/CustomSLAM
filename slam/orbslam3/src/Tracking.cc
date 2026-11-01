@@ -2099,6 +2099,8 @@ void Tracking::Track()
                             if(bOK)
                                 mnWebRelocRecoveries++;
                         }
+                        if(!bOK && webConfig().relocGlobal > 0)  // Web.Reloc.Global: every point of the map
+                            bOK = WebGlobalReloc();
                         if(!bOK && webConfig().turnBridge && mSensor != System::IMU_MONOCULAR)  // turned away: map the new view inside this map
                             bOK = WebTurnBridge();
                         if(bOK && mbWebLoadWait)
@@ -3078,81 +3080,9 @@ bool Tracking::WebCoastTrack()
     fill(mCurrentFrame.mvbOutlier.begin(), mCurrentFrame.mvbOutlier.end(), false);
     if(nBest < cfg.coastMinInliers && cfg.coast >= 2)
     {
-        // prior-free: each keypoint's nearest local-map point by descriptor (Hamming <= TH_LOW, ratio 0.8, one keypoint
-        // per point), MLPnP RANSAC as Relocalization, then motion-only BA and a projection search at that pose
-        const int N = mCurrentFrame.N;
-        vector<int> vD1(N, 256), vD2(N, 256);
-        vector<MapPoint*> vM(N, static_cast<MapPoint*>(NULL));
-        for(MapPoint* pMP : mvpLocalMapPoints)
-        {
-            if(!pMP || pMP->isBad())
-                continue;
-            const cv::Mat dm = pMP->GetDescriptor();
-            const uint32_t* a = dm.ptr<uint32_t>();
-            for(int i = 0; i < N; i++)
-            {
-                const uint32_t* b = mCurrentFrame.mDescriptors.ptr<uint32_t>(i);
-                int dist = 0;
-                for(int k = 0; k < 8; k++)
-                    dist += __builtin_popcount(a[k] ^ b[k]);
-                if(dist < vD1[i]) { vD2[i] = vD1[i]; vD1[i] = dist; vM[i] = pMP; }
-                else if(dist < vD2[i]) vD2[i] = dist;
-            }
-        }
-        std::map<MapPoint*, int> mOwner;  // one keypoint per map point: the closest
-        for(int i = 0; i < N; i++)
-        {
-            if(!vM[i] || vD1[i] > ORBmatcher::TH_LOW || vD1[i] > 0.8f * vD2[i])
-            {
-                vM[i] = static_cast<MapPoint*>(NULL);
-                continue;
-            }
-            auto it = mOwner.find(vM[i]);
-            if(it == mOwner.end())
-                mOwner[vM[i]] = i;
-            else if(vD1[i] < vD1[it->second])
-            {
-                vM[it->second] = static_cast<MapPoint*>(NULL);
-                it->second = i;
-            }
-            else
-                vM[i] = static_cast<MapPoint*>(NULL);
-        }
-        const int nCand = (int)mOwner.size();
-        int nGood = 0;
-        if(nCand >= 15)
-        {
-            MLPnPsolver solver(mCurrentFrame, vM);
-            solver.SetRansacParameters(0.99, 10, 300, 6, 0.5, 5.991);
-            vector<bool> vbInliers;
-            int nInl = 0;
-            bool bNoMore = false;
-            Eigen::Matrix4f eigTcw;
-            if(solver.iterate(300, bNoMore, vbInliers, nInl, eigTcw))
-            {
-                mCurrentFrame.SetPose(Sophus::SE3f(eigTcw));
-                for(int i = 0; i < N; i++)
-                    mCurrentFrame.mvpMapPoints[i] = (i < (int)vbInliers.size() && vbInliers[i]) ? vM[i] : static_cast<MapPoint*>(NULL);
-                nGood = Optimizer::PoseOptimization(&mCurrentFrame);
-                for(int i = 0; i < N; i++)
-                    if(mCurrentFrame.mvbOutlier[i])
-                    {
-                        mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint*>(NULL);
-                        mCurrentFrame.mvbOutlier[i] = false;
-                    }
-                if(nGood >= 10)
-                {
-                    SearchLocalPoints();
-                    nGood = Optimizer::PoseOptimization(&mCurrentFrame);
-                    for(int i = 0; i < N; i++)
-                        if(mCurrentFrame.mvbOutlier[i])
-                        {
-                            mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint*>(NULL);
-                            mCurrentFrame.mvbOutlier[i] = false;
-                        }
-                }
-            }
-        }
+        // prior-free: each keypoint's nearest local-map point by descriptor, MLPnP RANSAC (WebPriorFreePnP)
+        int nCand = 0;
+        const int nGood = WebPriorFreePnP(mvpLocalMapPoints, false, nCand, true);
         if(mnWebCoastTries <= 40)
             cout << "coast try " << mnWebCoastTries << " local-map PnP: candidates " << nCand << ", inliers " << nGood << endl;
         if(nGood > nBest)
@@ -3172,6 +3102,153 @@ bool Tracking::WebCoastTrack()
     mnLastRelocFrameId = mCurrentFrame.mnId;
     mnWebCoastRecoveries++;
     cout << "Recovered by coasting: " << nBest << " inliers, " << dt << " s after the last good frame" << endl;
+    return true;
+}
+
+// prior-free pose from a set of map points (WebCoastTrack mode 2, WebGlobalReloc): each keypoint's nearest point by
+// descriptor (Hamming <= TH_LOW, ratio 0.8 to the second-nearest point, one keypoint per point), MLPnP RANSAC as
+// Relocalization, then motion-only BA; bLocalSearch: also a projection search in the local map at that pose (coasting).
+// bAllDesc: a point's distance is the smallest over the descriptors of all its observations, not its representative one.
+// Leaves the pose and the inlier matches in mCurrentFrame; returns the inliers, nCand the matched points.
+int Tracking::WebPriorFreePnP(const vector<MapPoint*>& vpPoints, bool bAllDesc, int& nCand, bool bLocalSearch)
+{
+    const int N = mCurrentFrame.N;
+    vector<int> vD1(N, 256), vD2(N, 256);
+    vector<MapPoint*> vM(N, static_cast<MapPoint*>(NULL));
+    vector<const uint32_t*> vDesc;
+    for(MapPoint* pMP : vpPoints)
+    {
+        if(!pMP || pMP->isBad())
+            continue;
+        vDesc.clear();
+        const cv::Mat dm = pMP->GetDescriptor();  // a copy: alive for this point
+        if(!dm.empty())
+            vDesc.push_back(dm.ptr<uint32_t>());
+        if(bAllDesc)
+            for(const auto& ob : pMP->GetObservations())
+            {
+                const int idx = get<0>(ob.second);
+                if(ob.first->isBad() || idx < 0 || idx >= ob.first->mDescriptors.rows)
+                    continue;
+                vDesc.push_back(ob.first->mDescriptors.ptr<uint32_t>(idx));
+            }
+        if(vDesc.empty())
+            continue;
+        for(int i = 0; i < N; i++)
+        {
+            const uint32_t* b = mCurrentFrame.mDescriptors.ptr<uint32_t>(i);
+            int dist = 256;
+            for(const uint32_t* a : vDesc)
+            {
+                int d = 0;
+                for(int k = 0; k < 8; k++)
+                    d += __builtin_popcount(a[k] ^ b[k]);
+                dist = std::min(dist, d);
+            }
+            if(dist < vD1[i]) { vD2[i] = vD1[i]; vD1[i] = dist; vM[i] = pMP; }
+            else if(dist < vD2[i]) vD2[i] = dist;
+        }
+    }
+    std::map<MapPoint*, int> mOwner;  // one keypoint per map point: the closest
+    for(int i = 0; i < N; i++)
+    {
+        if(!vM[i] || vD1[i] > ORBmatcher::TH_LOW || vD1[i] > 0.8f * vD2[i])
+        {
+            vM[i] = static_cast<MapPoint*>(NULL);
+            continue;
+        }
+        auto it = mOwner.find(vM[i]);
+        if(it == mOwner.end())
+            mOwner[vM[i]] = i;
+        else if(vD1[i] < vD1[it->second])
+        {
+            vM[it->second] = static_cast<MapPoint*>(NULL);
+            it->second = i;
+        }
+        else
+            vM[i] = static_cast<MapPoint*>(NULL);
+    }
+    nCand = (int)mOwner.size();
+    int nGood = 0;
+    if(nCand >= 15)
+    {
+        MLPnPsolver solver(mCurrentFrame, vM);
+        solver.SetRansacParameters(0.99, 10, 300, 6, 0.5, 5.991);
+        vector<bool> vbInliers;
+        int nInl = 0;
+        bool bNoMore = false;
+        Eigen::Matrix4f eigTcw;
+        if(solver.iterate(300, bNoMore, vbInliers, nInl, eigTcw))
+        {
+            mCurrentFrame.SetPose(Sophus::SE3f(eigTcw));
+            for(int i = 0; i < N; i++)
+                mCurrentFrame.mvpMapPoints[i] = (i < (int)vbInliers.size() && vbInliers[i]) ? vM[i] : static_cast<MapPoint*>(NULL);
+            nGood = Optimizer::PoseOptimization(&mCurrentFrame);
+            for(int i = 0; i < N; i++)
+                if(mCurrentFrame.mvbOutlier[i])
+                {
+                    mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint*>(NULL);
+                    mCurrentFrame.mvbOutlier[i] = false;
+                }
+            if(nGood >= 10 && bLocalSearch)
+            {
+                SearchLocalPoints();
+                nGood = Optimizer::PoseOptimization(&mCurrentFrame);
+                for(int i = 0; i < N; i++)
+                    if(mCurrentFrame.mvbOutlier[i])
+                    {
+                        mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint*>(NULL);
+                        mCurrentFrame.mvbOutlier[i] = false;
+                    }
+            }
+        }
+    }
+    return nGood;
+}
+
+// web port (Web.Reloc.Global, ISSUES G22): relocalisation against every point of the current map (see WebConfig.h)
+bool Tracking::WebGlobalReloc()
+{
+    const WebConfig& cfg = webConfig();
+    if(cfg.relocGlobal <= 0 || mSensor != System::MONOCULAR || mCurrentFrame.mDescriptors.empty() ||
+       (mCurrentFrame.mnId % cfg.relocGlobal) != 0)
+        return false;
+    Map* pMap = mpAtlas->GetCurrentMap();
+    if(!pMap || pMap->KeyFramesInMap() < 5)
+        return false;
+    mnWebGlobalTries++;
+    mCurrentFrame.mbWebRotPrior = false;
+    const auto t0 = std::chrono::steady_clock::now();
+    const vector<MapPoint*> vpMPs = pMap->GetAllMapPoints();
+    fill(mCurrentFrame.mvpMapPoints.begin(), mCurrentFrame.mvpMapPoints.end(), static_cast<MapPoint*>(NULL));
+    fill(mCurrentFrame.mvbOutlier.begin(), mCurrentFrame.mvbOutlier.end(), false);
+    int nCand = 0;
+    int nGood = WebPriorFreePnP(vpMPs, cfg.relocGlobalDesc != 0, nCand, false);
+    const int nPnP = nGood;
+    if(nGood >= 15)
+    {
+        UpdateLocalMap();  // the keyframes / points around the inliers (also the reference keyframe)
+        SearchLocalPoints();
+        nGood = Optimizer::PoseOptimization(&mCurrentFrame);
+        for(int i = 0; i < mCurrentFrame.N; i++)
+            if(mCurrentFrame.mvbOutlier[i])
+            {
+                mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint*>(NULL);
+                mCurrentFrame.mvbOutlier[i] = false;
+            }
+    }
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if(mnWebGlobalTries <= 40 || nGood >= 50)
+        cout << "whole-map reloc try " << mnWebGlobalTries << ": map points " << vpMPs.size() << ", matched " << nCand
+             << ", PnP inliers " << nPnP << ", after the local map " << nGood << " (" << ms << " ms)" << endl;
+    if(nGood < 50)  // the stock relocalisation check
+    {
+        fill(mCurrentFrame.mvpMapPoints.begin(), mCurrentFrame.mvpMapPoints.end(), static_cast<MapPoint*>(NULL));
+        return false;
+    }
+    mnLastRelocFrameId = mCurrentFrame.mnId;
+    mnWebGlobalRecoveries++;
+    cout << "Relocalised on the whole map: " << nGood << " inliers" << endl;
     return true;
 }
 

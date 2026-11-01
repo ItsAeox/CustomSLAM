@@ -402,6 +402,9 @@ private:
     Sophus::SE3f mWebGoodVel;
     double mdWebGoodVelDt = 0;
     bool WebCoastTrack();
+    int WebPriorFreePnP(const vector<MapPoint*>& vpPoints, bool bAllDesc, int& nCand, bool bLocalSearch);  // + MLPnP RANSAC
+    bool WebGlobalReloc();     // Web.Reloc.Global
+    long mnWebGlobalTries = 0, mnWebGlobalRecoveries = 0;
     bool WebGyroTwoView(Sophus::SE3f& T21, vector<cv::Point3f>& vP3D, vector<bool>& vbTriangulated);  // Web.Init.Gyro
     // Web.Turn.Bridge (WebTurnBridge): state of the current loss episode
     bool WebTurnBridge();
