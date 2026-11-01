@@ -183,6 +183,11 @@ def main():
     if ret:
         tt = t[idx]
         out.update(stats(v & (tt >= ret[0]) & (tt <= ret[1]), "ret_"))
+        # how long the user looks at the spot after coming back before the object shows again
+        rv = np.where(v & (tt >= ret[0]) & (tt <= ret[1]))[0]
+        if len(rv):
+            rs = rv[sh[rv]]
+            out.update(ret_wait_s=round(float(tt[rs[0]] - tt[rv[0]]), 1) if len(rs) else -1)
     # gaps: stretches of in-view frames where the object is not shown
     gaps, cur = [], None
     for j in range(len(idx)):
