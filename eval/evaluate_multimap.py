@@ -9,7 +9,10 @@ the GT on its own (Sim(3); monocular maps have independent scales) and reported,
   - ate_sim3_pooled: RMS over every matched pose of every map (each map aligned separately), weighted by poses
   - maps_scored: maps with >= --min-poses matched poses (shorter maps are listed but not aligned)
 
-Usage: evaluate_multimap.py --gt gt_tum.txt --run <run dir> --out metrics_multimap.json [--min-poses 20]
+AlvaAR runs (baselines/alvaar/alvaar_run.mjs) write one traj_seg<i>_tum.txt per segment between resets (each reset
+starts a new world frame): score them with --prefix traj_seg.
+
+Usage: evaluate_multimap.py --gt gt_tum.txt --run <run dir> --out metrics_multimap.json [--min-poses 20] [--prefix traj_map]
 """
 import argparse
 import copy
@@ -29,15 +32,17 @@ def main():
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--max-diff", type=float, default=0.005)
     ap.add_argument("--min-poses", type=int, default=20)
+    ap.add_argument("--prefix", default="traj_map", help="per-map file prefix (traj_seg for AlvaAR)")
     a = ap.parse_args()
 
     gt = file_interface.read_tum_trajectory_file(str(a.gt))
     gt_t = gt.timestamps
     covered = np.zeros(gt_t.size, dtype=bool)
     maps, sq_sum, n_sum = [], 0.0, 0
-    files = sorted(a.run.glob("traj_map*_tum.txt"), key=lambda p: int(re.search(r"traj_map(\d+)_", p.name).group(1)))
+    pat = re.compile(rf"{re.escape(a.prefix)}(\d+)_tum\.txt$")
+    files = sorted((p for p in a.run.glob(f"{a.prefix}*_tum.txt") if pat.match(p.name)), key=lambda p: int(pat.match(p.name).group(1)))
     for f in files:
-        mid = int(re.search(r"traj_map(\d+)_", f.name).group(1))
+        mid = int(pat.match(f.name).group(1))
         est_all = file_interface.read_tum_trajectory_file(str(f))
         entry = {"map": mid, "est_poses": est_all.num_poses, "matched_poses": 0}
         try:
