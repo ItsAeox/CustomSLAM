@@ -2698,8 +2698,15 @@ void Tracking::MonocularInitialization()
         }
 
         // Find correspondences
+#ifdef REGISTER_TIMES
+        auto tIni0 = std::chrono::steady_clock::now();
+#endif
         ORBmatcher matcher(0.9,true);
         int nmatches = matcher.SearchForInitialization(mInitialFrame,mCurrentFrame,mvbPrevMatched,mvIniMatches,100);
+#ifdef REGISTER_TIMES
+        auto tIni1 = std::chrono::steady_clock::now();
+        mdWebIniMatch_ms = std::chrono::duration<double, std::milli>(tIni1 - tIni0).count();
+#endif
 
         // Check if there are enough correspondences
         #ifdef ORBSLAM3_WEB
@@ -2719,6 +2726,10 @@ void Tracking::MonocularInitialization()
         bool bTwoView = webConfig().initGyro && webConfig().gyroPrior && WebGyroTwoView(Tcw, mvIniP3D, vbTriangulated);
         if(!bTwoView)
             bTwoView = mpCamera->ReconstructWithTwoViews(mInitialFrame.mvKeysUn,mCurrentFrame.mvKeysUn,mvIniMatches,Tcw,mvIniP3D,vbTriangulated);
+#ifdef REGISTER_TIMES
+        auto tIni2 = std::chrono::steady_clock::now();
+        mdWebIniTwoView_ms = std::chrono::duration<double, std::milli>(tIni2 - tIni1).count();
+#endif
         if(bTwoView)
 #else
         if(mpCamera->ReconstructWithTwoViews(mInitialFrame.mvKeysUn,mCurrentFrame.mvKeysUn,mvIniMatches,Tcw,mvIniP3D,vbTriangulated))
@@ -2738,6 +2749,9 @@ void Tracking::MonocularInitialization()
             mCurrentFrame.SetPose(Tcw);
 
             CreateInitialMapMonocular();
+#if defined(REGISTER_TIMES) && defined(ORBSLAM3_WEB)
+            mdWebIniMap_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tIni2).count();
+#endif
         }
     }
 }

@@ -218,6 +218,9 @@ public:
     vector<double> vdLMTrack_ms;
     vector<double> vdNewKF_ms;
     vector<double> vdTrackTotal_ms;
+    // web port: the map start's steps on the current frame (ms, 0 when not run): matching to the first frame,
+    // two-view reconstruction (gyro or H/F), the first map (CreateInitialMapMonocular)
+    double mdWebIniMatch_ms = 0, mdWebIniTwoView_ms = 0, mdWebIniMap_ms = 0;
 #endif
 
 protected:

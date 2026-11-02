@@ -473,6 +473,7 @@ int main(int argc, char** argv) {
     const size_t nOrb = tkp->vdORBExtract_ms.size(), nPose = tkp->vdPosePred_ms.size(), nLm = tkp->vdLMTrack_ms.size(),
                  nKf = tkp->vdNewKF_ms.size();
     const unsigned long kfId0 = ORB_SLAM3::KeyFrame::nNextId;
+    tkp->mdWebIniMatch_ms = tkp->mdWebIniTwoView_ms = tkp->mdWebIniMap_ms = 0;
 #endif
     auto t0 = std::chrono::steady_clock::now();
     const Sophus::SE3f Tcw = SLAM.TrackMonocular(im, d.t[i], meas);
@@ -527,9 +528,11 @@ int main(int argc, char** argv) {
       auto last = [](const std::vector<double>& v, size_t n0) { return v.size() > n0 ? v.back() : 0.0; };
       stf << i << " " << ttrack * 1000.0 << " " << last(tkp->vdORBExtract_ms, nOrb) << " " << last(tkp->vdPosePred_ms, nPose) << " "
           << last(tkp->vdLMTrack_ms, nLm) << " " << last(tkp->vdNewKF_ms, nKf) << " " << (tkp->mbWebKLTFrame ? 1 : 0) << " "
-          << (ORB_SLAM3::KeyFrame::nNextId > kfId0 ? 1 : 0) << "\n";
+          << (ORB_SLAM3::KeyFrame::nNextId > kfId0 ? 1 : 0) << " " << tkp->mdWebIniMatch_ms << " "
+          << tkp->mdWebIniTwoView_ms << " " << tkp->mdWebIniMap_ms << "\n";
       // columns: frame, total, ORB extraction (a stale copy on flow frames), pose prediction, local-map tracking,
-      // keyframe decision + creation, flow frame, keyframe made
+      // keyframe decision + creation, flow frame, keyframe made; map start (0 when not run): matching to the first
+      // frame, two-view reconstruction, the first map
     }
 #endif
 #ifdef ORBSLAM3_WEB
