@@ -4,7 +4,7 @@
 A run is a directory with metrics.json (eval/evaluate.py), usually laid out as
   results/<experiment>/[<variant>/]<sequence>/<flavour>_seed<k>/
 with run_info.txt (orbslam3_run) and track_times.txt next to it. One row per run:
-  experiment, variant, sequence, dataset, flavour, seed, path,
+  experiment, variant, sequence, dataset, flavour, system (orbslam3_run or alvaar), seed, path,
   ATE (Sim3 / SE3 RMSE, mm), rotation ATE (deg), Sim3 scale, coverage, matched poses,
   tracking time (median / p95 / mean ms over processed frames), frames processed / dropped,
   pacing protocol (see below), effective playback rate, settings file, vocabulary, descriptor (from the settings).
@@ -95,10 +95,12 @@ def main():
         experiment = rel[0]
         sequence = rel[-2] if len(rel) >= 3 else ""
         variant = "/".join(rel[1:-2]) if len(rel) >= 4 else ""
-        met, mm = {}, {}
+        met, mm, on = {}, {}, {}
         try:
             if (run / "metrics.json").exists():
                 met = json.loads((run / "metrics.json").read_text())
+            if (run / "metrics_online.json").exists():
+                on = json.loads((run / "metrics_online.json").read_text())
             if (run / "metrics_multimap.json").exists():
                 mm = json.loads((run / "metrics_multimap.json").read_text())
         except Exception:
@@ -113,7 +115,8 @@ def main():
         ds = info.get("dataset") or (sequence.split("_")[0] if "_" in sequence else "")
         rows.append({
             "experiment": experiment, "variant": variant, "sequence": sequence, "dataset": ds,
-            "flavour": flavour, "seed": seed, "path": str(run.relative_to(root)).replace("\\", "/"),
+            "flavour": flavour, "system": info.get("system", "orbslam3_run"),  # "alvaar": baselines/alvaar driver
+            "seed": seed, "path": str(run.relative_to(root)).replace("\\", "/"),
             "ate_sim3_mm": round(met["ate_sim3"]["rmse"] * 1000, 2) if met else "",
             "ate_se3_mm": round(met["ate_se3"]["rmse"] * 1000, 2) if met else "",
             "rot_ate_deg": round(met["ate_se3_rot_deg"]["rmse"], 3) if met else "",
@@ -133,6 +136,9 @@ def main():
             "mm_maps_scored": mm.get("maps_scored", ""),
             "mm_coverage": round(mm["coverage_union"], 4) if mm else "",
             "mm_ate_sim3_pooled_mm": round(mm["ate_sim3_pooled"] * 1000, 2) if mm else "",
+            # online poses (--trace -> eval/trace_to_tum.py -> metrics_online.json); AlvaAR's traj_tum.txt is online
+            "online_ate_sim3_mm": round(on["ate_sim3"]["rmse"] * 1000, 2) if on else "",
+            "online_coverage": round(on.get("coverage", nan), 4) if on else "",
         })
     if not rows:
         print("no runs found")
