@@ -154,6 +154,9 @@ struct WebConfig
                                  // with the gyro's (MaxRotDiff); 2 = the gyro two-view solve (WebGyroTwoView, Web.Init.Gyro)
     double turnMinAngle = 20;    // Web.Turn.MinAngle: degrees turned away from the last good pose before bridging
     double turnMaxRotDiff = 3;   // Web.Turn.MaxRotDiff: mode 1, degrees between the reconstruction's and the gyro's rotation
+    int turnIniFeatures = 0;     // Web.Turn.IniFeatures: 1 = while lost with the bridge on, frames get the map start's ORB
+                                 // extractor (5x features); the bridge matches finest-level keypoints only and needs
+                                 // Web.Init.MinMatches (walkdiag_1102: all 27,924 tries on the flat failed there)
 
     int fastPose = 0;          // Web.Track.FastPose: motion-only pose optimisation of monocular frames (Optimizer.cc)
                                // 0 = g2o (stock), 1 = the same problem solved without a g2o graph (WebPoseOptimization),
@@ -288,6 +291,7 @@ inline void loadWebConfig(const std::string& settingsFile)
     readInt("Web.Reloc.GlobalDesc", c.relocGlobalDesc);
     readInt("Web.Loop.MinCoincidences", c.loopMinCoincidences);
     readInt("Web.Turn.Bridge", c.turnBridge);
+    readInt("Web.Turn.IniFeatures", c.turnIniFeatures);
     for (auto [key, v] : {std::pair<const char*, double*>{"Web.Turn.MinAngle", &c.turnMinAngle}, {"Web.Turn.MaxRotDiff", &c.turnMaxRotDiff}}) {
         cv::FileNode n = fs[key];
         if (!n.empty() && (n.isInt() || n.isReal())) *v = n.real();
@@ -347,7 +351,8 @@ inline void loadWebConfig(const std::string& settingsFile)
               << (c.initGyro ? "; gyro two-view init" : "")
               << (c.turnBridge ? std::string("; turn bridge (") + (c.turnBridge == 1 ? "two-view + gyro check " + std::to_string(c.turnMaxRotDiff) + " deg"
                                                                                      : std::string("gyro two-view")) +
-                                     ", after " + std::to_string(c.turnMinAngle) + " deg)"
+                                     ", after " + std::to_string(c.turnMinAngle) + " deg" +
+                                     (c.turnIniFeatures ? ", 5x features while lost)" : ")")
                                : std::string())
               << (c.imuKeepMap ? "; IMU start-up keeps the map on losses" : "")
               << (c.imuMinInliersPreInit != 50 ? "; IMU pre-init inliers " + std::to_string(c.imuMinInliersPreInit) : std::string())

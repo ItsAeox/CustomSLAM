@@ -1597,7 +1597,14 @@ Sophus::SE3f Tracking::GrabImageMonocular(const cv::Mat &im, const double &times
         if(!mbWebKLTFrame)
 #endif
         {
+#ifdef ORBSLAM3_WEB
+        // Web.Turn.IniFeatures: a turn bridge starts like a map, from the map start's extractor
+        const bool bIniExtractor = mState==NOT_INITIALIZED || mState==NO_IMAGES_YET ||(lastID - initID) < mMaxFrames ||
+                                   (webConfig().turnBridge && webConfig().turnIniFeatures && mState==RECENTLY_LOST);
+        if(bIniExtractor)
+#else
         if(mState==NOT_INITIALIZED || mState==NO_IMAGES_YET ||(lastID - initID) < mMaxFrames)
+#endif
             mCurrentFrame = Frame(mImGray,timestamp,mpIniORBextractor,mpORBVocabulary,mpCamera,mDistCoef,mbf,mThDepth);
         else
             mCurrentFrame = Frame(mImGray,timestamp,mpORBextractorLeft,mpORBVocabulary,mpCamera,mDistCoef,mbf,mThDepth);
