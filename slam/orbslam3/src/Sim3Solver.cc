@@ -82,7 +82,7 @@ Sim3Solver::Sim3Solver(KeyFrame *pKF1, KeyFrame *pKF2, const vector<MapPoint *> 
             if(pMP1->isBad() || pMP2->isBad())
                 continue;
 #ifdef ORBSLAM3_WEB
-            if((pMP1->mbWebFar || pMP2->mbWebFar) && webConfig().rotFar >= 3)  // Web.Rot.FarPoints 3: made-up depth, no use for a 3D alignment
+            if(((pMP1->mbWebFar || pMP2->mbWebFar) && webConfig().rotFar >= 3) || pMP1->mbWebPrior || pMP2->mbWebPrior)  // Web.Rot.FarPoints 3: made-up depth, no use for a 3D alignment
                 continue;
 #endif
 

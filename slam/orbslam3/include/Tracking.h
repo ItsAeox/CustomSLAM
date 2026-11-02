@@ -150,6 +150,8 @@ public:
     long mnWebLKCalls = 0, mnWebLKPoints = 0, mnWebLKMismatch = 0;  // Web.KLT.Parallel compare mode
     long mnWebCovKFs = 0;  // keyframes requested by Web.KF.Coverage
     long mnWebKFBusy = 0;  // NeedNewKeyFrame: a keyframe was due while local mapping was busy (diagnostics, --trace)
+    long mnWebPriorCreated = 0;  // Web.Map.PriorPoints: points made at a depth prior
+    void WebCreatePriorPoints(KeyFrame* pKF);
     size_t WebLocalMapSize() const { return mvpLocalMapPoints.size(); }  // diagnostics (orbslam3_run --trace)
     // SearchLocalPoints of frame mnWebLocalFrame: local map points in the view, matched by projection (diagnostics, --trace)
     int mnWebLocalInView = 0, mnWebLocalMatched = 0;

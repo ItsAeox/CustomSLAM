@@ -26,6 +26,9 @@
 #include "Thirdparty/DBoW2/DBoW2/FeatureVector.h"
 
 #include <cstdint>  // web port: was <stdint-gcc.h> (GCC-only header)
+#ifdef ORBSLAM3_WEB
+#include "WebConfig.h"
+#endif
 
 using namespace std;
 
@@ -67,6 +70,10 @@ namespace ORB_SLAM3
 
                 if(bFactor)
                     r*=th;
+#ifdef ORBSLAM3_WEB
+                if(pMP->mbWebPrior)  // Web.Map.PriorPoints: the made-up depth drifts the projection as the camera moves
+                    r*=webConfig().mapPriorRadius;
+#endif
 
                 const vector<size_t> vIndices =
                         F.GetFeaturesInArea(pMP->mTrackProjX,pMP->mTrackProjY,r*F.mvScaleFactors[nPredictedLevel],nPredictedLevel-1,nPredictedLevel);
@@ -1317,9 +1324,9 @@ namespace ORB_SLAM3
                     if(!pMPinKF->isBad())
                     {
 #ifdef ORBSLAM3_WEB
-                        if(pMPinKF->mbWebFar != pMP->mbWebFar)  // far points (Web.Rot.FarPoints): the real point wins
+                        if(pMPinKF->WebNoDepth() != pMP->WebNoDepth())  // far / prior points: the real point wins
                         {
-                            if(pMPinKF->mbWebFar) pMPinKF->Replace(pMP);
+                            if(pMPinKF->WebNoDepth()) pMPinKF->Replace(pMP);
                         }
                         else
 #endif

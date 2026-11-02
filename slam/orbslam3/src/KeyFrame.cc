@@ -805,7 +805,7 @@ float KeyFrame::ComputeSceneMedianDepth(const int q)
         {
             MapPoint* pMP = mvpMapPoints[i];
 #ifdef ORBSLAM3_WEB
-            if(pMP->mbWebFar)  // far points (Web.Rot.FarPoints) have no real depth
+            if(pMP->WebNoDepth())  // far / prior points (Web.Rot.FarPoints, Web.Map.PriorPoints) have no real depth
                 continue;
 #endif
             Eigen::Vector3f x3Dw = pMP->GetWorldPos();

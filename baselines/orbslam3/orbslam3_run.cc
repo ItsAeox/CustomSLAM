@@ -479,7 +479,7 @@ int main(int argc, char** argv) {
       std::vector<float> zs;
       for (int k = 0; k < F.N && k < (int)F.mvKeysUn.size(); ++k) {
         ORB_SLAM3::MapPoint* mp = F.mvpMapPoints[k];
-        if (!mp || F.mvbOutlier[k] || mp->isBad()) continue;
+        if (!mp || F.mvbOutlier[k] || mp->isBad() || mp->WebNoDepth()) continue;
         if (std::hypot(F.mvKeysUn[k].pt.x - cu, F.mvKeysUn[k].pt.y - cv_) > 60) continue;
         const Eigen::Vector3f Xc = Tcw * mp->GetWorldPos();
         if (Xc.z() > 0) zs.push_back(Xc.z());
@@ -495,7 +495,7 @@ int main(int argc, char** argv) {
       std::vector<float> xyz;
       if (map)
         for (ORB_SLAM3::MapPoint* mp : map->GetReferenceMapPoints()) {
-          if (!mp || mp->isBad() || mp->mbWebFar) continue;
+          if (!mp || mp->isBad() || mp->WebNoDepth()) continue;
           const Eigen::Vector3f p = mp->GetWorldPos();
           xyz.insert(xyz.end(), {p.x(), p.y(), p.z()});
         }

@@ -93,6 +93,14 @@ struct WebConfig
                                // (stock skips it then, with local BA); only local BA waits for mapping to catch up
     double kfRefRatio = 0;     // Web.KF.RefRatio: insert a keyframe when tracked map points < ratio x the reference
                                // keyframe's (Tracking::NeedNewKeyFrame; stock mono 0.9: lower = fewer keyframes)
+    int mapPriorPoints = 0;    // Web.Map.PriorPoints: visual-only, N > 0 = at each new keyframe up to N unmatched keypoints per
+                               // empty 4x4 image cell (no tracked map point) become map points at the median depth of the
+                               // tracked points in the neighbouring cells (ISSUES G22: walking out, the map's points lag the
+                               // turn). Searched with a wider window, weighted down in the pose solves, kept out of BA /
+                               // fusion / loop Sim3 / relocalisation / keyframe culling / plane fits, triangulated once a
+                               // later keyframe sees them with parallax (else culled like any new point)
+    double mapPriorWeight = 0.25; // Web.Map.PriorWeight: their weight in the pose solves
+    double mapPriorRadius = 4;    // Web.Map.PriorRadius: their search window factor in the local-map search
     int mapLocalRecent = 0;    // Web.Map.LocalRecent: visual-only, N > 0 = the N newest keyframes of the map (in time) are
                                // always in the local map that tracking searches (the IMU modes add 20; ISSUES G22)
     int kfAfterReloc = -1;     // Web.KF.AfterReloc: frames after a relocalisation or coast recovery before a keyframe may be
@@ -260,6 +268,11 @@ inline void loadWebConfig(const std::string& settingsFile)
     readInt("Web.KF.BusyQueue", c.kfBusyQueue);
     readInt("Web.KF.AfterReloc", c.kfAfterReloc);
     readInt("Web.Map.LocalRecent", c.mapLocalRecent);
+    readInt("Web.Map.PriorPoints", c.mapPriorPoints);
+    for (auto [key, v] : {std::pair<const char*, double*>{"Web.Map.PriorWeight", &c.mapPriorWeight}, {"Web.Map.PriorRadius", &c.mapPriorRadius}}) {
+        cv::FileNode n = fs[key];
+        if (!n.empty() && (n.isInt() || n.isReal())) *v = n.real();
+    }
     readInt("Web.Mapping.FuseQueued", c.mapFuseQueued);
     readInt("Web.Gyro.Prior", c.gyroPrior);
     cv::FileNode sw = fs["Web.Scale.Window"];
@@ -334,6 +347,9 @@ inline void loadWebConfig(const std::string& settingsFile)
               << (c.kfRefRatio > 0 ? "; KF ref ratio " + std::to_string(c.kfRefRatio) : std::string())
               << (c.kfAfterReloc >= 0 ? "; keyframes " + std::to_string(c.kfAfterReloc) + " frames after a recovery" : std::string())
               << (c.mapLocalRecent > 0 ? "; local map + the " + std::to_string(c.mapLocalRecent) + " newest keyframes" : std::string())
+              << (c.mapPriorPoints > 0 ? "; prior-depth points (" + std::to_string(c.mapPriorPoints) + " per empty cell, weight " +
+                                             std::to_string(c.mapPriorWeight) + ", window x" + std::to_string(c.mapPriorRadius) + ")"
+                                       : std::string())
               << (c.kfBusyQueue > 0 ? "; keyframes queued while mapping is busy (up to " + std::to_string(c.kfBusyQueue) + ")" : std::string())
               << (c.mapFuseQueued ? "; fusion also for queued keyframes" : "")
               << (c.lbaFast ? (c.lbaFast == 1 ? "; fast local BA" : "; fast local BA (compare with g2o)") : "")

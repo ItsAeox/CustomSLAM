@@ -82,6 +82,10 @@ void LocalMapping::Run()
 #endif
             // BoW conversion and insertion in Map
             ProcessNewKeyFrame();
+#ifdef ORBSLAM3_WEB
+            if(webConfig().mapPriorPoints > 0 && !mbInertial)
+                WebUpgradePriorPoints();
+#endif
 #ifdef REGISTER_TIMES
             std::chrono::steady_clock::time_point time_EndProcessKF = std::chrono::steady_clock::now();
 
@@ -496,6 +500,64 @@ int LocalMapping::WebCreateFarPoints(KeyFrame* pKF2, float medianDepth)
 #endif
 
 
+#ifdef ORBSLAM3_WEB
+// web port (Web.Map.PriorPoints, Tracking::WebCreatePriorPoints): a prior point the new keyframe also sees is triangulated
+// from its first keyframe and this one when the rays have parallax (Web.Map.MaxCosParallax) and both reprojections fit
+// (as CreateNewMapPoints); then it is an ordinary point. Points never upgraded are culled like any new point.
+void LocalMapping::WebUpgradePriorPoints()
+{
+    KeyFrame* pKF2 = mpCurrentKeyFrame;
+    const vector<MapPoint*> vpMPs = pKF2->GetMapPointMatches();
+    const Sophus::SE3f T2 = pKF2->GetPose();
+    Eigen::Matrix<float,3,4> P2 = T2.matrix3x4();
+    for(size_t i2 = 0; i2 < vpMPs.size(); i2++)
+    {
+        MapPoint* pMP = vpMPs[i2];
+        if(!pMP || pMP->isBad() || !pMP->mbWebPrior)
+            continue;
+        KeyFrame* pKF1 = pMP->GetReferenceKeyFrame();
+        if(!pKF1 || pKF1 == pKF2 || pKF1->isBad())
+            continue;
+        const int i1 = get<0>(pMP->GetIndexInKeyFrame(pKF1));
+        if(i1 < 0)
+            continue;
+        mnWebPriorTried++;
+        const cv::KeyPoint& kp1 = pKF1->mvKeysUn[i1];
+        const cv::KeyPoint& kp2 = pKF2->mvKeysUn[i2];
+        const Sophus::SE3f T1 = pKF1->GetPose();
+        Eigen::Matrix<float,3,4> P1 = T1.matrix3x4();
+        Eigen::Vector3f xn1 = pKF1->mpCamera->unprojectEig(kp1.pt), xn2 = pKF2->mpCamera->unprojectEig(kp2.pt);
+        const Eigen::Vector3f ray1 = T1.rotationMatrix().transpose() * xn1, ray2 = T2.rotationMatrix().transpose() * xn2;
+        if(ray1.dot(ray2) / (ray1.norm() * ray2.norm()) >= webConfig().triMaxCosParallax)
+            continue;  // not enough parallax yet
+        Eigen::Vector3f x3D;
+        if(!GeometricTools::Triangulate(xn1, xn2, P1, P2, x3D))
+            continue;
+        bool ok = true;
+        for(int k = 0; k < 2 && ok; k++)
+        {
+            KeyFrame* pK = k ? pKF2 : pKF1;
+            const cv::KeyPoint& kp = k ? kp2 : kp1;
+            const Eigen::Vector3f Xc = (k ? T2 : T1) * x3D;
+            if(Xc(2) <= 0)
+            {
+                ok = false;
+                break;
+            }
+            const Eigen::Vector2f uv = pK->mpCamera->project(Xc);
+            const float ex = uv(0) - kp.pt.x, ey = uv(1) - kp.pt.y;
+            ok = ex * ex + ey * ey <= 5.991f * pK->mvLevelSigma2[kp.octave];
+        }
+        if(!ok)
+            continue;
+        pMP->SetWorldPos(x3D);
+        pMP->mbWebPrior = false;
+        pMP->UpdateNormalAndDepth();
+        mnWebPriorUpgraded++;
+    }
+}
+#endif
+
 void LocalMapping::CreateNewMapPoints()
 {
     // Retrieve neighbor keyframes in covisibility graph
@@ -907,11 +969,11 @@ void LocalMapping::SearchInNeighbors()
         KeyFrame* pKFi = *vit;
 
 #ifdef ORBSLAM3_WEB
-        if(webConfig().rotFar)  // far points (Web.Rot.FarPoints) are not fused: they have no real depth
+        if(webConfig().rotFar || webConfig().mapPriorPoints)  // far / prior points are not fused: no real depth
         {
             vector<MapPoint*> vpReal;
             for(MapPoint* pMP : vpMapPointMatches)
-                if(pMP && !pMP->mbWebFar)
+                if(pMP && !pMP->WebNoDepth())
                     vpReal.push_back(pMP);
             matcher.Fuse(pKFi,vpReal);
             if(pKFi->NLeft != -1) matcher.Fuse(pKFi,vpReal,true);
@@ -944,7 +1006,7 @@ void LocalMapping::SearchInNeighbors()
             if(pMP->isBad() || pMP->mnFuseCandidateForKF == mpCurrentKeyFrame->mnId)
                 continue;
 #ifdef ORBSLAM3_WEB
-            if(pMP->mbWebFar)
+            if(pMP->WebNoDepth())
                 continue;
 #endif
             pMP->mnFuseCandidateForKF = mpCurrentKeyFrame->mnId;
@@ -1123,7 +1185,7 @@ void LocalMapping::KeyFrameCulling()
                             continue;
                     }
 #ifdef ORBSLAM3_WEB
-                    if(pMP->mbWebFar && webConfig().rotFar >= 3)  // far points say nothing about redundancy
+                    if((pMP->mbWebFar && webConfig().rotFar >= 3) || pMP->mbWebPrior)  // far / prior points say nothing about redundancy
                         continue;
 #endif
 

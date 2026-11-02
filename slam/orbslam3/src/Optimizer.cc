@@ -1305,6 +1305,8 @@ int WebPoseOptimization(Frame* pFrame)
             const cv::KeyPoint& kp = pFrame->mvKeysUn[i];
             vObs.push_back({pMP->GetWorldPos().cast<double>(), Eigen::Vector2d(kp.pt.x, kp.pt.y),
                             (double)pFrame->mvInvLevelSigma2[kp.octave], i});
+            if(pMP->mbWebPrior)  // Web.Map.PriorPoints: made-up depth, weighted down
+                vObs.back().w *= webConfig().mapPriorWeight;
             if(pMP->mbWebFar && webConfig().rotFar >= 2)  // point at infinity: its mean viewing direction
             {
                 vObs.back().inf = true;
@@ -1480,7 +1482,11 @@ int Optimizer::PoseOptimization(Frame *pFrame)
                     e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(0)));
                     e->setMeasurement(obs);
                     const float invSigma2 = pFrame->mvInvLevelSigma2[kpUn.octave];
+#ifdef ORBSLAM3_WEB
+                    e->setInformation(Eigen::Matrix2d::Identity()*invSigma2*(pMP->mbWebPrior ? webConfig().mapPriorWeight : 1.0));
+#else
                     e->setInformation(Eigen::Matrix2d::Identity()*invSigma2);
+#endif
 
                     g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                     e->setRobustKernel(rk);
@@ -1770,7 +1776,7 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
                 if(!pMP->isBad() && pMP->GetMap() == pCurrentMap)
                 {
 #ifdef ORBSLAM3_WEB
-                    if(pMP->mbWebFar)  // far points (Web.Rot.FarPoints): no depth to optimise
+                    if(pMP->WebNoDepth())  // far / prior points (Web.Rot.FarPoints, Web.Map.PriorPoints): no depth to optimise
                         continue;
 #endif
 

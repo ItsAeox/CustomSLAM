@@ -211,6 +211,8 @@ public:
     unsigned int mnOriginMapId;
 #ifdef ORBSLAM3_WEB
     bool mbWebFar = false;  // pure-rotation prototype (Web.Rot.FarPoints): a far point, not triangulated (no depth)
+    bool mbWebPrior = false;  // Web.Map.PriorPoints: made from one keyframe at a depth prior, not triangulated yet
+    bool WebNoDepth() const { return mbWebFar || mbWebPrior; }  // made-up depth: out of BA, fusion, plane fits, ...
 #endif
 
 protected:    

@@ -157,7 +157,7 @@ class WebSlam {
     std::unordered_set<ORB_SLAM3::MapPoint*> local(ref.begin(), ref.end());
     mps_.reserve(all.size() * 4);
     for (ORB_SLAM3::MapPoint* mp : all) {
-      if (!mp || mp->isBad() || mp->mbWebFar) continue;  // far points (Web.Rot.FarPoints): no depth, not for plane fits
+      if (!mp || mp->isBad() || mp->WebNoDepth()) continue;  // far / prior points: no real depth, not for plane fits
       const Eigen::Vector3f p = mp->GetWorldPos();
       mps_.insert(mps_.end(), {p.x(), p.y(), p.z(), local.count(mp) ? 1.f : 0.f});
     }

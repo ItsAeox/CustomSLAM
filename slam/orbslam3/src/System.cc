@@ -547,6 +547,9 @@ void System::Shutdown()
     webPrintLBAFastStats();
     if(webConfig().rotFar)
         cout << "ROT-STATS far_created=" << mpLocalMapper->mnWebFarCreated << " far_culled=" << mpLocalMapper->mnWebFarCulled << endl;
+    if(webConfig().mapPriorPoints)
+        cout << "PRIOR-STATS created=" << mpTracker->mnWebPriorCreated << " upgrade_tries=" << mpLocalMapper->mnWebPriorTried
+             << " upgraded=" << mpLocalMapper->mnWebPriorUpgraded << endl;
     if(webConfig().kltEnable)
         cout << "KLT-STATS klt_frames=" << mpTracker->mnWebKLTFrames << " orb_frames=" << mpTracker->mnWebORBFrames
              << " klt_fallbacks=" << mpTracker->mnWebKLTFallbacks << " klt_ms_mean="

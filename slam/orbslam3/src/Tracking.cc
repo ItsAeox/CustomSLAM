@@ -3461,6 +3461,81 @@ bool Tracking::WebTurnBridge()
     return true;
 }
 
+// web port (Web.Map.PriorPoints, ISSUES G22): walking out, the map's points lag the turn (wholemap_1102: before a loss the
+// whole map has 250-410 valid points in the view vs 800-1500 while tracking holds, and image cells with none). At each new
+// keyframe, unmatched keypoints in empty 4x4 cells (no tracked point) become map points at the median depth of the real
+// points tracked in the neighbouring cells (no neighbours: none made). LocalMapping::WebUpgradePriorPoints triangulates
+// them once a later keyframe sees them with parallax; until then they stay out of BA, fusion, Sim3, relocalisation and
+// plane fits (MapPoint::WebNoDepth), are searched with a wider window and weighted down in the pose solves.
+void Tracking::WebCreatePriorPoints(KeyFrame* pKF)
+{
+    const WebConfig& cfg = webConfig();
+    Map* pMap = pKF->GetMap();
+    if(!pMap || pMap->KeyFramesInMap() < 5)
+        return;
+    const Sophus::SE3f Tcw = mCurrentFrame.GetPose(), Twc = Tcw.inverse();
+    const float w = Frame::mnMaxX - Frame::mnMinX, h = Frame::mnMaxY - Frame::mnMinY;
+    vector<float> vDepth[16];
+    vector<int> vFree[16];
+    int nTracked[16] = {0};
+    for(int i = 0; i < mCurrentFrame.N; i++)
+    {
+        const cv::Point2f& p = mCurrentFrame.mvKeysUn[i].pt;
+        const int c = 4 * std::min(3, std::max(0, (int)(4 * (p.y - Frame::mnMinY) / h))) +
+                      std::min(3, std::max(0, (int)(4 * (p.x - Frame::mnMinX) / w)));
+        MapPoint* pMP = mCurrentFrame.mvpMapPoints[i];
+        if(!pMP)
+            vFree[c].push_back(i);
+        else if(!mCurrentFrame.mvbOutlier[i] && !pMP->isBad())
+        {
+            nTracked[c]++;
+            if(!pMP->WebNoDepth())
+            {
+                const float z = (Tcw * pMP->GetWorldPos())(2);
+                if(z > 0)
+                    vDepth[c].push_back(z);
+            }
+        }
+    }
+    int nCreated = 0;
+    for(int c = 0; c < 16; c++)
+    {
+        if(nTracked[c] > 0 || vFree[c].size() < 3)
+            continue;
+        const int cy = c / 4, cx = c % 4;
+        vector<float> vz;
+        for(int dy = -1; dy <= 1; dy++)
+            for(int dx = -1; dx <= 1; dx++)
+            {
+                const int x = cx + dx, y = cy + dy;
+                if((dx || dy) && x >= 0 && x < 4 && y >= 0 && y < 4)
+                    vz.insert(vz.end(), vDepth[4 * y + x].begin(), vDepth[4 * y + x].end());
+            }
+        if(vz.size() < 5)
+            continue;
+        nth_element(vz.begin(), vz.begin() + vz.size() / 2, vz.end());
+        const float z = vz[vz.size() / 2];
+        vector<int>& vi = vFree[c];
+        sort(vi.begin(), vi.end(), [&](int a, int b) { return mCurrentFrame.mvKeysUn[a].response > mCurrentFrame.mvKeysUn[b].response; });
+        for(int k = 0; k < (int)vi.size() && k < cfg.mapPriorPoints; k++)
+        {
+            const int i = vi[k];
+            const Eigen::Vector3f Xw = Twc * (mpCamera->unprojectEig(mCurrentFrame.mvKeysUn[i].pt) * z);
+            MapPoint* pMP = new MapPoint(Xw, pKF, pMap);
+            pMP->mbWebPrior = true;
+            pMP->AddObservation(pKF, i);
+            pKF->AddMapPoint(pMP, i);
+            pMP->ComputeDistinctiveDescriptors();
+            pMP->UpdateNormalAndDepth();
+            mpAtlas->AddMapPoint(pMP);
+            mCurrentFrame.mvpMapPoints[i] = pMP;
+            mCurrentFrame.mvbOutlier[i] = false;
+            nCreated++;
+        }
+    }
+    mnWebPriorCreated += nCreated;
+}
+
 int Tracking::WebOldPointsTracked() const
 {
     if(!mnWebBridgeAnchorKF)
@@ -4663,6 +4738,10 @@ void Tracking::CreateNewKeyFrame()
         mpImuPreintegratedFromLastKF = new IMU::Preintegrated(pKF->GetImuBias(),pKF->mImuCalib);
     }
 
+#ifdef ORBSLAM3_WEB
+    if(mSensor == System::MONOCULAR && webConfig().mapPriorPoints > 0)
+        WebCreatePriorPoints(pKF);
+#endif
     if(mSensor!=System::MONOCULAR && mSensor != System::IMU_MONOCULAR) // TODO check if incluide imu_stereo
     {
         mCurrentFrame.UpdatePoseMatrices();
@@ -5099,9 +5178,9 @@ bool Tracking::Relocalization()
         {
             int nmatches = matcher.SearchByBoW(pKF,mCurrentFrame,vvpMapPointMatches[i]);
 #ifdef ORBSLAM3_WEB
-            if(webConfig().rotFar >= 3)  // Web.Rot.FarPoints 3: no far points in the PnP (made-up position)
+            if(webConfig().rotFar >= 3 || webConfig().mapPriorPoints)  // no far / prior points in the PnP (made-up position)
                 for(MapPoint*& pMP : vvpMapPointMatches[i])
-                    if(pMP && pMP->mbWebFar)
+                    if(pMP && pMP->WebNoDepth())
                     {
                         pMP = static_cast<MapPoint*>(NULL);
                         nmatches--;

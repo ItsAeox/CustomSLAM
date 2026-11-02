@@ -71,6 +71,7 @@ public:
     long mnDiagCulledRatio = 0, mnDiagCulledObs = 0;  // new points culled: found ratio < 0.25 / too few observations
     long mnDiagCulledKFs = 0;  // keyframes culled as redundant (visual KeyFrameCulling)
     long mnWebFarCreated = 0, mnWebFarCulled = 0;  // Web.Rot.FarPoints statistics
+    long mnWebPriorTried = 0, mnWebPriorUpgraded = 0;  // Web.Map.PriorPoints: triangulation tries / points made ordinary
 #endif
     void SetAcceptKeyFrames(bool flag);
     bool SetNotStop(bool flag);
@@ -145,6 +146,7 @@ protected:
     void CreateNewMapPoints();
 #ifdef ORBSLAM3_WEB
     int WebCreateFarPoints(KeyFrame* pKF2, float medianDepth);
+    void WebUpgradePriorPoints();  // Web.Map.PriorPoints
     std::list<MapPoint*> mlpWebFarPoints;  // far points still alive (culled after Web.Rot.FarLife keyframes)
 #endif
 
