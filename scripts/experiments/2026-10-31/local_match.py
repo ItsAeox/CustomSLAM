@@ -1,7 +1,9 @@
 """Are local map points in the view matched? (ISSUES G22, ee32f06+ traces). Over the ORB frames after the tap of a
 batch's runs (one arm, one scenario), the local map points in the view and the share matched by projection, binned by
 the true turn rate (deg/s over the 0.2 s before) and by whether a tracking loss follows within 1 s; plus the tracked
-points from the 10 newest keyframes. Usage: local_match.py <batch dir> <arm> [scenario=flat]"""
+points from the 10 newest keyframes; with 40-column traces (the runner after df7b5b2) also the whole current map in the
+view: points projecting into the image, those passing the frustum test's angle / distance checks, and the 4x4 cells
+they cover (do the new view's points exist anywhere?). Usage: local_match.py <batch dir> <arm> [scenario=flat]"""
 import sys, re, numpy as np
 from pathlib import Path
 
@@ -28,7 +30,8 @@ for sd in sorted(root.glob(f"{SC}[0-9]*/{arm}/seed*")):
     if not rows: continue
     nruns += 1
     fr = np.array([int(r[0]) for r in rows]); st = np.array([int(r[1]) for r in rows])
-    dg = np.array([[float(r[-5]), float(r[-4]), float(r[-3])] for r in rows])
+    dg = np.array([[float(r[-5]), float(r[-4]), float(r[-3])] + ([float(r[-8]), float(r[-7]), float(r[-6])] if len(r) >= 40 else [np.nan] * 3)
+                   for r in rows])
     stamps = np.loadtxt(D / seq / "mav0/cam0/data.csv", delimiter=",", comments="#", usecols=0, dtype=np.int64) * 1e-9
     t0 = float(open(D / seq / "gt/camera_dense.csv").readlines()[1].split()[0])
     tm = stamps[np.clip(fr, 0, len(stamps) - 1)] - t0
@@ -46,13 +49,16 @@ for sd in sorted(root.glob(f"{SC}[0-9]*/{arm}/seed*")):
         pre = int(((loss_t > tm[i]) & (loss_t <= tm[i] + 1)).any())
         acc[(b, pre)].append(dg[i])
 print(f"# Local map matching on ORB frames after the tap: {root.name} {arm} ({SC}, {nruns} runs)\n")
-print("| True turn rate | Frames (no loss within 1 s / loss within 1 s) | In view, median | Matched, median | Matched share, median | From the 10 newest KFs, median |")
-print("|---|---|---|---|---|---|")
+print("| True turn rate | Frames (no loss within 1 s / loss within 1 s) | In view, median | Matched, median | Matched share, median | From the 10 newest KFs, median | Whole map: projecting / valid / cells |")
+print("|---|---|---|---|---|---|---|")
 for b, (lo, hi) in enumerate(BINS):
     for pre in (0, 1):
         a = np.array(acc[(b, pre)])
         lab = f"{lo}-{hi:.0f} deg/s" if hi < 1e8 else f">= {lo} deg/s"
         if not len(a):
-            print(f"| {lab} | {'loss follows' if pre else 'no loss'}: 0 | - | - | - | - |"); continue
+            print(f"| {lab} | {'loss follows' if pre else 'no loss'}: 0 | - | - | - | - | - |"); continue
         print(f"| {lab} | {'loss follows' if pre else 'no loss'}: {len(a)} | {np.median(a[:, 0]):.0f} | {np.median(a[:, 1]):.0f} | "
-              f"{np.median(a[:, 1] / np.maximum(a[:, 0], 1)):.2f} | {np.median(a[:, 2]):.0f} |")
+              f"{np.median(a[:, 1] / np.maximum(a[:, 0], 1)):.2f} | {np.median(a[:, 2]):.0f} | "
+              f"{np.nanmedian(a[:, 3]) if np.isfinite(a[:, 3]).any() else float('nan'):.0f} / "
+              f"{np.nanmedian(a[:, 4]) if np.isfinite(a[:, 4]).any() else float('nan'):.0f} / "
+              f"{np.nanmedian(a[:, 5]) if np.isfinite(a[:, 5]).any() else float('nan'):.0f} |")

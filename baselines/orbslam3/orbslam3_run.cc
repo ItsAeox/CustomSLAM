@@ -562,6 +562,34 @@ int main(int argc, char** argv) {
         const Eigen::Vector3d gd = se.valid ? Eigen::Vector3d(se.g.normalized()) : Eigen::Vector3d::Zero();
         tr << " " << (se.valid ? se.s : 0.0) << " " << (se.valid ? se.relStd : -1.0) << " " << se.windows  // its 1-sigma / s,
            << " " << gd.transpose();                                                                         // windows, gravity dir
+        {  // + the whole current map in this view (ORB frames while tracking, else -1; ISSUES G22: do the new view's
+           //   points exist anywhere?): points projecting into the image, those also within the frustum test's viewing
+           //   angle (60 deg) and distance range, and the 4x4 image cells holding one of those
+          int wmProj = -1, wmValid = -1, wmCells = -1;
+          if (m && tk->mnWebLocalFrame == F.mnId && SLAM.GetTrackingState() == 2) {
+            wmProj = wmValid = 0;
+            bool cell[16] = {false};
+            const Eigen::Vector3f Ow = Tcw.inverse().translation();
+            const float w = F.mnMaxX - F.mnMinX, h = F.mnMaxY - F.mnMinY;
+            for (ORB_SLAM3::MapPoint* mp : m->GetAllMapPoints()) {
+              if (!mp || mp->isBad()) continue;
+              const Eigen::Vector3f P = mp->GetWorldPos(), Xc = Tcw * P;
+              if (Xc.z() < 0.1f * Xc.norm()) continue;
+              const float u = ORB_SLAM3::Frame::fx * Xc.x() / Xc.z() + ORB_SLAM3::Frame::cx;
+              const float v = ORB_SLAM3::Frame::fy * Xc.y() / Xc.z() + ORB_SLAM3::Frame::cy;
+              if (u < F.mnMinX || u >= F.mnMaxX || v < F.mnMinY || v >= F.mnMaxY) continue;
+              ++wmProj;
+              const Eigen::Vector3f PO = P - Ow;
+              const float dist = PO.norm();
+              if (dist < mp->GetMinDistanceInvariance() || dist > mp->GetMaxDistanceInvariance()) continue;
+              if (PO.dot(mp->GetNormal()) < 0.5f * dist) continue;
+              ++wmValid;
+              cell[4 * std::min(3, (int)(4 * (v - F.mnMinY) / h)) + std::min(3, (int)(4 * (u - F.mnMinX) / w))] = true;
+            }
+            wmCells = (int)std::count(cell, cell + 16, true);
+          }
+          tr << " " << wmProj << " " << wmValid << " " << wmCells;
+        }
         {  // + local map points in the view and matched by projection in this frame (-1: no local-map search), tracked
            //   points first seen by one of the map's 10 newest keyframes (are new points tracked? ISSUES G22, walk_loss.py)
           const bool lsearch = tk->mnWebLocalFrame == F.mnId;
