@@ -21,6 +21,7 @@
 #include "Converter.h"
 #include "GeometricTools.h"
 #include "WebConfig.h"
+#include "WebPool.h"
 
 #include "Thirdparty/DBoW2/DUtils/Random.h"
 
@@ -103,12 +104,24 @@ namespace ORB_SLAM3
         float SH, SF;
         Eigen::Matrix3f H, F;
 
+#ifdef ORBSLAM3_WEB
+        // web port: on the shared pool (WebPool.h, the tracking thread's) instead of 2 new threads per try. In WASM every
+        // thread start and exit goes through the page's / Node's main thread, and while tracking is lost the map start
+        // tries on every frame (ISSUES G23 / G33: replays that hung there). Same results: the RANSAC sets are drawn above.
+        webPool().Run(2, [&](int t) {
+            if(t == 0)
+                FindHomography(vbMatchesInliersH, SH, H);
+            else
+                FindFundamental(vbMatchesInliersF, SF, F);
+        });
+#else
         thread threadH(&TwoViewReconstruction::FindHomography,this,ref(vbMatchesInliersH), ref(SH), ref(H));
         thread threadF(&TwoViewReconstruction::FindFundamental,this,ref(vbMatchesInliersF), ref(SF), ref(F));
 
         // Wait until both threads have finished
         threadH.join();
         threadF.join();
+#endif
 
         // Compute ratio of scores
         if(SH+SF == 0.f) return false;
