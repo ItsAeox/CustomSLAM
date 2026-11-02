@@ -81,7 +81,8 @@ for sd in sorted(root.glob(f"{SC}[0-9]*/{arm}/seed*")):
         end = "never" if j >= n else ("same map" if mid[j] == mid[i - 1] else "new map")
         w, v = motion(tl)
         rec = dict(seq=seq, seed=sd.name, t=tl, phase=phase(tl), n1=at(tl - 1, ntr), n05=at(tl - 0.5, ntr),
-                   n01=at(tl - 0.1, ntr), dkf=kfs[i - 1] - at(tl - 1, kfs), dmp=nmp[i - 1] - at(tl - 1, nmp), tex=tex[i - 1], unt=unt[i - 1], kfs=kfs[i - 1], que=que[i - 1], acc=acc[i - 1],
+                   n01=at(tl - 0.1, ntr), dkf=kfs[i - 1] - at(tl - 1, kfs), dmp=nmp[i - 1] - at(tl - 1, nmp), dbusy=busy[i - 1] - at(tl - 1, busy),
+                   nfr=int(((tm >= tl - 1) & (tm < tl)).sum()), tex=tex[i - 1], unt=unt[i - 1], kfs=kfs[i - 1], que=que[i - 1], acc=acc[i - 1],
                    busy=busy[i - 1], inview=orb_med(tl, 0), matched=orb_med(tl, 1), young=diag[i - 1, 2], turn=w, speed=v, dur=dur, end=end)
         lines.append(rec)
         if rec["phase"] == "walk" and not seen_walk:
@@ -103,7 +104,8 @@ if first:
     ends = {e: sum(r["end"] == e for r in first) for e in ("same map", "new map", "never")}
     print(f"\nFirst loss in the walk, {len(first)} runs (medians): at {med('t'):.1f} s (walk starts {ph['walk'][0]:.1f}), "
           f"tracked {med('n1'):.0f} / {med('n05'):.0f} / {med('n01'):.0f}, cells {med('tex'):.0f} / untracked "
-          f"{med('unt'):.0f}, map KFs {med('kfs'):.0f}, added in the 1 s before {med('dkf'):.0f} KFs / {med('dmp'):.0f} points, queue {med('que'):.0f}, accepting {med('acc'):.0f}, local map in view {med('inview'):.0f} / matched {med('matched'):.0f}, "
+          f"{med('unt'):.0f}, map KFs {med('kfs'):.0f}, added in the 1 s before {med('dkf'):.0f} KFs / {med('dmp'):.0f} points "
+          f"(frames processed {med('nfr'):.0f}, keyframes refused as mapping was busy {med('dbusy'):.0f}), queue {med('que'):.0f}, accepting {med('acc'):.0f}, local map in view {med('inview'):.0f} / matched {med('matched'):.0f}, "
           f"tracked from the newest KFs {med('young'):.0f}, "
           f"turn {med('turn'):.0f} deg/s, speed {med('speed'):.2f} m/s, lost {med('dur'):.1f} s; ended: {ends}")
     print(f"All losses after the tap: {len(lines)} in {len({(r['seq'], r['seed']) for r in lines})} runs; per phase: "
