@@ -30,7 +30,7 @@ run_one() {  # name seq settings-stem rep
   pid=$!
   while kill -0 $pid 2>/dev/null; do
     sleep 5
-    sz=$(cat $o/run.log $o/trace.txt 2>/dev/null | wc -c)
+    sz=$(stat -c %s $o/run.log $o/trace.txt 2>/dev/null | tr '\n' +)
     if [ "$sz" = "$last" ]; then still=$((still + 5)); else still=0; last=$sz; fi
     if [ $still -ge 90 ]; then
       echo "STALL $1 r$4 at $(date +%T): $(tail -c 200 $o/run.log | tr '\n' ' ')"

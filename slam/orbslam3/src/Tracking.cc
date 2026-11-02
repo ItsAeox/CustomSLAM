@@ -3130,40 +3130,59 @@ int Tracking::WebPriorFreePnP(const vector<MapPoint*>& vpPoints, bool bAllDesc, 
     const int N = mCurrentFrame.N;
     vector<int> vD1(N, 256), vD2(N, 256);
     vector<MapPoint*> vM(N, static_cast<MapPoint*>(NULL));
-    vector<const uint32_t*> vDesc;
+    // each point's descriptors, gathered once: point j has vDesc[vStart[j] .. vStart[j+1])
+    vector<MapPoint*> vP;
+    vector<int> vStart(1, 0);
+    vector<const uint64_t*> vDesc;
+    vector<cv::Mat> vKeep;  // the copies GetDescriptor returns, alive while matching
     for(MapPoint* pMP : vpPoints)
     {
         if(!pMP || pMP->isBad())
             continue;
-        vDesc.clear();
-        const cv::Mat dm = pMP->GetDescriptor();  // a copy: alive for this point
+        const size_t n0 = vDesc.size();
+        const cv::Mat dm = pMP->GetDescriptor();
         if(!dm.empty())
-            vDesc.push_back(dm.ptr<uint32_t>());
+        {
+            vKeep.push_back(dm);
+            vDesc.push_back(dm.ptr<uint64_t>());
+        }
         if(bAllDesc)
             for(const auto& ob : pMP->GetObservations())
             {
                 const int idx = get<0>(ob.second);
                 if(ob.first->isBad() || idx < 0 || idx >= ob.first->mDescriptors.rows)
                     continue;
-                vDesc.push_back(ob.first->mDescriptors.ptr<uint32_t>(idx));
+                vDesc.push_back(ob.first->mDescriptors.ptr<uint64_t>(idx));
             }
-        if(vDesc.empty())
+        if(vDesc.size() == n0)
             continue;
-        for(int i = 0; i < N; i++)
-        {
-            const uint32_t* b = mCurrentFrame.mDescriptors.ptr<uint32_t>(i);
-            int dist = 256;
-            for(const uint32_t* a : vDesc)
-            {
-                int d = 0;
-                for(int k = 0; k < 8; k++)
-                    d += __builtin_popcount(a[k] ^ b[k]);
-                dist = std::min(dist, d);
-            }
-            if(dist < vD1[i]) { vD2[i] = vD1[i]; vD1[i] = dist; vM[i] = pMP; }
-            else if(dist < vD2[i]) vD2[i] = dist;
-        }
+        vP.push_back(pMP);
+        vStart.push_back((int)vDesc.size());
     }
+    // keypoints a..b-1 against every point, in the points' order: each keypoint's result does not depend on the split,
+    // so the shared pool (WebPool.h) takes a quarter each when the config already runs it (Web.KLT.Parallel /
+    // Web.ORB.Parallel). 64-bit popcounts: the same distances as 8 x 32 bits
+    auto match = [&](int a, int b) {
+        for(size_t j = 0; j + 1 < vStart.size(); j++)
+            for(int i = a; i < b; i++)
+            {
+                const uint64_t* f = mCurrentFrame.mDescriptors.ptr<uint64_t>(i);
+                int dist = 256;
+                for(int k = vStart[j]; k < vStart[j + 1]; k++)
+                {
+                    const uint64_t* d = vDesc[k];
+                    dist = std::min(dist, __builtin_popcountll(d[0] ^ f[0]) + __builtin_popcountll(d[1] ^ f[1]) +
+                                          __builtin_popcountll(d[2] ^ f[2]) + __builtin_popcountll(d[3] ^ f[3]));
+                }
+                if(dist < vD1[i]) { vD2[i] = vD1[i]; vD1[i] = dist; vM[i] = vP[j]; }
+                else if(dist < vD2[i]) vD2[i] = dist;
+            }
+    };
+    const int nt = (webConfig().kltParallel || webConfig().orbParallel) && N >= 64 ? webPool().Threads() : 1;
+    if(nt > 1)
+        webPool().Run(nt, [&](int t) { match(N * t / nt, N * (t + 1) / nt); });
+    else
+        match(0, N);
     std::map<MapPoint*, int> mOwner;  // one keypoint per map point: the closest
     for(int i = 0; i < N; i++)
     {
