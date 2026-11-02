@@ -102,10 +102,11 @@ target_link_libraries(orbslam3_run PRIVATE orbslam3_web)
 
 if (BUILD_WASM)
   # Node: main() runs in a pthread (may block), host filesystem via NODERAWFS, memory grows up to 4 GB.
+  # orbslam3_run.js.symbols (function index -> name) names the wasm-function[N] frames of a Node report of a hung run.
   target_link_options(orbslam3_run PRIVATE
     -sENVIRONMENT=node,worker -sNODERAWFS=1 -sPROXY_TO_PTHREAD=1 -sPTHREAD_POOL_SIZE=8
     -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4GB -sINITIAL_MEMORY=512MB
-    -sSTACK_SIZE=8MB -sDEFAULT_PTHREAD_STACK_SIZE=8MB -sEXIT_RUNTIME=1)
+    -sSTACK_SIZE=8MB -sDEFAULT_PTHREAD_STACK_SIZE=8MB -sEXIT_RUNTIME=1 --emit-symbol-map)
 endif()
 
 # ---- diagnostics ----

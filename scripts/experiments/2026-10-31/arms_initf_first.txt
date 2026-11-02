@@ -1,0 +1,4 @@
+# replay_arms.sh arms (2 Nov, initf_1102): as arms_initf_obj.txt, the object placed at 32.79 s (flatfirst)
+keep_g005t5|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.05;Web.Gyro.PoseTau: 5;--keep-map-at 32.79;--tap-at 32.79;--dump-local
+keep_g005t5_initf3|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.05;Web.Gyro.PoseTau: 5;Web.Init.Features: 3;--keep-map-at 32.79;--tap-at 32.79;--dump-local
+keep_g005t5_initf2|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.05;Web.Gyro.PoseTau: 5;Web.Init.Features: 2;--keep-map-at 32.79;--tap-at 32.79;--dump-local

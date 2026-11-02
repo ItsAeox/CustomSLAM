@@ -1,5 +1,7 @@
 # replay_arms.sh arms (2 Nov, combo_1102): the map-first phone-test candidate - keep the map from the placement (tap at
 # 16.8 s), gyro attitude prior (g005t5), cov2 (coverage keyframes + smaller baselines), whole-map relocalisation
-# (globall), each alone and together, against the same batch's baseline
+# (globall), each alone and together, against the same batch's baseline (cov2 and globall alone added after the object came out wrong in 3 of 24 runs with both)
 keep_g005t5|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.05;Web.Gyro.PoseTau: 5;--keep-map-at 16.8;--tap-at 16.8;--dump-local
+keep_g005t5_cov2|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.05;Web.Gyro.PoseTau: 5;Web.KF.Coverage: 0.4;Web.Map.MinBaseline: 0.005;Web.Map.MaxCosParallax: 0.99995;--keep-map-at 16.8;--tap-at 16.8;--dump-local
+keep_g005t5_globall|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.05;Web.Gyro.PoseTau: 5;Web.Reloc.Global: 10;Web.Reloc.GlobalDesc: 1;--keep-map-at 16.8;--tap-at 16.8;--dump-local
 keep_g005t5_cov2_globall|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.05;Web.Gyro.PoseTau: 5;Web.KF.Coverage: 0.4;Web.Map.MinBaseline: 0.005;Web.Map.MaxCosParallax: 0.99995;Web.Reloc.Global: 10;Web.Reloc.GlobalDesc: 1;--keep-map-at 16.8;--tap-at 16.8;--dump-local
