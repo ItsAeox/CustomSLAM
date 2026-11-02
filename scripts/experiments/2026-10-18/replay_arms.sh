@@ -38,8 +38,20 @@ run_one() {
   grep -q "Web.BoW.LevelsUp: 3" $st && voc=$V/ORBvoc_own_k10L5.bin
   grep -qE "Web.Gyro.Prior: 1|Web.Scale.Online: 1" $st && g="--gyro"  # IMU samples for the gyro prior / online scale
   local aa=$(cat $O/$r/settings/${r}_arm-$a.args 2>/dev/null)
-  timeout 1800 $NODE $JS --dataset euroc --mode mono --seq $PH/$r --vocab $voc --settings $st --seed $s ${MODE:---live --rate-scale 1.0} $g ${TRACE:+--trace} $aa \
-    --out $o > $o/run.log 2>&1 || echo "  $r $a seed $s: exit $?"
+  # G23/G33 (a run hangs at ~0 % CPU, ~1 in 1,700): no growth of run.log + trace.txt for 120 s -> a Node report
+  # (SIGUSR2 -> $o/report.*.json: the stack of the threads waiting in a JS call; hang_stacks.py names the frames), then stop
+  timeout 1800 $NODE --report-on-signal --report-directory=$o $JS --dataset euroc --mode mono --seq $PH/$r --vocab $voc \
+    --settings $st --seed $s ${MODE:---live --rate-scale 1.0} $g ${TRACE:+--trace} $aa --out $o > $o/run.log 2>&1 &
+  local pid=$! last=-1 still=0 sz
+  while kill -0 $pid 2>/dev/null; do
+    sleep 5
+    sz=$(stat -c %s $o/run.log $o/trace.txt 2>/dev/null | tr '\n' +)
+    if [ "$sz" = "$last" ]; then still=$((still + 5)); else still=0; last=$sz; fi
+    if [ $still -eq 120 ]; then
+      echo "  $r $a seed $s: STALL (no output for 120 s), Node report"; pkill -USR2 -P $pid; sleep 20; kill $pid
+    fi
+  done
+  wait $pid || echo "  $r $a seed $s: exit $?"
   if [ -n "${TRACE:-}" ]; then /opt/slam/venv/bin/python eval/loss_anatomy.py $o $PH/$r > $o/anatomy.txt 2>&1; fi
   if [ -n "${TRACE:-}" ]; then /opt/slam/venv/bin/python eval/map_growth.py $o $PH/$r > $o/growth.txt 2>&1; fi
 }
