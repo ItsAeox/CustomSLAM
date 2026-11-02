@@ -607,7 +607,11 @@ void Tracking::newParameterLoader(Settings *settings) {
         mpORBextractorRight = new ORBextractor(nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
 
     if(mSensor==System::MONOCULAR || mSensor==System::IMU_MONOCULAR)
+#ifdef ORBSLAM3_WEB
+        mpIniORBextractor = new ORBextractor((int)std::lround(webConfig().initFeatures*nFeatures),fScaleFactor,nLevels,fIniThFAST,fMinThFAST);  // Web.Init.Features
+#else
         mpIniORBextractor = new ORBextractor(5*nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
+#endif
 
     //IMU parameters
     Sophus::SE3f Tbc = settings->Tbc();
@@ -1295,7 +1299,11 @@ bool Tracking::ParseORBParamFile(cv::FileStorage &fSettings)
         mpORBextractorRight = new ORBextractor(nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
 
     if(mSensor==System::MONOCULAR || mSensor==System::IMU_MONOCULAR)
+#ifdef ORBSLAM3_WEB
+        mpIniORBextractor = new ORBextractor((int)std::lround(webConfig().initFeatures*nFeatures),fScaleFactor,nLevels,fIniThFAST,fMinThFAST);  // Web.Init.Features
+#else
         mpIniORBextractor = new ORBextractor(5*nFeatures,fScaleFactor,nLevels,fIniThFAST,fMinThFAST);
+#endif
 
     cout << endl << "ORB Extractor Parameters: " << endl;
     cout << "- Number of Features: " << nFeatures << endl;

@@ -228,8 +228,10 @@ static cv::Mat readGray(const fs::path& p) {
 //    frame, and the tracker always takes the newest loaded one, so frames that arrive while it is busy are dropped.
 class FrameSource {
  public:
-  FrameSource(std::function<cv::Mat(int)> load, const vector<double>& t, int n, double rate, bool camera)
-      : load_(std::move(load)), t_(t), n_(n), rate_(rate), camera_(camera), wall0_(std::chrono::steady_clock::now()) {
+  // k0: the first frame (--start-at); the clock starts at its time
+  FrameSource(std::function<cv::Mat(int)> load, const vector<double>& t, int n, double rate, bool camera, int k0 = 0)
+      : load_(std::move(load)), t_(t), n_(n), k0_(k0), rate_(rate), camera_(camera), wall0_(std::chrono::steady_clock::now()) {
+    readyIdx_ = taken_ = loaded_ = k0 - 1;
     th_ = std::thread([this] { run(); });
   }
   ~FrameSource() {
@@ -248,12 +250,12 @@ class FrameSource {
     cv_.notify_all();
     return taken_;
   }
-  double arrival(int k) const { return rate_ * (t_[k] - t_[0]); }  // seconds after start
+  double arrival(int k) const { return rate_ * (t_[k] - t_[k0_]); }  // seconds after start
   double now() const { return std::chrono::duration<double>(std::chrono::steady_clock::now() - wall0_).count(); }
 
  private:
   void run() {
-    int k = 0;
+    int k = k0_;
     while (true) {
       if (camera_) {  // newest frame that has arrived (wait for the next one if none is new)
         double tn = now();
@@ -286,7 +288,7 @@ class FrameSource {
 
   std::function<cv::Mat(int)> load_;
   const vector<double>& t_;
-  const int n_;
+  const int n_, k0_;
   const double rate_;
   const bool camera_;
   const std::chrono::steady_clock::time_point wall0_;
@@ -321,6 +323,9 @@ int main(int argc, char** argv) {
                           // in the browser). rate-scale < 1 emulates a slower device.
   bool rtWall = false;    // every frame on a wall-clock schedule, next frame loaded in the background (honest real time)
   int maxFrames = 0;      // 0 = all frames
+  double startAt = 0;     // --start-at: skip the frames (and IMU samples) before this time (s after the first frame); a
+                          // later session starting elsewhere (saved room test). Frame indices and times keep the
+                          // dataset's (trace, trajectories, --tap-at / --keep-map-at)
   bool syncMapping = false; // web port diagnostic: wait for local mapping to go idle after every frame
   bool gyro = false;        // mono: also pass the dataset IMU (only the gyro prior uses it: Web.Gyro.Prior in the settings)
   bool trace = false;       // diagnostic: per-frame trace (state, tracked points, live Twc) -> trace.txt
@@ -354,6 +359,7 @@ int main(int argc, char** argv) {
     else if (a == "--rt-wall") rtWall = true;
     else if (a == "--rate-scale") rateScale = std::stod(next());
     else if (a == "--max-frames") maxFrames = std::stoi(next());
+    else if (a == "--start-at") startAt = std::stod(next());
     else if (a == "--sync-mapping") syncMapping = true;
     else if (a == "--gyro") gyro = true;
     else if (a == "--trace") trace = true;
@@ -383,6 +389,8 @@ int main(int argc, char** argv) {
     for (auto& m : d.imu) m.t -= imuDtMs * 1e-3;
   int N = (int)std::min(d.images.size(), d.t.size());
   if (maxFrames > 0) N = std::min(N, maxFrames);
+  int i0 = 0;  // --start-at
+  while (startAt > 0 && i0 < N && d.t[i0] - d.t[0] < startAt) ++i0;
   fs::create_directories(out);
   out = fs::absolute(out).string();  // the working directory changes before Shutdown (see below)
 
@@ -396,7 +404,7 @@ int main(int argc, char** argv) {
   // First IMU sample considered: the last one at or before the first frame (as in mono_inertial_tum_vi.cc)
   size_t imuIdx = 0;
   if (inertial || gyro) {
-    while (imuIdx < d.imu.size() && d.imu[imuIdx].t <= d.t[0]) ++imuIdx;
+    while (imuIdx < d.imu.size() && i0 < N && d.imu[imuIdx].t <= d.t[i0]) ++imuIdx;
     if (imuIdx > 0) --imuIdx;
   }
 
@@ -412,9 +420,9 @@ int main(int argc, char** argv) {
     return im;
   };
   std::unique_ptr<FrameSource> src;
-  if (live || rtWall) src = std::make_unique<FrameSource>(prep, d.t, N, rateScale, live);
+  if (live || rtWall) src = std::make_unique<FrameSource>(prep, d.t, N, rateScale, live, i0);
   const auto wall0 = std::chrono::steady_clock::now();
-  int processed = 0, dropped = 0, lastIdx = -1;
+  int processed = 0, dropped = 0, lastIdx = i0 - 1;
 #ifdef ORBSLAM3_WEB
   double tapT = 0;  // --tap-at: the tap time on the frame clock
   std::ofstream cdf;
@@ -434,7 +442,7 @@ int main(int argc, char** argv) {
   double lastDumpT = -1e9;
   if (tapAt >= 0 && dumpLocal) lpf.open(fs::path(out) / "local_pts.bin", std::ios::binary);
 #endif
-  for (int i = 0; i < N; ++i) {
+  for (int i = i0; i < N; ++i) {
     cv::Mat im;
     if (src) {
       const int k = src->next(im);
@@ -453,7 +461,7 @@ int main(int argc, char** argv) {
     if (im.empty()) { std::cerr << "failed to read " << d.images[i] << "\n"; return 1; }
 
     meas.clear();
-    if ((inertial || gyro) && i > 0) {
+    if ((inertial || gyro) && i > i0) {
       while (imuIdx < d.imu.size() && d.imu[imuIdx].t <= d.t[i]) {
         const auto& m = d.imu[imuIdx++];
         meas.emplace_back(m.ax, m.ay, m.az, m.gx, m.gy, m.gz, m.t);
@@ -619,7 +627,7 @@ int main(int argc, char** argv) {
   }
 
   const double wallS = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall0).count();
-  const double seqS = lastIdx > 0 ? d.t[lastIdx] - d.t[0] : 0.0;
+  const double seqS = lastIdx > i0 ? d.t[lastIdx] - d.t[i0] : 0.0;
   src.reset();
   const auto msEnd = mapSize(SLAM);  // before the final global optimisation / shutdown
 #ifdef ORBSLAM3_WEB
@@ -663,7 +671,7 @@ int main(int argc, char** argv) {
   info << std::setprecision(17) << "dataset " << dataset << "\nmode " << mode << "\nseq " << seq
        << "\nsettings " << settings << "\nclahe " << clahe << "\nseed " << seed << "\nrealtime " << realtime
        << "\nrate_scale " << rateScale << "\nlive " << live << "\nrt_wall " << rtWall << "\nsync_mapping " << syncMapping
-       << "\ngyro " << gyro << "\nload_map " << loadMap << "\nframes " << N << "\nprocessed " << processed << "\ndropped " << dropped
+       << "\ngyro " << gyro << "\nload_map " << loadMap << "\nstart_frame " << i0 << "\nframes " << N << "\nprocessed " << processed << "\ndropped " << dropped
        << "\nwall_s " << wallS << "\nseq_s " << seqS
        << "\neffective_rate " << (wallS > 0 ? seqS / wallS : 0.0)  // 1 = real time (x 1/rate_scale when scaled)
        << "\nmap_points " << msEnd[0] << "\nkeyframes " << msEnd[1] << "\nmaps " << msEnd[2] << "\nsaved_maps " << savedMaps

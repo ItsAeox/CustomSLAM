@@ -43,6 +43,9 @@ export const OPTIONS = [
   { key: 'lba', label: 'Local BA solver', values: [['g2o', 'g2o (original)'], ['fast', 'fast (same result, ~3-4x less time; the map keeps growing)']], def: 'g2o' },
   { key: 'kfq', label: 'Keyframes while mapping is busy', values: [['stock', 'refused (original; the map stops growing when mapping falls behind)'], ['2', 'queued, up to 2 waiting'], ['3', 'queued, up to 3 waiting']], def: 'stock' },
   { key: 'newarea', label: 'New areas when turning', values: [['stock', 'original (keyframes by tracked-point count)'], ['cov', 'extra keyframes for new textured areas'], ['cov2', 'extra keyframes + new points from smaller baselines']], def: 'stock' },
+  // 2026-11-02 (claude/ISSUES.md G22): Tracking::WebGlobalReloc, every map point instead of the keyframes found by words
+  { key: 'relocall', label: 'Relocalisation when lost', values: [['stock', 'original (keyframes that look like the view)'],
+    ['global', '+ whole-map search every 10 lost frames (back sooner from new angles; slower frames while lost)']], def: 'stock' },
   { key: 'refine', label: 'Tree depth follows the floor estimate', page: 'ar',
     values: [['off', 'off (original: fixed where tapped)'], ['on', 'on (re-placed along the tap ray as the floor improves)']], def: 'off' },
   { key: 'hold', label: 'Tree during brief tracking losses', page: 'ar', values: [['hide', 'hidden (original)'], ['gyro', 'held by the gyro for up to 0.4 s']], def: 'hide' },
@@ -101,6 +104,9 @@ export const PRESETS = [
   // 2026-11-01 (claude/ISSUES.md G35)
   { key: 'betagyro', label: 'WebVIO beta + metric scale + gyro attitude (map collapse fix)', set: { kltmax: '4', motion: 'time', map: 'light', pose: 'fast', gyro: 'on', recover: 'coast', hold: 'gyro', lba: 'fast', kltpar: 'parallel', scale: 'filter', gyropose: 'att' },
     note: 'WebVIO beta + metric scale with the gyro rotation held in the pose solve: on the synthetic set the map stopped collapsing while walking around the object (collapsed runs 5-11 → 1 of 12 per scene, orientation within 1°) and the metric scale settled far more often. Expect the same speed as beta.' },
+  // 2026-11-02 (claude/ISSUES.md G22, PLAN §0): the phone test of mapping the room before placing
+  { key: 'mapfirst', label: 'WebVIO beta + gyro attitude + cov2 + whole-map relocalisation + floor depth (map the room first)', set: { kltmax: '4', motion: 'time', map: 'light', pose: 'fast', gyro: 'on', recover: 'coast', hold: 'gyro', lba: 'fast', kltpar: 'parallel', scale: 'filter', gyropose: 'att', newarea: 'cov2', relocall: 'global', refine: 'on' },
+    note: 'For mapping the whole room before placing the tree: the beta + metric scale + gyro attitude preset, extra keyframes and points in new areas (cov2), the whole map searched when lost (back sooner from a new angle; frames are slower while lost) and the tree depth following the floor. Synthetic flat, map first then place: see claude/EXPERIMENTS.md combo_1102.' },
   { key: 'imutol', label: 'IMU, tolerant start-up', set: { imu: 'on', tracker: 'stock', imustart: 'tolerant' },
     note: 'Visual-inertial mode whose start-up keeps the map on a loss and has no motion-check reset (synthetic set: resets ~0, start-up completed far more often, but tracking still well below WebVIO beta).' },
   { key: 'eqvio', label: 'EqVIO filter (experimental)', set: { vio: 'eqvio' },
@@ -161,6 +167,7 @@ export function applyOptions(yaml, o) {
   if (o.tracker === 'klt' && o.kltpar === 'parallel') extra.push('Web.KLT.Parallel: 1');  // LK points split over 4 threads
   if (o.newarea === 'cov' || o.newarea === 'cov2') extra.push('Web.KF.Coverage: 0.4');  // keyframes for new textured areas
   if (o.newarea === 'cov2') extra.push('Web.Map.MinBaseline: 0.005', 'Web.Map.MaxCosParallax: 0.99995');  // + points from smaller baselines
+  if (o.relocall === 'global') extra.push('Web.Reloc.Global: 10', 'Web.Reloc.GlobalDesc: 1');  // every 10th lost frame, all descriptors
   if (o.rot === 'far') extra.push('Web.Rot.FarPoints: 1');  // pure-rotation prototype (LocalMapping::WebCreateFarPoints)
   if (o.rot === 'inf') extra.push('Web.Rot.FarPoints: 2');  // the same far points as points at infinity in the pose solve
   if (o.rot === 'inf3') extra.push('Web.Rot.FarPoints: 3');  // + kept out of relocalisation, Sim3 and keyframe culling

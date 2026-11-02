@@ -15,12 +15,20 @@ map-scale fit made the score depend on the map's scale errors). Then, for every 
 where the spot is in the true view (in the image, >= 0.1 m in front): shown or not, screen error (px), and that error at
 the spot's true distance (cm: how far beside the spot the object appears). The gyro hold (< 0.4 s) is not modelled.
 
+Saved room (2 Nov): --save-anchor writes the object as the run left it (the last refined position) with the map the
+runner saved (orbslam3_run --save-map: the largest map); a later run that loaded that map (--load-map, keep map on from
+the start as the page does with a restored tree) is scored with --anchor-file: the object exists from its first frame
+and is shown while tracking in the loaded map; first_shown_s = from the first frame to the first shown frame.
+phantom_frames / phantom_pct: shown frames where the object lands in the image but the true spot is not in view (a
+wrong relocalisation draws it in the wrong room; the px metrics only see frames with the spot in view).
+
 trace.txt needs the map id / map count columns (orbslam3_run aa3763f+: the last two).
   anchor_return.py <run dir> <sequence dir> [--gt results/gt/synth_<seq>.txt] [--wrong-px 50]
 Prints one line of key=value fields (anchor_summary.py reads them).
 """
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -95,6 +103,8 @@ def main():
     ap.add_argument("--anchor-oracle", action="store_true",
                     help="after placing as usual, move the anchor to the point that best fits the true spot pixels over every "
                          "tracked frame of the placement map (DLT): the error left is the map / tracking, not the placement")
+    ap.add_argument("--save-anchor", help="write the object (the last refined position) and the saved map's id as json")
+    ap.add_argument("--anchor-file", help="a run that loaded a saved room: the object from --save-anchor of the saving run")
     a = ap.parse_args()
     run, seq = Path(a.run), Path(a.seq)
     name = seq.name
@@ -139,13 +149,23 @@ def main():
     else:
         ret = None
     ok = np.isin(state, [2, 5])
-    # placement: the first tracked frame at / after the tap
-    cand = np.where(ok & (t >= t_tap - 1e-6))[0]
     out = {"seq": name, "run": str(run)}
-    if not len(cand):
-        out.update(placed=0)
-        print(" ".join(f"{k}={v}" for k, v in out.items())); return
-    p = cand[0]
+    saved, loaded = None, None
+    if a.anchor_file:  # saved room: the object exists from the first frame (no placing in this run)
+        saved = json.loads(Path(a.anchor_file).read_text())
+        m_ = re.search(r"WEBMAP loaded map (\d+)", (run / "run.log").read_text(errors="replace"))
+        if not m_:
+            out.update(placed=0, why="no map loaded")
+            print(" ".join(f"{k}={v}" for k, v in out.items())); return
+        loaded, p = int(m_.group(1)), 0
+        out.update(placed=1, anchor_method="saved", loaded_map=loaded)
+    else:
+        # placement: the first tracked frame at / after the tap
+        cand = np.where(ok & (t >= t_tap - 1e-6))[0]
+        if not len(cand):
+            out.update(placed=0)
+            print(" ".join(f"{k}={v}" for k, v in out.items())); return
+        p = cand[0]
     K3 = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1.0]])
     def true_px(j):
         pc_ = quat_to_R(gq[j]).T @ (spot - gpos[j])
@@ -153,7 +173,9 @@ def main():
         u_ = K3 @ (pc_ / pc_[2])
         return u_[:2] if 0 <= u_[0] < W and 0 <= u_[1] < H else None
     anchor, used, anchor_arr = None, None, None
-    if a.place == "floor":
+    if saved is not None:
+        anchor = np.array(saved["anchor"], float)
+    if a.place == "floor" and saved is None:
         lp = run / "local_pts.bin"
         if not lp.exists():
             out.update(placed=0, why="no local_pts.bin (orbslam3_run --dump-local)")
@@ -289,11 +311,21 @@ def main():
         if abs(X[3]) > 1e-12:
             anchor, anchor_arr = X[:3] / X[3], None
             out.update(anchor_method="oracle", oracle_frames=len(w))
+    if a.save_anchor:  # the room as saved at the end of this run: the object where it is now, the runner's saved map
+        m_ = re.search(r"WEBMAP saved map (\d+)", (run / "run.log").read_text(errors="replace"))
+        Path(a.save_anchor).write_text(json.dumps({
+            "anchor": [float(x) for x in (anchor if anchor_arr is None else anchor_arr[-1])], "place_map": int(mapid[p]),
+            "saved_map": int(m_.group(1)) if m_ else None, "place_t": round(float(t[p] - t0), 3),
+            "method": out.get("anchor_method")}) + "\n")
+        out.update(saved_map=int(m_.group(1)) if m_ else -1)
     # the page's anchor state after placement (ar.js: lastMaps / lastState logic)
     exists, stashed = True, False
     shown = np.zeros(len(t), bool)
     events = []
     for i in range(p, len(t)):
+        if saved is not None:  # restored tree: shown while tracking in the loaded map (keep map: no new maps)
+            shown[i] = ok[i] and mapid[i] == loaded
+            continue
         if i > p:
             if nmaps[i] > nmaps[i - 1]:
                 if exists and not stashed: stashed = True; events.append(f"stash@{t[i] - t0:.1f}")
@@ -326,6 +358,15 @@ def main():
                       f"{pre}wrong_pct": round(100 * float(np.mean(e > a.wrong_px)), 1)})
         return d
     out.update(stats(v))
+    est_in = (pe[:, 2] > 1e-6) & (ue[:, 0] >= 0) & (ue[:, 0] < W) & (ue[:, 1] >= 0) & (ue[:, 1] < H)
+    ph_ = sh & est_in & ~v
+    out.update(phantom_frames=int(ph_.sum()), phantom_pct=round(100 * float(ph_.sum()) / max(int(sh.sum()), 1), 1))
+    if saved is not None:  # how long until the restored object first shows, and how far off it is then
+        fs_ = np.where(sh)[0]
+        out.update(first_shown_s=round(float(t[idx[fs_[0]]] - t[0]), 2) if len(fs_) else -1)
+        if len(fs_):
+            m2 = v & sh & (t[idx] <= t[idx[fs_[0]]] + 2)
+            if m2.any(): out.update(first2s_px_med=round(float(np.median(epx[m2])), 1))
     if ret:
         tt = t[idx]
         out.update(stats(v & (tt >= ret[0]) & (tt <= ret[1]), "ret_"))

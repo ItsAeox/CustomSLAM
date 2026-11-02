@@ -178,6 +178,9 @@ struct WebConfig
     int initMinMatches = 100;     // Web.Init.MinMatches: matches between the reference and current frame (else restart)
     double initMinParallax = 1.0; // Web.Init.MinParallax: degrees (TwoViewReconstruction)
     int initMinTriangulated = 50; // Web.Init.MinTriangulated: triangulated points of the two-view solution
+    double initFeatures = 5.0;    // Web.Init.Features: ORB features of the frames until the first map (and the map's first
+                                  // ~fps frames) as a multiple of ORBextractor.nFeatures (stock 5). Fewer = cheaper frames
+                                  // while the map starts (phone: 9-12 fps for ~3 s, PLAN 0), maybe a later or worse start
     int initGyro = 0;             // Web.Init.Gyro: 1 = two-view initialisation with the gyro rotation (2-point RANSAC on
                                   // the translation direction; needs Web.Gyro.Prior), stock reconstruction as fallback;
                                   // 2 = also refine rotation + translation (maps later in ginit_ab: not used)
@@ -323,6 +326,8 @@ inline void loadWebConfig(const std::string& settingsFile)
     if (!ip.empty() && (ip.isInt() || ip.isReal())) c.initMinParallax = ip.real();
     readInt("Web.Init.MinTriangulated", c.initMinTriangulated);
     readInt("Web.Init.Gyro", c.initGyro);
+    cv::FileNode inf = fs["Web.Init.Features"];
+    if (!inf.empty() && (inf.isInt() || inf.isReal())) c.initFeatures = inf.real();
     readInt("Web.Imu.KeepMap", c.imuKeepMap);
     readInt("Web.Imu.MinInliersPreInit", c.imuMinInliersPreInit);
     readInt("Web.Imu.MotionCheck", c.imuMotionCheck);
@@ -369,6 +374,7 @@ inline void loadWebConfig(const std::string& settingsFile)
                             " deg, " + std::to_string(c.initMinTriangulated) + " points"
                       : std::string())
               << (c.initGyro ? "; gyro two-view init" : "")
+              << (c.initFeatures != 5.0 ? "; map start with " + std::to_string(c.initFeatures) + "x features" : std::string())
               << (c.turnBridge ? std::string("; turn bridge (") + (c.turnBridge == 1 ? "two-view + gyro check " + std::to_string(c.turnMaxRotDiff) + " deg"
                                                                                      : std::string("gyro two-view")) +
                                      ", after " + std::to_string(c.turnMinAngle) + " deg" +

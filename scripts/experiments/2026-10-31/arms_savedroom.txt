@@ -1,0 +1,6 @@
+# saved_room_run.sh arms (2 Nov, savedroom_1102): name|page preset|settings lines (';'); the runner arguments are the
+# script's (session A: place + save; session B: load with keep map on). The same levers as combo_1102.
+keep_g005t5|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.05;Web.Gyro.PoseTau: 5
+keep_g005t5_cov2|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.05;Web.Gyro.PoseTau: 5;Web.KF.Coverage: 0.4;Web.Map.MinBaseline: 0.005;Web.Map.MaxCosParallax: 0.99995
+keep_g005t5_globall|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.05;Web.Gyro.PoseTau: 5;Web.Reloc.Global: 10;Web.Reloc.GlobalDesc: 1
+keep_g005t5_cov2_globall|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.05;Web.Gyro.PoseTau: 5;Web.KF.Coverage: 0.4;Web.Map.MinBaseline: 0.005;Web.Map.MaxCosParallax: 0.99995;Web.Reloc.Global: 10;Web.Reloc.GlobalDesc: 1

@@ -1,0 +1,4 @@
+# replay_arms.sh arms (2 Nov, combo_1102): scenarios without an object (no keep: the page keeps the map only once one is
+# placed) - regression check of cov2 + whole-map relocalisation together vs the same batch's baseline
+g005t5|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.05;Web.Gyro.PoseTau: 5
+g005t5_cov2_globall|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.05;Web.Gyro.PoseTau: 5;Web.KF.Coverage: 0.4;Web.Map.MinBaseline: 0.005;Web.Map.MaxCosParallax: 0.99995;Web.Reloc.Global: 10;Web.Reloc.GlobalDesc: 1
