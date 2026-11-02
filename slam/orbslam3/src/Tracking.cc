@@ -5026,6 +5026,27 @@ void Tracking::UpdateLocalKeyFrames()
             }
         }
     }
+#ifdef ORBSLAM3_WEB
+    // Web.Map.LocalRecent (ISSUES G22): visual-only, also the N newest keyframes of this map in time (the IMU modes above
+    // add 20). Walking out, the local map built from the keyframes that see the tracked points shrinks as tracking
+    // weakens (walkdiag_1102: half the points in view before a loss); the newest keyframes hold the new view's points.
+    if(mSensor == System::MONOCULAR && webConfig().mapLocalRecent > 0 && mpLastKeyFrame)
+    {
+        Map* pMap = mpAtlas->GetCurrentMap();
+        int nAdded = 0;
+        KeyFrame* pKF = mpLastKeyFrame;
+        for(int hop = 0; pKF && nAdded < webConfig().mapLocalRecent && hop < 4 * webConfig().mapLocalRecent; hop++, pKF = pKF->mPrevKF)
+        {
+            if(pKF->isBad() || pKF->GetMap() != pMap)
+                continue;
+            nAdded++;
+            if(pKF->mnTrackReferenceForFrame == mCurrentFrame.mnId)
+                continue;
+            mvpLocalKeyFrames.push_back(pKF);
+            pKF->mnTrackReferenceForFrame = mCurrentFrame.mnId;
+        }
+    }
+#endif
 
     if(pKFmax)
     {

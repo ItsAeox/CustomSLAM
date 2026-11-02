@@ -93,6 +93,8 @@ struct WebConfig
                                // (stock skips it then, with local BA); only local BA waits for mapping to catch up
     double kfRefRatio = 0;     // Web.KF.RefRatio: insert a keyframe when tracked map points < ratio x the reference
                                // keyframe's (Tracking::NeedNewKeyFrame; stock mono 0.9: lower = fewer keyframes)
+    int mapLocalRecent = 0;    // Web.Map.LocalRecent: visual-only, N > 0 = the N newest keyframes of the map (in time) are
+                               // always in the local map that tracking searches (the IMU modes add 20; ISSUES G22)
     int kfAfterReloc = -1;     // Web.KF.AfterReloc: frames after a relocalisation or coast recovery before a keyframe may be
                                // inserted (-1 = stock: the camera fps, ~1 s). Walking out (ISSUES G22, walk_loss.py): the
                                // few recoveries on the way out were all lost again within 1.2 s with no keyframe added
@@ -257,6 +259,7 @@ inline void loadWebConfig(const std::string& settingsFile)
     if (!cr.empty() && (cr.isInt() || cr.isReal())) c.cullRedundancy = cr.real();
     readInt("Web.KF.BusyQueue", c.kfBusyQueue);
     readInt("Web.KF.AfterReloc", c.kfAfterReloc);
+    readInt("Web.Map.LocalRecent", c.mapLocalRecent);
     readInt("Web.Mapping.FuseQueued", c.mapFuseQueued);
     readInt("Web.Gyro.Prior", c.gyroPrior);
     cv::FileNode sw = fs["Web.Scale.Window"];
@@ -330,6 +333,7 @@ inline void loadWebConfig(const std::string& settingsFile)
               << (c.bowLevelsUp != 4 ? "; BoW levels up " + std::to_string(c.bowLevelsUp) : std::string())
               << (c.kfRefRatio > 0 ? "; KF ref ratio " + std::to_string(c.kfRefRatio) : std::string())
               << (c.kfAfterReloc >= 0 ? "; keyframes " + std::to_string(c.kfAfterReloc) + " frames after a recovery" : std::string())
+              << (c.mapLocalRecent > 0 ? "; local map + the " + std::to_string(c.mapLocalRecent) + " newest keyframes" : std::string())
               << (c.kfBusyQueue > 0 ? "; keyframes queued while mapping is busy (up to " + std::to_string(c.kfBusyQueue) + ")" : std::string())
               << (c.mapFuseQueued ? "; fusion also for queued keyframes" : "")
               << (c.lbaFast ? (c.lbaFast == 1 ? "; fast local BA" : "; fast local BA (compare with g2o)") : "")
