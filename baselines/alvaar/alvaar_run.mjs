@@ -23,7 +23,9 @@
 //    the calibration from the settings file (pinhole + radtan; AlvaAR undistorts keypoints), and fresh heap views.
 //  - It has no seed (RANSAC is seeded from std::random_device); --seed is only the run index.
 //
-// Frames are decoded (PNG, node:zlib) on a worker thread with orbslam3_run's FrameSource pacing: --rt-wall plays
+// Frames are decoded on a worker thread (PNG: node:zlib, byte-exact with OpenCV; JPEG: jpeg_gray.mjs, OpenCV 4.10's
+// imdecode compiled to WebAssembly, the call WebVIO's runner makes; build_jpeg_gray.sh) with orbslam3_run's
+// FrameSource pacing: --rt-wall plays
 // every frame, not before its time on the wall clock; --live gives the tracker the newest arrived frame (late frames
 // are dropped). --rate-scale multiplies the frame period (0.5 = frames arrive twice as fast = a device half as fast).
 
@@ -87,6 +89,25 @@ function decodePngGray(buf, out) {
   return { w, h };
 }
 
+// ---------------------------------------------------------------- JPEG -> RGBA (gray), via jpeg_gray.mjs
+async function makeJpegDecoder() {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const { default: create } = await import(pathToFileURL(path.join(here, 'jpeg_gray.mjs')).href);
+  const J = await create();
+  const whPtr = J._malloc(8);
+  let inPtr = 0, inCap = 0, outPtr = 0, outCap = 0;
+  return (buf, out) => {
+    if (buf.length > inCap) { if (inPtr) J._free(inPtr); inCap = 2 * buf.length; inPtr = J._malloc(inCap); }
+    if (out.length / 4 > outCap) { if (outPtr) J._free(outPtr); outCap = out.length / 4; outPtr = J._malloc(outCap); }
+    J.HEAPU8.set(buf, inPtr);  // J.HEAPU8 is re-read after every call: the heap may have grown
+    const rc = J._decode_gray(inPtr, buf.length, outPtr, outCap, whPtr);
+    if (rc !== 0) throw new Error(`JPEG decode failed (${rc})`);
+    const w = J.HEAP32[whPtr >> 2], h = J.HEAP32[(whPtr >> 2) + 1], g = J.HEAPU8.subarray(outPtr, outPtr + w * h);
+    for (let i = 0; i < w * h; ++i) { out[4 * i] = out[4 * i + 1] = out[4 * i + 2] = g[i]; out[4 * i + 3] = 255; }
+    return { w, h };
+  };
+}
+
 // ---------------------------------------------------------------- frame source (shared memory, 3 image slots)
 // ctl: 0 readyIdx, 1 readySlot, 2 taken, 3 busySlot, 4 done, 5 lock, 6 change counter, 7 sleep dummy
 const C_READY = 0, C_RSLOT = 1, C_TAKEN = 2, C_BUSY = 3, C_DONE = 4, C_LOCK = 5, C_SEQ = 6, C_SLEEP = 7;
@@ -95,8 +116,13 @@ const unlock = (c) => { Atomics.store(c, C_LOCK, 0); };
 const bump = (c) => { Atomics.add(c, C_SEQ, 1); Atomics.notify(c, C_SEQ); };
 const sleepMs = (c, ms) => { if (ms > 0) Atomics.wait(c, C_SLEEP, 0, ms); };
 
-function frameWorker() {
-  const { images, t, rate, camera, wall0, k0, sab, slotBytes } = workerData;
+async function frameWorker() {
+  const { images, t, rate, camera, wall0, k0, sab, slotBytes, width, height } = workerData;
+  const jpeg = images.some((f) => /\.jpe?g$/i.test(f)) ? await makeJpegDecoder() : null;
+  const decode = (file, out) => {
+    const { w, h } = (jpeg && /\.jpe?g$/i.test(file) ? jpeg : decodePngGray)(fs.readFileSync(file), out);
+    if (w !== width || h !== height) throw new Error(`${file}: ${w}x${h}, settings say ${width}x${height}`);
+  };
   const ctl = new Int32Array(sab, 0, 8);
   const slots = [0, 1, 2].map((s) => new Uint8ClampedArray(sab, 64 + s * slotBytes, slotBytes));
   const arrival = (k) => rate * (t[k] - t[k0]) * 1000;  // ms after start
@@ -110,7 +136,7 @@ function frameWorker() {
     while (s === r || s === b) ++s;
     unlock(ctl);
     // slot s is neither the ready one nor the one being copied; only this thread changes readySlot
-    decodePngGray(fs.readFileSync(images[idx]), slots[s]);
+    decode(images[idx], slots[s]);
     lock(ctl);
     Atomics.store(ctl, C_RSLOT, s);
     Atomics.store(ctl, C_READY, idx);
@@ -145,9 +171,9 @@ function frameWorker() {
 }
 
 const isEntry = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (!isMainThread) frameWorker();
+if (!isMainThread) await frameWorker();
 else if (isEntry) await main();
-export { decodePngGray, quat };  // for tests
+export { decodePngGray, makeJpegDecoder, quat };  // for tests
 
 // ---------------------------------------------------------------- main
 function parseArgs(argv) {
@@ -258,7 +284,8 @@ async function main() {
   const slots = [0, 1, 2].map((s) => new Uint8ClampedArray(sab, 64 + s * slotBytes, slotBytes));
   const wall0 = nowMs();
   const worker = new Worker(fileURLToPath(import.meta.url),
-    { workerData: { images: d.images, t: d.t, rate: a.rateScale, camera: a.live, wall0, k0: 0, sab, slotBytes } });
+    { workerData: { images: d.images, t: d.t, rate: a.rateScale, camera: a.live, wall0, k0: 0, sab, slotBytes,
+                    width: cam.width, height: cam.height } });
   let workerError = null;
   worker.on('error', (e) => { workerError = e; });
   const arrival = (k) => a.rateScale * (d.t[k] - d.t[0]) * 1000;

@@ -12,3 +12,4 @@ __pycache__/
 *.pyc
 web/build/
 web/build-prof/
+baselines/alvaar/jpeg_gray.mjs
