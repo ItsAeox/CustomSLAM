@@ -230,7 +230,8 @@ def main():
                 la.append(float(m.group(1)))
                 run.append(int(m.group(2)))
         L += ["", f"Machine load (logs/main_1103_load.log, {len(la)} samples): 1-min load average median "
-              f"{st.median(la):.2f}, max {max(la):.2f}; runs in flight median {st.median(run)}, max {max(run)}.", ""]
+              f"{st.median(la):.2f}, max {max(la):.2f}; runs in flight median {st.median(run) / 2:g}, max {max(run) / 2:g} "
+              "(pgrep counts the timeout wrapper and node: 2 processes per run).", ""]
 
     L += ["## Ranking (the rule fixed before the batch)", ""]
     t, s_all = table(rows, web, seqs, "WebVIO arms, all 17 sequences")
