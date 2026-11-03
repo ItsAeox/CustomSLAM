@@ -253,12 +253,13 @@ def main():
         L += table(rows, page, held, f"Page presets, held-out ({len(held)})")[0]
         L += table(rows, page, tum, f"Page presets, TUM-VI rooms only ({len(tum)})")[0]
 
+    nrun = max(sum(1 for r in rows if r["arm"] == x and r["seq"] == s) for x in arms_all for s in seqs)
     L += ["## Per sequence", ""]
-    L += per_seq(rows, arms_all, seqs, "online_ate", "Online Sim3 ATE, median of good runs (mm); (n✗) = bad runs of 5")
+    L += per_seq(rows, arms_all, seqs, "online_ate", f"Online Sim3 ATE, median of good runs (mm); (n✗) = bad runs of {nrun}")
     L += per_seq(rows, web, seqs, "final_ate", "Final Sim3 ATE, median of runs ≤ 200 mm (mm); (n✗) = runs over 200 mm or none")
-    L += per_seq(rows, arms_all, seqs, "online_ate", "Online Sim3 ATE, median of all 5 runs (mm; failures included, "
+    L += per_seq(rows, arms_all, seqs, "online_ate", f"Online Sim3 ATE, median of all {nrun} runs (mm; failures included, "
                  "as the median of executions in ORB-SLAM3's paper)", all_runs=True)
-    L += per_seq(rows, web, seqs, "final_ate", "Final Sim3 ATE, median of all 5 runs (mm; failures included)", all_runs=True)
+    L += per_seq(rows, web, seqs, "final_ate", f"Final Sim3 ATE, median of all {nrun} runs (mm; failures included)", all_runs=True)
     L += ["### Online coverage (mean over runs) and maps per run (mean)", "",
           "| sequence | " + " | ".join(arms_all) + " |", "|---|" + "---|" * len(arms_all)]
     for s in seqs:
