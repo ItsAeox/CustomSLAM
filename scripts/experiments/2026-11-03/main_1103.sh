@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Main-table batch (claude/PAPER.md §4 VII-A, gap 1-2), quiet PC: one frozen build (snap-84c1f17 = HEAD 84c1f17, tag
-# paper-batch-1103), EuRoC 11 + TUM-VI rooms 1-6, seeds 1-5, --rt-wall, 4 runs at a time, run order shuffled across
+# Main-table batch (claude/PAPER.md §4 VII-A, gap 1-2), quiet PC: one frozen build (snap-84c1f17 = SLAM code of 84c1f17; tag
+# paper-batch-1103 = 95ffc2e, which adds only the AlvaAR driver), EuRoC 11 + TUM-VI rooms 1-6, seeds 1-5, --rt-wall, 4 runs at a time, run order shuffled across
 # arms (fixed seed), machine load logged every 60 s. Arms: native-stock, wasm-stock, page-{fast,next,beta,betagyro,
 # mapfirst}; alvaar on EuRoC only (no fisheye model; released bundle unmodified). Ranking rule: claude/EXPERIMENTS.md
 # main_1103 (written before the results).

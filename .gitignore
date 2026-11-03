@@ -13,3 +13,4 @@ __pycache__/
 web/build/
 web/build-prof/
 baselines/alvaar/jpeg_gray.mjs
+baselines/alvaar/jpeg_gray.worker.mjs
