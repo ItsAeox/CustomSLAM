@@ -6,6 +6,7 @@ timestamps and both Sim(3) ATEs. Writes results/equiv_1103/EQUIV.md. Usage: equi
 """
 import argparse
 import json
+import statistics
 from pathlib import Path
 
 
@@ -47,11 +48,26 @@ def main():
          "first 1500 frames, main_1103's settings files. Final trajectory (largest map) compared byte for byte; ATE = "
          "Sim(3) RMSE, mm, over the frames run.", "",
          "| arm | sequence | frozen vs frozen (determinism) | pre-cut vs frozen | ATE pre / frozen / frozen2 |", "|---|---|---|---|---|"]
+    dpre, drun, inside, above, below = [], [], 0, 0, 0
     for arm in ["stock", "fast", "next", "beta"]:
         for sd in sorted((r / "frozen" / arm).glob("*")):
             pre, fr, fr2 = r / "pre" / arm / sd.name, sd, r / "frozen2" / arm / sd.name
             L.append(f"| {arm} | {sd.name} | {compare(fr, fr2)} | {compare(pre, fr)} | "
                      f"{ate(pre / 'metrics.json')} / {ate(fr / 'metrics.json')} / {ate(fr2 / 'metrics.json')} |")
+            try:
+                p, f1, f2 = (float(ate(x / "metrics.json")) for x in (pre, fr, fr2))
+            except ValueError:
+                continue
+            dpre.append(abs(p - f1))
+            drun.append(abs(f1 - f2))
+            inside += min(f1, f2) <= p <= max(f1, f2)
+            above += p > max(f1, f2)
+            below += p < min(f1, f2)
+    if dpre:
+        L += ["", f"Pre-cut ATE inside the frozen pair's range on {inside} of {len(dpre)} (above {above}, below {below}; "
+              "for three runs from one distribution the expected share inside is 1/3). Median |pre - frozen| "
+              f"{statistics.median(dpre):.1f} mm against median |frozen - frozen2| {statistics.median(drun):.1f} mm; "
+              f"pre-vs-frozen larger on {sum(a > b for a, b in zip(dpre, drun))} of {len(dpre)}."]
     out = "\n".join(L) + "\n"
     (r / "EQUIV.md").write_text(out, encoding="utf-8")
     print(out)
