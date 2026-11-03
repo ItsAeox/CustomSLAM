@@ -7,8 +7,8 @@ as eval/screen_table.py) is inside the ±45 % noise floor.
 
 AlvaAR runs only on EuRoC (no fisheye model), so it is ranked against the others on the 11 EuRoC sequences only.
 
-Writes runs.csv and RESULTS.md into the batch folder.
-Usage: score_main_1103.py [--root results/main_1103] [--load logs/main_1103_load.log]
+Writes runs.csv and RESULTS.md into the batch folder (--suffix _x: runs_x.csv, RESULTS_x.md, e.g. a subset of --arms).
+Usage: score_main_1103.py [--root results/main_1103] [--load logs/main_1103_load.log] [--arms ...] [--suffix _x]
 """
 import argparse
 import csv
@@ -187,6 +187,7 @@ def main():
     ap.add_argument("--load", type=Path, default=Path("/mnt/h/Research/logs/main_1103_load.log"))
     ap.add_argument("--arms", nargs="+", default=ARMS, help="arm folders, in table order")
     ap.add_argument("--title", default="main_1103 results")
+    ap.add_argument("--suffix", default="", help="output names runs<suffix>.csv, RESULTS<suffix>.md")
     a = ap.parse_args()
     arms_all = a.arms
     global rule
@@ -197,7 +198,7 @@ def main():
         for sd in sorted((a.root / arm).glob("*_*")):
             for d in sorted(sd.glob("*_seed*")):
                 rows.append(run_row(arm, sd.name, d))
-    with (a.root / "runs.csv").open("w", newline="") as f:
+    with (a.root / f"runs{a.suffix}.csv").open("w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         w.writeheader()
         w.writerows(rows)
@@ -287,7 +288,7 @@ def main():
         if rs:
             L.append(f"| {arm} | {st.median(rs):.2f} | {sum(x < 1 for x in rs)}/{len(rs)} |")
     if "native-stock" not in arms_all or "wasm-stock" not in arms_all:
-        (a.root / "RESULTS.md").write_text("\n".join(L) + "\n")
+        (a.root / f"RESULTS{a.suffix}.md").write_text("\n".join(L) + "\n")
         print("\n".join(L))
         return
     L += ["", "## Parity: native-stock vs wasm-stock (same code and settings, browser runtime vs native)", "",
@@ -316,7 +317,7 @@ def main():
           f"{sum(r['bad'] for r in lag)}, among the rest {sum(r['bad'] for r in wr if r not in lag)} of {len(wr) - len(lag)}. "
           "Slowest runs: " + ", ".join(f"{short(r['seq'])} {r['run'].split('_')[-1]} {r['rate']:.2f}"
                                        f" ({fmt(r['online_ate'])} mm)" for r in sorted(lag, key=lambda r: r["rate"])[:8])]
-    (a.root / "RESULTS.md").write_text("\n".join(L) + "\n")
+    (a.root / f"RESULTS{a.suffix}.md").write_text("\n".join(L) + "\n")
     print("\n".join(L))
 
 
