@@ -25,6 +25,7 @@ TUNING = {"euroc_MH_04_difficult", "euroc_MH_05_difficult", "euroc_V1_03_difficu
           "tumvi_dataset-room5_512_16"}
 BAD_M = 0.200
 NOISE = 1.45
+rule = True
 
 
 def jload(p):
@@ -141,7 +142,7 @@ def table(rows, arms, seqs, title, extra_refs=()):
     extra_refs = list(extra_refs)
     s = summary(rows, arms, seqs)
     L = [f"### {title}", "",
-         "| rank | arm | runs | bad (no traj.) | online ATE median, good runs (mm) | median incl. failures (mm) | "
+         f"| {'rank' if rule else 'order'} | arm | runs | bad (no traj.) | online ATE median, good runs (mm) | median incl. failures (mm) | "
          "online coverage | final ATE median (mm) | final bad | maps / run |",
          "|---|---|---|---|---|---|---|---|---|---|"]
     for i, x in enumerate(s, 1):
@@ -149,7 +150,7 @@ def table(rows, arms, seqs, title, extra_refs=()):
                  f"{'fail' if x['med_all'] == float('inf') else fmt(x['med_all'], nd=1)} | {x['cov']:.3f} | "
                  f"{fmt(x['final_med'], nd=1)} | {'–' if x['final_bad'] is None else x['final_bad']} | "
                  f"{'–' if x['maps'] is None else format(x['maps'], '.2f')} |")
-    for ref in [None] + extra_refs:
+    for ref in [None] + extra_refs if rule else []:
         if ref and not any(x["arm"] == ref for x in s):
             continue
         L += ["", f"Each arm against {ref or 'the leader'} (Fisher's exact test on bad runs; ATE ratio = other / "
@@ -188,6 +189,8 @@ def main():
     ap.add_argument("--title", default="main_1103 results")
     a = ap.parse_args()
     arms_all = a.arms
+    global rule
+    rule = a.root.name == "main_1103"  # the tie rule was fixed for main_1103 only
 
     rows = []
     for arm in arms_all:
@@ -233,18 +236,22 @@ def main():
               f"{st.median(la):.2f}, max {max(la):.2f}; runs in flight median {st.median(run) / 2:g}, max {max(run) / 2:g} "
               "(pgrep counts the timeout wrapper and node: 2 processes per run).", ""]
 
-    L += ["## Ranking (the rule fixed before the batch)", ""]
-    t, s_all = table(rows, web, seqs, "WebVIO arms, all 17 sequences")
+    tun, hld = [s for s in seqs if s in TUNING], [s for s in seqs if s not in TUNING]
+    tum = [s for s in seqs if s.startswith("tumvi")]
+    L += ["## Ranking (the rule fixed before the batch)" if rule else
+          "## The main_1103 tables (diagnostic batch: no rule was fixed for it, so no ties; read large effects only)", ""]
+    t, s_all = table(rows, web, seqs, f"WebVIO arms, all {len(seqs)} sequences")
     L += t
-    L += table(rows, web, [s for s in seqs if s in TUNING], "WebVIO arms, tuning subset (8)")[0]
-    L += table(rows, web, [s for s in seqs if s not in TUNING], "WebVIO arms, held-out (9)")[0]
+    if tun and hld:
+        L += table(rows, web, tun, f"WebVIO arms, tuning subset ({len(tun)})")[0]
+        L += table(rows, web, hld, f"WebVIO arms, held-out ({len(hld)})")[0]
     if "alvaar" in arms_all:
-        L += table(rows, arms_all, euroc, "All arms incl. AlvaAR, EuRoC only (11)", ["alvaar"])[0]
+        L += table(rows, arms_all, euroc, f"All arms incl. AlvaAR, EuRoC only ({len(euroc)})", ["alvaar"])[0]
     if len(page) > 1 and len(page) < len(web):
         L += ["## Phone pool: the page presets only (what the phone can run)", ""]
-        L += table(rows, page, seqs, "Page presets, all 17 sequences")[0]
-        L += table(rows, page, held, "Page presets, held-out (9)")[0]
-        L += table(rows, page, [s for s in seqs if s.startswith("tumvi")], "Page presets, TUM-VI rooms only (6)")[0]
+        L += table(rows, page, seqs, f"Page presets, all {len(seqs)} sequences")[0]
+        L += table(rows, page, held, f"Page presets, held-out ({len(held)})")[0]
+        L += table(rows, page, tum, f"Page presets, TUM-VI rooms only ({len(tum)})")[0]
 
     L += ["## Per sequence", ""]
     L += per_seq(rows, arms_all, seqs, "online_ate", "Online Sim3 ATE, median of good runs (mm); (n✗) = bad runs of 5")

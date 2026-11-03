@@ -150,7 +150,7 @@ def c_share(key):
 
 
 def c_maps(rr):
-    return f"{med([r['maps'] for r in rr]):.0f} ({max(r['maps'] for r in rr)})" if rr else ""
+    return f"{med([r['maps'] for r in rr]):.0f} ({max(r['maps'] for r in rr)}); {st.mean(r['maps'] for r in rr):.2f}" if rr else ""
 
 
 def c_ate(rr):
@@ -253,7 +253,7 @@ def main():
     L += ["## Synthetic set (42 sequences, 7 scenarios × 6; 12 runs per scenario and arm)", ""]
     L += grid(syn, ARMS, SCEN, c_share("tracked"), "Tracked share, median (%)")
     L += grid(syn, ARMS, SCEN, c_share("largest"), "Largest-map share, median (%)")
-    L += grid(syn, ARMS, SCEN, c_maps, "Maps (segments) per run, median (max)")
+    L += grid(syn, ARMS, SCEN, c_maps, "Maps (segments) used per run, median (max); mean")
     L += grid(syn, ARMS, SCEN, c_ate, "Online Sim3 ATE of the largest map, median (cm); (n pf / none / short)")
     L += grid(syn, ARMS[1:], SCEN, c_final, "Final Sim3 ATE of the largest map (after BA / loop closure), median cm (its coverage, median)")
     L += ["Shake: the ground truth's spread is under 5 cm in every run, so its final ATE is not meaningful either.", ""]
@@ -279,7 +279,7 @@ def main():
     lab = lambda s: f"{s.replace('rec_20261018_', '')} {labels.get(s, '')}"
     L += grid(ph, ARMS, pseq, c_share("tracked"), "Tracked share, median of 2 (%)", "seq", lab)
     L += grid(ph, ARMS, pseq, c_share("largest"), "Largest-map share, median of 2 (%)", "seq", lab)
-    L += grid(ph, ARMS, pseq, c_maps, "Maps (segments) per run, median (max)", "seq", lab)
+    L += grid(ph, ARMS, pseq, c_maps, "Maps (segments) used per run, median (max); mean", "seq", lab)
     L += grid(ph, ARMS, pseq, lambda rr: "" if not rr else ("–" if med([r["first_s"] for r in rr]) is None else
               f"{med([r['first_s'] for r in rr]):.1f}"), "First tracked frame, median (s)", "seq", lab)
     L += ["### Per recording vs AlvaAR (median of 2 runs each)", "",
