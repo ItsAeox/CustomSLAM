@@ -1,0 +1,11 @@
+# replay_arms.sh arms (return_1104.sh; TAP is replaced by the scenario's tap time): the presets in the paper's scope as the
+# pre-cut AR page runs them (f1a4a97 web/options.js): fast / next / beta keep the map once the tree is placed (option
+# anchor = keep, the default), stock starts a new map after 3 s lost (its preset sets anchor = stock); beta_newmap = beta
+# with the page's other anchor option (stock). No scale or gyro-attitude keys. next / beta read the synthetic Chrome-like
+# gyro with its -88 ms offset (Web.Gyro.TimeOffset, 16 Oct; as ext_1103). --dump-local: the page's local points, for
+# anchor_return.py --place floor (the pre-cut page's floor-plane placement).
+beta|beta|Web.Gyro.TimeOffset: -0.088;--keep-map-at TAP;--tap-at TAP;--dump-local
+beta_newmap|beta|Web.Gyro.TimeOffset: -0.088;--tap-at TAP;--dump-local
+next|next|Web.Gyro.TimeOffset: -0.088;--keep-map-at TAP;--tap-at TAP;--dump-local
+fast|fast|--keep-map-at TAP;--tap-at TAP;--dump-local
+stock|stock|--tap-at TAP;--dump-local
