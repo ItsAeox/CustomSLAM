@@ -3,7 +3,9 @@
 # module (web/build) and the WASM runner. slam-wasm-ui builds both (snap-84c1f17 came from it). Nothing else running: -j6.
 set -uo pipefail
 LOG=/mnt/h/Research/logs/build_g40_1104.log
-B=/root/build/slam-wasm-ui W=/mnt/h/Research/CustomSLAM/web/build
+# 5 Nov: on 4 Nov 21:19 this copied the module into web/build and replaced the frozen paper module there (restored by
+# 2026-11-05/build_paper_web_1105.sh); the copy now goes to web/build-g40, which the AR page does not load.
+B=/root/build/slam-wasm-ui W=/mnt/h/Research/CustomSLAM/web/build-g40
 source /opt/slam/emsdk/emsdk_env.sh > /dev/null 2>&1
 {
   echo "=== start $(date +%T) HEAD $(git -C /mnt/h/Research/CustomSLAM rev-parse --short HEAD) (+ working tree)"
