@@ -21,6 +21,13 @@ the start as the page does with a restored tree) is scored with --anchor-file: t
 and is shown while tracking in the loaded map; first_shown_s = from the first frame to the first shown frame.
 phantom_frames / phantom_pct: shown frames where the object lands in the image but the true spot is not in view (a
 wrong relocalisation draws it in the wrong room; the px metrics only see frames with the spot in view).
+On screen (4 Nov): 'shown' is the page's visible flag (tracking in the object's map); the object can still project
+behind the camera or outside the image. ret_onscreen_pct / ret_onscreen_wait_s: of the return frames with the spot in
+view, those where it is shown and lands in the image, and the wait to the first one (-1: never); the dump's 6th column.
+stash_drop_s (--place floor only, it needs the page's per-map floors): the page's stashAnchors (web/ar.js, f1a4a97 and
+later) keeps a stashed object through a second new map only while the map being left has no floor; once that map has
+found one, the stash is replaced by that map's (empty) anchors and the object is gone. The time of the first such
+second new map, '-' if none. Recorded only: 'shown' and every other field do not model it.
 
 trace.txt needs the map id / map count columns (orbslam3_run aa3763f+: the last two).
   anchor_return.py <run dir> <sequence dir> [--gt results/gt/synth_<seq>.txt] [--wrong-px 50]
@@ -92,7 +99,8 @@ def main():
     ap.add_argument("seq")
     ap.add_argument("--gt", help="per-frame camera GT (t = reported frame stamp; default results/gt/synth_<seq>.txt)")
     ap.add_argument("--wrong-px", type=float, default=50.0, help="shown more than this far off = a wrong placement")
-    ap.add_argument("--dump", help="per-frame file: t (motion clock, s), spot in view, object shown, px error, cm error")
+    ap.add_argument("--dump", help="per-frame file: t (motion clock, s), spot in view, object shown, px error, cm error, "
+                                   "shown and in the image")
     ap.add_argument("--place", choices=("centre", "floor"), default="centre",
                     help="centre: the median depth of the tracked points around the image centre (center_depth.txt); floor: "
                          "the page's floor plane (ar.js detectFloor on orbslam3_run --dump-local points, gravity from the true "
@@ -172,7 +180,7 @@ def main():
         if pc_[2] < 0.1: return None
         u_ = K3 @ (pc_ / pc_[2])
         return u_[:2] if 0 <= u_[0] < W and 0 <= u_[1] < H else None
-    anchor, used, anchor_arr = None, None, None
+    anchor, used, anchor_arr, hist = None, None, None, None
     if saved is not None:
         anchor = np.array(saved["anchor"], float)
     if a.place == "floor" and saved is None:
@@ -319,7 +327,7 @@ def main():
             "method": out.get("anchor_method")}) + "\n")
         out.update(saved_map=int(m_.group(1)) if m_ else -1)
     # the page's anchor state after placement (ar.js: lastMaps / lastState logic)
-    exists, stashed = True, False
+    exists, stashed, stash_drop = True, False, None
     shown = np.zeros(len(t), bool)
     events = []
     for i in range(p, len(t)):
@@ -329,6 +337,9 @@ def main():
         if i > p:
             if nmaps[i] > nmaps[i - 1]:
                 if exists and not stashed: stashed = True; events.append(f"stash@{t[i] - t0:.1f}")
+                elif stashed and stash_drop is None and hist is not None and \
+                        any(m == mapid[i - 1] and jj < i for jj, m, _, _ in hist):
+                    stash_drop = t[i] - t0  # the page's stashAnchors replaces the stash (recorded only)
             elif nmaps[i] < nmaps[i - 1]:
                 if stashed: stashed = False; events.append(f"restore@{t[i] - t0:.1f}")
             elif state[i - 1] >= 2 and state[i] == 1 and not stashed and exists:
@@ -375,11 +386,14 @@ def main():
         if len(rv):
             rs = rv[sh[rv]]
             out.update(ret_wait_s=round(float(tt[rs[0]] - tt[rv[0]]), 1) if len(rs) else -1)
+            ro = rv[(sh & est_in)[rv]]
+            out.update(ret_onscreen_pct=round(100 * len(ro) / len(rv), 1),
+                       ret_onscreen_wait_s=round(float(tt[ro[0]] - tt[rv[0]]), 1) if len(ro) else -1)
     if a.dump:
         with open(a.dump, "w") as fh:
-            fh.write("# t_s in_view shown px cm\n")
+            fh.write("# t_s in_view shown px cm onscreen\n")
             for j in range(len(idx)):
-                fh.write(f"{t[idx[j]] - t0:.3f} {int(v[j])} {int(sh[j])} {epx[j]:.1f} {ecm[j]:.1f}\n")
+                fh.write(f"{t[idx[j]] - t0:.3f} {int(v[j])} {int(sh[j])} {epx[j]:.1f} {ecm[j]:.1f} {int(sh[j] and est_in[j])}\n")
     # gaps: stretches of in-view frames where the object is not shown
     gaps, cur = [], None
     for j in range(len(idx)):
@@ -389,7 +403,8 @@ def main():
             gaps.append(t[idx[j]] - cur); cur = None
     out.update(gaps=len(gaps) + (cur is not None), gap_max_s=round(max(gaps + ([t[-1] - cur] if cur is not None else []), default=0), 1),
                unrecovered_at_end=int(cur is not None), end_shown=int(bool(shown[-1])), anchor_deleted=int(not exists),
-               maps_max=int(nmaps.max()), events=",".join(events) or "-")
+               maps_max=int(nmaps.max()), events=",".join(events) or "-",
+               stash_drop_s=f"{stash_drop:.1f}" if stash_drop is not None else "-")
     print(" ".join(f"{k}={v}" for k, v in out.items()))
 
 
