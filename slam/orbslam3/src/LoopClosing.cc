@@ -1556,8 +1556,10 @@ void LoopClosing::MergeLocal()
         mpAtlas->ChangeMap(pMergeMap);
         mpAtlas->SetMapBad(pCurrentMap);
         pMergeMap->IncreaseChangeIndex();
+        const long webOldId = (long)pMergeMap->GetId();  // web port (G40): the absorbed map's id before the rename
         //TODO for debug
         pMergeMap->ChangeId(pCurrentMap->GetId());
+        mnWebLastMerge = ((mnWebLastMerge.load() >> 32) + 1) << 32 | (long long)(webOldId + 1);  // this thread only
 
         //std::cout << "[Merge]: merging maps finished" << std::endl;
     }

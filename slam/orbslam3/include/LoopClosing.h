@@ -31,6 +31,7 @@
 #include <boost/algorithm/string.hpp>
 #include <thread>
 #include <mutex>
+#include <atomic>
 #include "Thirdparty/g2o/g2o/types/types_seven_dof_expmap.h"
 
 namespace ORB_SLAM3
@@ -65,6 +66,13 @@ public:
 
     void RequestReset();
     void RequestResetActiveMap(Map* pMap);
+
+    // web port (claude/ISSUES.md G40): visual map merges done (MergeLocal) and the id the absorbed older map had before
+    // the merge gave it the current map's id, in one word so a reader never pairs a count with another merge's id:
+    // (merges << 32) | (absorbed id + 1). The AR page restores a stashed tree only when its own map was absorbed.
+    std::atomic<long long> mnWebLastMerge{0};
+    int WebMerges() const { return (int)(mnWebLastMerge.load() >> 32); }
+    long WebMergeOldId() const { return (long)(mnWebLastMerge.load() & 0xffffffffLL) - 1; }  // -1: no merge yet
 
     // This function will run in a separate thread
     void RunGlobalBundleAdjustment(Map* pActiveMap, unsigned long nLoopKF);

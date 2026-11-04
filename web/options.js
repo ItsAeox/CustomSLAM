@@ -19,6 +19,10 @@ export const OPTIONS = [
     values: [['off', 'off'], ['on', 'on (log for the camera–IMU time offset)']], def: 'off' },
   { key: 'anchor', label: 'Tracking lost with a tree placed', page: 'ar',
     values: [['keep', 'keep the map, relocalise only'], ['stock', 'stock (new map after the timeout)']], def: 'keep' },
+  // 2026-11-04 (claude/ISSUES.md G40, G41): the tree stashed at a new map, through further new maps and merges
+  { key: 'stash', label: 'Tree after a new map', page: 'ar', when: (o) => o.anchor === 'stock',
+    values: [['fixed', 'kept through further new maps, back when its own map merges'],
+             ['old', 'original (gone at a second new map once that map has a floor; back at any merge)']], def: 'fixed' },
   { key: 'map', label: 'Local mapping', values: [['stock', 'stock'], ['light', 'light (local BA 20/20, 15 neighbours)']], def: 'stock' },
   { key: 'kltmax', label: 'KLT frames between ORB', values: [['1', '1'], ['2', '2'], ['3', '3'], ['4', '4']], def: '2', when: (o) => o.tracker === 'klt' },
   { key: 'kltwin', label: 'KLT window', values: [['11', '11 px'], ['15', '15 px'], ['21', '21 px']], def: '15', when: (o) => o.tracker === 'klt' },

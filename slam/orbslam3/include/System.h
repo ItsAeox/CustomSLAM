@@ -189,6 +189,7 @@ public:
     Tracking* WebTracker() { return mpTracker; }
     Atlas* WebAtlas() { return mpAtlas; }
     LocalMapping* WebLocalMapper() { return mpLocalMapper; }
+    LoopClosing* WebLoopCloser() { return mpLoopCloser; }
 #endif
     std::vector<MapPoint*> GetTrackedMapPoints();
     std::vector<cv::KeyPoint> GetTrackedKeyPointsUn();

@@ -221,7 +221,8 @@ class WebSlam {
   }
 
   // [keyframes in active map, map points in active map, map-point matches in the last frame (frameKeyPoints()),
-  //  number of maps in the atlas, IMU initialised (inertial mode), IMU initialisation refined (VIBA2 done)]
+  //  number of maps in the atlas, IMU initialised (inertial mode), IMU initialisation refined (VIBA2 done),
+  //  current map id (-1: none), visual map merges so far, id the last merge's absorbed (older) map had (-1: none)]
   // Web.Scale.Online: [valid, metres per map unit, its 1-sigma / s, windows, gravity direction x y z (map frame)]
   val scaleEstimate() {
     scale_.fill(0);
@@ -236,7 +237,8 @@ class WebSlam {
   }
 
   val mapStats() {
-    stats_[0] = stats_[1] = stats_[3] = stats_[4] = stats_[5] = 0;
+    stats_[0] = stats_[1] = stats_[3] = stats_[4] = stats_[5] = stats_[7] = 0;
+    stats_[6] = stats_[8] = -1;
     stats_[2] = nMatches_;
     if (sys_) {
       ORB_SLAM3::Atlas* atlas = sys_->WebAtlas();
@@ -245,10 +247,14 @@ class WebSlam {
         stats_[1] = (int)map->MapPointsInMap();
         stats_[4] = map->isImuInitialized() ? 1 : 0;
         stats_[5] = map->GetIniertialBA2() ? 1 : 0;
+        stats_[6] = (int)map->GetId();
       }
       stats_[3] = atlas->CountMaps();
+      const long long rec = sys_->WebLoopCloser()->mnWebLastMerge.load();
+      stats_[7] = (int)(rec >> 32);
+      stats_[8] = (int)(rec & 0xffffffffLL) - 1;
     }
-    return val(typed_memory_view(6, stats_));
+    return val(typed_memory_view(9, stats_));
   }
 
   // Live per-stage profile (AR page, ?prof=1). Always: [KLT frames, ORB frames, KLT ms mean, LK pyramid ms per frame].
@@ -316,7 +322,7 @@ class WebSlam {
   std::vector<double> prof_;
   std::vector<ORB_SLAM3::IMU::Point> imu_;
   int nMatches_ = 0;
-  int stats_[6] = {0, 0, 0, 0, 0, 0};
+  int stats_[9] = {0, 0, 0, 0, 0, 0, -1, 0, -1};
   double lastMs_ = 0;
 };
 

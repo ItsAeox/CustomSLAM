@@ -28,6 +28,11 @@ stash_drop_s (--place floor only, it needs the page's per-map floors): the page'
 later) keeps a stashed object through a second new map only while the map being left has no floor; once that map has
 found one, the stash is replaced by that map's (empty) anchors and the object is gone. The time of the first such
 second new map, '-' if none. Recorded only: 'shown' and every other field do not model it.
+--page-fix (4 Nov): the page after the G40 / G41 fixes (AR page option stash=fixed): the stash keeps the tree through
+further new maps (as the default replay already does), and a merge brings it back only when the merge absorbed the
+tree's map (the id of the map left at the stash), read from the runner's WEBMERGE lines in run.log (orbslam3_run with
+the merge record, 4 Nov and later; merge_records = their number, merge_record_missing=1 when the map count dropped
+without one). othermerge@t events: a merge of other maps, the tree stays stashed.
 
 trace.txt needs the map id / map count columns (orbslam3_run aa3763f+: the last two).
   anchor_return.py <run dir> <sequence dir> [--gt results/gt/synth_<seq>.txt] [--wrong-px 50]
@@ -113,6 +118,8 @@ def main():
                          "tracked frame of the placement map (DLT): the error left is the map / tracking, not the placement")
     ap.add_argument("--save-anchor", help="write the object (the last refined position) and the saved map's id as json")
     ap.add_argument("--anchor-file", help="a run that loaded a saved room: the object from --save-anchor of the saving run")
+    ap.add_argument("--page-fix", action="store_true",
+                    help="the page with option stash=fixed: back only when the merge absorbed the tree's map (run.log WEBMERGE)")
     a = ap.parse_args()
     run, seq = Path(a.run), Path(a.seq)
     name = seq.name
@@ -327,23 +334,33 @@ def main():
             "method": out.get("anchor_method")}) + "\n")
         out.update(saved_map=int(m_.group(1)) if m_ else -1)
     # the page's anchor state after placement (ar.js: lastMaps / lastState logic)
-    exists, stashed, stash_drop = True, False, None
+    exists, stashed, stash_drop, stash_map = True, False, None, None
     shown = np.zeros(len(t), bool)
     events = []
+    merge_at = {}  # --page-fix: trace index -> the map the merge absorbed
+    if a.page_fix:
+        recs_ = re.findall(r"WEBMERGE frame (\d+) .*? map (-?\d+) absorbed", (run / "run.log").read_text(errors="replace"))
+        for f_, m_ in recs_:
+            k_ = int(np.searchsorted(frame, int(f_)))  # the first trace row at / after the frame it was printed after
+            if k_ < len(frame): merge_at[k_] = int(m_)
+        out.update(merge_records=len(recs_), merge_record_missing=int(bool((np.diff(nmaps) < 0).any()) and not recs_))
     for i in range(p, len(t)):
         if saved is not None:  # restored tree: shown while tracking in the loaded map (keep map: no new maps)
             shown[i] = ok[i] and mapid[i] == loaded
             continue
         if i > p:
             if nmaps[i] > nmaps[i - 1]:
-                if exists and not stashed: stashed = True; events.append(f"stash@{t[i] - t0:.1f}")
+                if exists and not stashed: stashed = True; stash_map = int(mapid[i - 1]); events.append(f"stash@{t[i] - t0:.1f}")
                 elif stashed and stash_drop is None and hist is not None and \
                         any(m == mapid[i - 1] and jj < i for jj, m, _, _ in hist):
                     stash_drop = t[i] - t0  # the page's stashAnchors replaces the stash (recorded only)
             elif nmaps[i] < nmaps[i - 1]:
-                if stashed: stashed = False; events.append(f"restore@{t[i] - t0:.1f}")
+                if stashed and not a.page_fix: stashed = False; events.append(f"restore@{t[i] - t0:.1f}")
             elif state[i - 1] >= 2 and state[i] == 1 and not stashed and exists:
                 exists = False; events.append(f"reset@{t[i] - t0:.1f}")
+            if i in merge_at and stashed:
+                if merge_at[i] == stash_map: stashed = False; events.append(f"restore@{t[i] - t0:.1f}")
+                else: events.append(f"othermerge@{t[i] - t0:.1f}")
         shown[i] = exists and not stashed and ok[i]
     # true view of the spot, screen and room errors
     idx = np.arange(p + 1, len(t))

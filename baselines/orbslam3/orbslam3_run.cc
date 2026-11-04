@@ -616,6 +616,18 @@ int main(int argc, char** argv) {
       tr << "\n";
     }
     times << i << " " << ttrack * 1000.0 << " " << SLAM.GetTrackingState() << "\n";
+    {  // visual map merges (ISSUES G40): which map the merge absorbed, for eval/anchor_return.py --page-fix
+      static int merges = 0;
+      const long long rec = SLAM.WebLoopCloser()->mnWebLastMerge.load();
+      const int n = (int)(rec >> 32);
+      if (n != merges) {
+        ORB_SLAM3::Map* cm = SLAM.WebAtlas()->GetCurrentMap();
+        std::cout << "WEBMERGE frame " << i << " (" << d.t[i] - d.t[0] << " s): merges " << n << ", map "
+                  << (long)(rec & 0xffffffffLL) - 1 << " absorbed into map " << (cm ? (long)cm->GetId() : -1L)
+                  << ", maps " << SLAM.WebAtlas()->CountMaps() << std::endl;
+        merges = n;
+      }
+    }
     // Real-time protocol of ORB-SLAM3's examples: wait for the rest of the frame period, which leaves time for
     // the local-mapping / loop-closing threads. Without it, results depend on the relative thread speeds.
     if (!src && realtime) {

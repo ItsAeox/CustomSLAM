@@ -117,6 +117,7 @@ const absClock = () => inertial || rec || gyroOn || eqvioOn;  // frame times on 
 let imuPending = [];
 let imuFlags = [0, 0];               // last logged IMU initialisation flags (map stats [4], [5])                 // live IMU samples not yet sent: [t abs s, ax, ay, az (m/s^2), gx, gy, gz (rad/s)] flat
 let lastMaps = 0, lastState = 0;
+let lastMapId = -1, lastMerges = 0;  // map stats [6] current map id, [7] visual merges so far (option stash, ISSUES G40)
 let replayTaps = [], replayT = -1;               // recording taps still to replay: { t (s, sequence clock), u, v (image px) }
 let stash = null;          // anchors of a map that went inactive (tracking lost -> new map); restored on map merge
 let resetRequested = false;  // Reset button: sent to the worker between frames (one request at a time)
@@ -252,14 +253,24 @@ function resetAnchors(reason) {
 // ORB-SLAM3 started a new map after losing tracking: the cactus/floor live in the old map's coordinates, so hide them
 // (not delete). If the user returns and ORB-SLAM3 merges the maps, the merged map uses the old map's coordinates
 // (LoopClosing::MergeLocal corrects the new map into it and makes it active again), so the anchors become valid again.
+// Option stash 'fixed' (ISSUES G40 / G41): the stash remembers its map's id; a further new map keeps a stashed tree
+// (the original replaced the stash with the map being left once that map had found a floor, and the tree was gone), and
+// the tree comes back only when the merge absorbed its own map (the original restored it at any merge, in another
+// map's coordinates when two other maps merged).
 function stashAnchors() {
   if (!cactus && !floor) return;
+  if (opts.stash !== 'old' && stash && stash.cactus && !cactus) {  // a new map again while the tree is stashed
+    if (floorMesh) scene.remove(floorMesh);
+    floor = null; floorMesh = null; downSum = [0, 0, 0]; downN = 0; tapRay = null;
+    tele(`new map again: the stashed tree (map ${stash.mapId}) is kept`);
+    return;
+  }
   if (stash) { if (stash.cactus) scene.remove(stash.cactus); if (stash.floorMesh) scene.remove(stash.floorMesh); }
-  stash = { cactus, floor, floorMesh, downSum, downN, tapRay };
+  stash = { cactus, floor, floorMesh, downSum, downN, tapRay, mapId: lastMapId };
   if (cactus) cactus.visible = false;
   if (floorMesh) floorMesh.visible = false;
   cactus = null; floor = null; floorMesh = null; downSum = [0, 0, 0]; downN = 0; tapRay = null;
-  tele('anchors stashed (new map after tracking loss)');
+  tele(`anchors stashed (new map after tracking loss; the tree's map ${lastMapId})`);
   hint('Tracking lost: new map started. Go back to where the tree was to recover it.', 4000);
 }
 function restoreAnchors() {
@@ -922,13 +933,22 @@ async function start() {
       }
       state = r.state; stats = r.viz.stats; kps = r.viz.kps;
       if (lastMaps && stats[3] > lastMaps) stashAnchors();              // lost -> ORB-SLAM3 started a new map
-      else if (lastMaps && stats[3] < lastMaps) restoreAnchors();       // maps merged back into the old one
+      else if (lastMaps && stats[3] < lastMaps) {                       // maps merged
+        if (opts.stash === 'old' || stats.length < 9) restoreAnchors();  // original: back at any merge
+      }                                                                 // 'fixed': the merge record below decides
       else if (lastState >= 2 && state === 1 && !stash) resetAnchors('Tracking restarted. Move the phone slowly sideways.');
+      if (stats.length >= 9 && stats[7] !== lastMerges) {               // a visual merge finished: [8] = the absorbed map
+        if (opts.stash !== 'old' && stash) {
+          if (stats[8] === stash.mapId) restoreAnchors();
+          else tele(`maps merged (map ${stats[8]} into map ${stats[6]}), not the tree's map ${stash.mapId}: the tree stays stashed`);
+        }
+        lastMerges = stats[7];
+      }
       if (inertial && (stats[4] !== imuFlags[0] || stats[5] !== imuFlags[1])) {
         tele(`IMU: initialised ${stats[4] ? 'yes' : 'no'}, refined (VIBA2) ${stats[5] ? 'yes' : 'no'}`);
         imuFlags = [stats[4], stats[5]];
       }
-      lastState = state; lastMaps = stats[3];
+      lastState = state; lastMaps = stats[3]; lastMapId = stats.length >= 9 ? stats[6] : -1;
       holdTwc = null;
       if (holdOn && !tracking() && holdRef && performance.now() - holdRef.wall < HOLD_MS) holdTwc = heldPose();
       if (tracking()) {
