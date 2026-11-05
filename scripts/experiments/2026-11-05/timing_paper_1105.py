@@ -31,7 +31,7 @@ L = ["**Table XII. Runtime of the frozen build on the PC, one run at a time** (m
      "user + system time of all threads per processed frame, including process start-up and loading the vocabulary. "
      "*LBA*: mean time of one local bundle adjustment. *RSS*: peak resident memory (WASM: Node.js plus the module's "
      "heap). AlvaAR processes EuRoC's 752×480 frames, the ORB-SLAM3-based arms 600×350 (1.7× fewer pixels). Desktop "
-     "PC (§VI-F), WASM in Node.js: not the phone.", "",
+     "PC (§VI-F), WASM in Node.js: not the phone. The sequences are 20 Hz, so real-time pacing gives 50 ms per frame; the > 33 ms column refers to a 30 fps phone camera, not to the replay. AlvaAR runs on EuRoC only (§VI-A).", "",
      "| seq. | arm | track ms, median | track ms, p95 | > 33 ms (%) | CPU ms / frame | keyframes | LBA ms | RSS MB |",
      "|---|---|---|---|---|---|---|---|---|"]
 for s, sn in SEQ:
@@ -70,6 +70,23 @@ spread = []
 for (k, s), rs in G.items():
     v = [float(r["track_med"]) for r in rs]
     if len(v) == 2: spread.append((abs(v[0] - v[1]) / min(v), k, s, v))
+import re
+for s, sn in SEQ:
+    for side in ("native", "page"):
+        a_, b_ = mean(G.get((f"{side}-fast", s), []), "lba_ms"), mean(G.get((f"{side}-beta", s), []), "lba_ms")
+        D.append(f"- {sn} local BA speed-up fast/beta {side}: {a_ / b_:.2f}x")
+    for k in ("native-stock", "native-fast", "native-beta", "page-fast", "page-beta"):
+        sz = []
+        for r in G.get((k, s), []):
+            log = O / k / s / r["run"] / "run.log"
+            m = re.search(r"LBA-PROFILE runs=\d+ .* edges=(\d+) points=(\d+) kfs=(\d+)", log.read_text(errors="replace")) if log.exists() else None
+            if m: sz.append(tuple(int(x) for x in m.groups()))
+        if sz:
+            D.append(f"- {sn} {k} local BA size per adjustment (edges, points, keyframes) per run: " + "; ".join(f"{e}, {pt}, {kf}" for e, pt, kf in sz))
+for s, sn in SEQ:
+    for k, an in ARMS:
+        c = mean(G.get((k, s), []), "cpu_ms_per_frame")
+        if c: D.append(f"- {sn} {k} cores busy on average (CPU ms / 50 ms frame): {c / 50:.2f}")
 spread.sort(reverse=True)
 D += ["", "Run-to-run spread of the tracking median, |run1 − run2| / smaller run (largest first):"]
 D += [f"- {k} {s}: {x * 100:.0f}% ({v[0]:.1f} / {v[1]:.1f})" for x, k, s, v in spread]
