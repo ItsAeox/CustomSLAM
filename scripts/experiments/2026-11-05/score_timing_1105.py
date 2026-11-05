@@ -85,7 +85,7 @@ for seq in SEQS:
         print(f"| {arm} | {f(rs, 'track_med')} | {f(rs, 'track_p95')} | {f(rs, 'over33')} | {f(rs, 'effective_rate', '{:.2f}')} "
               f"| {f(rs, 'cpu_ms_per_frame')} | {f(rs, 'keyframes', '{:.0f}')} | {f(rs, 'lba_ms')} | "
               f"{' / '.join(str(r.get('klt_frames', '–')) + ':' + str(r.get('orb_frames', '–')) for r in rs)} | "
-              f"{f(rs, 'rss_mb', '{:.0f}')} | {f(rs, 'mem_mb', '{:.0f}')} |")
+              f"{f(rs, 'rss_mb', '{:.0f}')} | {f(rs, 'mem_mb', '{:.0f}') if not arm.startswith('native') else '–'} |")
 fails = [f"{r['arm']} {r['seq']} {r['run']}" for r in rows if r.get("failed")]
 print()
 print("Failed runs: " + (", ".join(fails) if fails else "none"))

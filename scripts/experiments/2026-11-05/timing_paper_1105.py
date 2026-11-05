@@ -13,7 +13,7 @@ O = Path(a.root) / "results/timing_1105"
 rows = list(csv.DictReader(open(O / "runs.csv", encoding="utf-8")))
 G = defaultdict(list)
 for r in rows: G[(r["arm"], r["seq"])].append(r)
-ARMS = [("native-stock", "native-stock"), ("wasm-stock", "wasm-stock"), ("native-fast", "fast, native"),
+ARMS = [("native-stock", "stock, native"), ("wasm-stock", "stock, WASM"), ("native-fast", "fast, native"),
         ("page-fast", "fast, WASM"), ("native-next", "next, native"), ("page-next", "next, WASM"),
         ("native-beta", "beta, native"), ("page-beta", "beta, WASM"), ("alvaar", "AlvaAR (WASM)")]
 SEQ = [("euroc_MH_01_easy", "MH01"), ("euroc_V1_02_medium", "V1_02"), ("tumvi_dataset-room2_512_16", "room2")]
@@ -25,7 +25,7 @@ def m(rs, k, fmt="{:.1f}"):
 
 
 L = ["**Table XII. Runtime of the frozen build on the PC, one run at a time** (mean of 2 runs per cell; per-run values "
-     "in the supplement). Real-time pacing as in §VII-A. *Track*: the tracking call's time per frame (median, 95th "
+     "in the supplement). Real-time pacing (§VI-C). *Track*: the tracking call's time per frame (median, 95th "
      "percentile; frame loading and logging are outside it); WebVIO maps on its own threads, while AlvaAR's call "
      "includes its mapping, which runs inline. *> 33 ms*: share of frames over the 30 fps frame time. *CPU / frame*: "
      "user + system time of all threads per processed frame, including process start-up and loading the vocabulary. "
@@ -44,3 +44,36 @@ fails = [f"{r['arm']} {r['seq']} {r['run']}" for r in rows if r.get("failed") ==
 L += ["", f"Runs: {len(rows)}; failed: {', '.join(fails) if fails else 'none'}."]
 (O / "TIMING_PAPER.md").write_text("\n".join(L) + "\n", encoding="utf-8", newline="\n")
 print("\n".join(L))
+
+# Derived values quoted in the §VII-B prose (not part of the paper; a source for check_numbers.py).
+def mean(rs, k):
+    v = [float(r[k]) for r in rs if r.get(k) not in (None, "")]
+    return sum(v) / len(v) if v else None
+
+
+D = ["# timing_1105: values derived from the means of Table XII (timing_paper_1105.py)", ""]
+for s, sn in SEQ:
+    g = lambda k, f: mean(G.get((k, s), []), f)
+    for k in ("track_med", "track_p95", "lba_ms"):
+        for nat, wasm in (("native-stock", "wasm-stock"), ("native-fast", "page-fast"), ("native-next", "page-next"),
+                          ("native-beta", "page-beta")):
+            a, b = g(nat, k), g(wasm, k)
+            if a and b: D.append(f"- {sn} {k} WASM/native {wasm}/{nat}: {b / a:.2f}")
+    for side in ("native", "page"):
+        a, b = g(f"{side}-fast", "lba_ms"), g(f"{side}-beta", "lba_ms")
+        D.append(f"- {sn} lba_ms beta/fast {side}: {b / a:.2f}")
+    for k in ("native-fast", "page-fast", "native-next", "page-next", "native-beta", "page-beta"):
+        rs = G.get((k, s), [])
+        sh = [float(r["orb_frames"]) / (float(r["orb_frames"]) + float(r["klt_frames"])) for r in rs]
+        D.append(f"- {sn} {k} ORB-frame share per run: " + ", ".join(f"{100 * x:.1f}%" for x in sh))
+spread = []
+for (k, s), rs in G.items():
+    v = [float(r["track_med"]) for r in rs]
+    if len(v) == 2: spread.append((abs(v[0] - v[1]) / min(v), k, s, v))
+spread.sort(reverse=True)
+D += ["", "Run-to-run spread of the tracking median, |run1 − run2| / smaller run (largest first):"]
+D += [f"- {k} {s}: {x * 100:.0f}% ({v[0]:.1f} / {v[1]:.1f})" for x, k, s, v in spread]
+eff = [float(r["effective_rate"]) for r in rows]
+D += ["", f"Frames processed / frames: all equal: {all(r['frames'] == r['processed'] for r in rows)}; "
+      f"dropped total: {sum(float(r['dropped'] or 0) for r in rows):.0f}; effective rate min {min(eff):.4f}."]
+(O / "TIMING_DERIVED.md").write_text("\n".join(D) + "\n", encoding="utf-8", newline="\n")
