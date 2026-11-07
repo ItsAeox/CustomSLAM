@@ -29,6 +29,9 @@ SMALL_VOCAB="$(dirname "$VOCAB")/ORBvoc_own_k10L5.bin"  # optional: vocabulary o
 if [ -f "$SMALL_VOCAB" ]; then gzip -6 -n -c "$SMALL_VOCAB" > "$OUT/vocab/ORBvoc_own_k10L5.bin.gz"; fi
 touch "$OUT/.nojekyll"  # serve files as-is (no Jekyll processing)
 cp "$W/index.html" "$OUT/index.html"  # web/index.html adapts: on Pages only what works without the dev server
+# blind user study (claude/STUDY.md): web/study (kx.html regenerated from ar.html; AlvaAR bundle + licence in vendor/)
+python3 "$REPO/scripts/make_study_pages.py"
+mkdir -p "$OUT/study" && cp -r "$W/study/." "$OUT/study/" && rm -f "$OUT/study/apps_script.gs"
 # phone recordings for replays on Pages (gray frames, static manifest / IMU): names in web/pages_recordings.txt
 if [ -f "$W/pages_recordings.txt" ]; then
   /opt/slam/venv/bin/python "$REPO/scripts/export_recordings.py" "$OUT" $(grep -v '^#' "$W/pages_recordings.txt")

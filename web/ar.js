@@ -23,6 +23,10 @@ if (params.get('res')) $('res').value = params.get('res');
 // results/hard10_rt), relocalise 10 s before a new map (stock 3 s), and keep the map while the tree is placed.
 const AR_DEFAULTS = { reloc: '10', tracker: 'klt' };
 const opts = optionsFromParams(params, AR_DEFAULTS, 'ar');
+// study=1 (blind user study, web/study): preset from the URL, then the address bar is cleared, panels / hints / keypoints
+// hidden, and the shared task overlay (study/common.js) gets every frame, the placement and the taps
+const STUDY = params.get('study') === '1';
+let studyOv = null;
 function ensureImuOffsetValue(v) {  // a measured offset (imucalib.js) need not be one of the listed 20 ms steps
   const d = OPTIONS.find((x) => x.key === 'imudt');
   if (d && !d.values.some(([k]) => k === String(v))) d.values.push([String(v), `${v >= 0 ? '+' : ''}${v} (measured)`]);
@@ -62,6 +66,13 @@ $('preset').onchange = () => {
   renderOpts(); saveOptsToUrl(); syncPreset();
 };
 renderOpts(); syncPreset();
+if (STUDY) {
+  const p = PRESETS.find((x) => x.key === params.get('preset'));
+  if (p) applyPreset(opts, p, AR_DEFAULTS, 'ar');
+  renderOpts(); syncPreset();
+  history.replaceState(null, '', location.pathname);
+  document.body.classList.add('study');
+}
 
 const bg = $('bg'), bgx = bg.getContext('2d');
 const renderer = new THREE.WebGLRenderer({ canvas: $('gl'), alpha: true, antialias: true });
@@ -535,6 +546,7 @@ function placeCactus(clientX, clientY) {
        ` | at ${hit.map((x) => x.toFixed(4)).join(' ')} | camera ${o.map((x) => x.toFixed(4)).join(' ')}${floor ? ` | floor height ${floor.height.toFixed(4)}` : ''} | map ${stats[3]}` +
        (metresPerUnit() ? ` | tree ~ ${(size * sizeFactor() * metresPerUnit()).toFixed(2)} m tall (${scaleSource()})` : ''));
   hint('');
+  if (studyOv) studyOv.placed();
 }
 
 // ---------------------------------------------------------------- drawing
@@ -548,7 +560,7 @@ function hint(s, holdMs = 0) {  // holdMs: keep this message instead of the per-
 function drawFrame(bmp) {
   bgx.drawImage(bmp, 0, 0);
   bmp.close();
-  if (kps && tracking()) {
+  if (kps && tracking() && !STUDY) {
     bgx.fillStyle = '#22c55e';
     for (let i = 0; i < kps.length; i += 3) if (kps[i + 2] === 1) bgx.fillRect(kps[i] - 1.5, kps[i + 1] - 1.5, 3, 3);
   }
@@ -557,6 +569,7 @@ function drawFrame(bmp) {
   if (floorMesh) floorMesh.visible = !cactus && tracking();
   if (cactus) cactus.visible = tracking() || !!holdTwc;  // hidden while lost (stale pose), unless held by the gyro
   renderer.render(scene, cam3);
+  if (studyOv) studyOv.frame(tracking());
 }
 
 // ---------------------------------------------------------------- main loop
@@ -794,7 +807,7 @@ async function start() {
       }
     }
     const tInit = performance.now();
-    const ready = await slam.request({ type: 'init', vocabUrl: vocabUrl(opts.desc, opts.voc), clahe, seed: 1, prof: params.get('prof') === '1', inertial,
+    const ready = await slam.request({ type: 'init', vocabUrl: vocabUrl(opts.desc, opts.voc), clahe, seed: 1, cacheVocab: STUDY, prof: params.get('prof') === '1', inertial,
                                        vio: opts.vio, eqvioConfigUrl: new URL('./eqvio_phone.yaml', location.href).href,
                                        settingsText: withTracker(settingsText), mapBytes: room ? (room.gz ? await gzip(room.map, 'd') : room.map) : null });
     if (room) {
@@ -831,7 +844,7 @@ async function start() {
       if (cactus) cactus.scale.setScalar(objBase * sizeFactor());
       clearTimeout(sizeLog); sizeLog = setTimeout(() => tele(`tree size x${sizeFactor().toFixed(2)}`), 800);
     };
-    $('stage').addEventListener('pointerdown', (e) => placeCactus(e.clientX, e.clientY));
+    $('stage').addEventListener('pointerdown', (e) => { if (studyOv && studyOv.tap(e.clientX, e.clientY)) return; placeCactus(e.clientX, e.clientY); });
 
     const t0 = performance.now();
     const times = [], trackTimes = [];
@@ -1057,6 +1070,7 @@ async function start() {
       }
     }
   } catch (e) {
+    if (studyOv) studyOv.fail(String(e.message || e));
     $('start').hidden = false; $('go').disabled = false;
     $('err').textContent = String(e.message || e);
     tele(`ERROR ${e.stack || e}`);
@@ -1105,6 +1119,21 @@ function withTracker(yaml) {  // applies the selected options (web/options.js)
 }
 
 $('go').onclick = start;
+if (STUDY) {  // the study page already asked for consent: one Start tap (as every version), then the overlay and SLAM
+  import('./study/common.js').then(({ Overlay, finishCondition, canvasBrightness, startGate, versionIndex }) => {
+    startGate(versionIndex(), () => {
+      studyOv = new Overlay({
+        objectScreen: () => {
+          if (!cactus) return null;
+          const v = cactus.position.clone().project(cam3), r = $('gl').getBoundingClientRect();
+          return { x: r.left + (v.x + 1) / 2 * r.width, y: r.top + (1 - v.y) / 2 * r.height, visible: cactus.visible && v.z > -1 && v.z < 1 };
+        },
+        brightness: () => canvasBrightness(bg),
+      }, (log) => finishCondition('webvio', { ...log, preset: presetKey(), module: 'build' }));
+      return start();
+    });
+  });
+}
 function showImuCalib() {  // start screen: the last IMU offset / focal measured with "Record gyro + poses" at this resolution
   let c = null;
   try { c = JSON.parse(localStorage.getItem(`imucalib:${$('res').value}`) || 'null'); } catch { /* storage blocked */ }
