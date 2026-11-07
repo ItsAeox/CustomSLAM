@@ -81,11 +81,16 @@ def run(serial, arm, ds, seq, seed, first, last, seq_s, dry):
     while time.time() - t0 < limit and not info.exists():
         time.sleep(5)
     ok = info.exists()
-    extra = ""
+    extra, word = "", "ok" if ok else "TIMEOUT"
     if ok:
         j = json.loads(info.read_text())
         extra = f"rate {j['effective_rate']:.3f} tracked {j['tracked']}/{j['processed']} maps {j['maps']}"
-    log(f"{'ok' if ok else 'TIMEOUT'} {tag} {seq} seed{seed} {time.time() - t0:.0f} s {extra} | battery {b['level']}% "
+        if j.get("hidden_n", 0) > 0:  # Chrome was not in front during the run (throttled): discard and repeat it
+            extra += f" | page hidden {j['hidden_n']}x {j.get('hidden_s', 0):.0f} s: files removed, repeated"
+            for f in OUT.glob(f"{tag}_{seq}_viewer_seed{seed}_*"):
+                f.unlink()
+            ok, word = False, "HIDDEN"
+    log(f"{word} {tag} {seq} seed{seed} {time.time() - t0:.0f} s {extra} | battery {b['level']}% "
         f"{'charging' if b['charging'] else 'not charging'} {b['temp_c']} C")
     return ok
 

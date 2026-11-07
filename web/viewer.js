@@ -24,6 +24,13 @@ const params = new URLSearchParams(location.search);
 const STATE = { '-1': 'SYSTEM NOT READY', 0: 'NO IMAGES YET', 1: 'NOT INITIALIZED', 2: 'OK', 3: 'RECENTLY LOST', 4: 'LOST', 5: 'OK (KLT)' };
 const logEl = $('log');
 const opts = optionsFromParams(params);  // algorithm / settings variant (web/options.js)
+// time the page spent hidden (another app or tab in front: the browser throttles it); saved in info.json so a disturbed
+// benchmark run can be detected and repeated (phone_bench_1107.py)
+let hiddenMs = 0, hiddenAt = null, hiddenN = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { hiddenAt = performance.now(); hiddenN++; }
+  else if (hiddenAt != null) { hiddenMs += performance.now() - hiddenAt; hiddenAt = null; }
+});
 buildOptionsUI($('opts'), opts, () => history.replaceState(null, '', `?${optionsToParams(opts, new URLSearchParams(location.search))}`));
 const log = (s) => { logEl.textContent += s + '\n'; logEl.scrollTop = logEl.scrollHeight; };
 
@@ -591,7 +598,8 @@ async function start() {
         await upload(`${base}_info.json`, JSON.stringify({ seq: `${dataset}/${name}`, seed, pacing, settings: settingsUrl || info.settings,
           gyro: !!imuRaw, viz, frames: frames.length, processed: trackMs.length, dropped, tracked, maps: lastMaps, wall_s: wallS,
           seq_s: seqS, effective_rate: seqS / wallS, stopped: run.stop, ua: navigator.userAgent,
-          threads: navigator.hardwareConcurrency, init_ms: ready.ms, wakeLock: !!wakeLock, build: params.get('build') || 'build' }) + '\n');
+          threads: navigator.hardwareConcurrency, init_ms: ready.ms, wakeLock: !!wakeLock, build: params.get('build') || 'build',
+          hidden_n: hiddenN, hidden_s: (hiddenMs + (hiddenAt != null ? performance.now() - hiddenAt : 0)) / 1000 }) + '\n');
         log(`saved results/browser/${base}_{final,live,timing,info}`);
         if (params.get('uncache') === '1') {  // last run on this sequence: free the device storage again
           const cache = await caches.open('webvio-frames-v1');
