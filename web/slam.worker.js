@@ -144,9 +144,26 @@ function toGray(rgba, gray) {
 }
 
 // keepBitmap: return the decoded ImageBitmap too (viewer display; transferred to the page, which closes it)
-async function decode(url, keepBitmap = false) {
-  const blob = await (await fetch(url)).blob();
-  const bmp = await createImageBitmap(blob, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
+// Dataset frames: from the Cache API when viewer.js filled it (cache=1: the sequence stored on the device once), else
+// from the network. The next frame's bitmap is started before tracking the current one (msg.nextUrl): the image
+// decoder runs on the browser's own threads while slam.track() runs here, as orbslam3_run's frame-reader thread.
+const FRAME_CACHE = 'webvio-frames-v1';
+let frameCacheP = null;
+async function frameBlob(url) {
+  if (self.caches) {
+    frameCacheP ??= caches.open(FRAME_CACHE);
+    const hit = await (await frameCacheP).match(url);
+    if (hit) return hit.blob();
+  }
+  return (await fetch(url)).blob();
+}
+const loadBitmap = async (url) => createImageBitmap(await frameBlob(url), { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
+let preload = null;  // { url, bmp: Promise<ImageBitmap> }
+async function decode(url, keepBitmap = false, nextUrl = null) {
+  const bmpP = preload && preload.url === url ? preload.bmp : loadBitmap(url);
+  preload = null;
+  const bmp = await bmpP;
+  if (nextUrl) { preload = { url: nextUrl, bmp: loadBitmap(nextUrl) }; preload.bmp.catch(() => {}); }
   if (!canvas || canvas.width !== bmp.width || canvas.height !== bmp.height) {
     canvas = new OffscreenCanvas(bmp.width, bmp.height);
     ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -199,7 +216,12 @@ self.onmessage = async (e) => {
         return msg.vocabUrl.endsWith('.gz') ? body.pipeThrough(new DecompressionStream('gzip')) : body;
       };
       const [voc, settings] = await Promise.all([
-        fetch(msg.vocabUrl).then((r) => new Response(counted(r)).arrayBuffer()),  // Pages ships ORBvoc.bin.gz
+        (async () => {  // msg.cacheVocab (viewer.js cache=1): the vocabulary file kept in the Cache API between runs
+          const vc = msg.cacheVocab && self.caches ? await caches.open(FRAME_CACHE) : null;
+          let r = vc && await vc.match(msg.vocabUrl);
+          if (!r) { r = await fetch(msg.vocabUrl); if (vc && r.ok) await vc.put(msg.vocabUrl, r.clone()); }
+          return new Response(counted(r)).arrayBuffer();
+        })(),  // Pages ships ORBvoc.bin.gz
         msg.settingsText ?? fetch(msg.settingsUrl).then((r) => r.text()),  // settingsText: generated (live camera)
       ]);
       postMessage({ type: 'progress', stage: 'build', loaded: voc.byteLength, total: voc.byteLength });
@@ -218,11 +240,18 @@ self.onmessage = async (e) => {
       postMessage({ type: 'ready', ms: performance.now() - t0, vocabBytes: voc.byteLength, heap: M.HEAPU8.length, mapLoaded });
     } else if (msg.type === 'frame') {
       const td = performance.now();
-      const { img, bmp } = await decode(msg.url, !!msg.viz);
-      const w = img.width, h = img.height;
-      const ptr = slam.frameBuffer(w, h);
-      toGray(img.data, M.HEAPU8.subarray(ptr, ptr + w * h));  // HEAPU8 re-read: memory may have grown
-      const decodeMs = performance.now() - td;
+      let bmp = null, decodeMs;
+      if (msg.gray) {  // decoded to grey on the page's main thread (viewer.js viz=0): copy only
+        const ptr = slam.frameBuffer(msg.w, msg.h);
+        M.HEAPU8.set(new Uint8Array(msg.gray), ptr);
+      } else {
+        const d = await decode(msg.url, !!msg.viz, msg.nextUrl);
+        const img = d.img, w = img.width, h = img.height;
+        bmp = d.bmp;
+        const ptr = slam.frameBuffer(w, h);
+        toGray(img.data, M.HEAPU8.subarray(ptr, ptr + w * h));  // HEAPU8 re-read: memory may have grown
+      }
+      decodeMs = performance.now() - td;
       feedImu(msg.imu, msg.t);  // inertial mode: IMU samples up to this frame
       const state = slam.track(msg.t);
       const out = { type: 'pose', idx: msg.idx, t: msg.t, state, twc: Array.from(slam.poseTwc()),
@@ -236,6 +265,7 @@ self.onmessage = async (e) => {
         if (out.viz.mps) transfer.push(out.viz.mps.buffer, out.viz.kfs.buffer, out.viz.edges.buffer);
         postMessage(out, transfer);
       } else {
+        out.stats = Array.from(slam.mapStats());  // viz off: the map counters only (viewer.js viz=0)
         postMessage(out);
       }
     } else if (msg.type === 'bitmap') {  // live camera: {bitmap, t[, viz, withMap]}; the bitmap is sent back for display

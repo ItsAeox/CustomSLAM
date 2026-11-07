@@ -89,7 +89,7 @@ def record_path(name: str) -> str | None:
     return RECORD_FILES.get(name)
 
 
-def imu_raw(seq: Path) -> dict:
+def imu_raw(seq: Path, exact: bool = False) -> dict:
     """Every IMU sample (EuRoC-format imu0, IMU body frame) on the camera timeline: t (s), acc (m/s^2), gyro (rad/s).
     For mono-inertial runs in ar.html's dataset test mode (?inertial=1)."""
     ns0 = None
@@ -102,7 +102,7 @@ def imu_raw(seq: Path) -> dict:
         if not l.strip() or l.startswith("#"):
             continue
         f = l.split(",")
-        t.append(round((int(f[0]) - ns0) * 1e-9, 6))
+        t.append((int(f[0]) - ns0) * 1e-9 if exact else round((int(f[0]) - ns0) * 1e-9, 6))  # exact: as the frames
         gyro.append([float(f[1]), float(f[2]), float(f[3])])
         acc.append([float(f[4]), float(f[5]), float(f[6])])
     return {"t": t, "acc": acc, "gyro": gyro}
@@ -226,7 +226,7 @@ class Handler(SimpleHTTPRequestHandler):
             seq = (base / name).resolve()
             if not sub or not name or base not in seq.parents or not (seq / "mav0" / "imu0" / "data.csv").exists():
                 return self.send_error(404, "no IMU for this sequence")
-            return self.send_json(imu_raw(seq) if q.get("raw", ["0"])[0] == "1" else imu_manifest(seq, dataset))
+            return self.send_json(imu_raw(seq, q.get("exact", ["0"])[0] == "1") if q.get("raw", ["0"])[0] == "1" else imu_manifest(seq, dataset))
         return super().do_GET()
 
     def send_json(self, obj):
