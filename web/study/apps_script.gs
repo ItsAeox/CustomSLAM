@@ -1,3 +1,5 @@
+/** @OnlyCurrentDoc */
+// (the line above limits the script's permission to the one spreadsheet it is attached to)
 // Response store for the WebVIO user study (web/study, claude/STUDY.md §6). Paste into a Google Apps Script project
 // bound to a Google Sheet (Extensions -> Apps Script), then Deploy -> New deployment -> Web app, "Execute as: Me",
 // "Who has access: Anyone". Put the web app URL into web/study/common.js STORE_URL.
