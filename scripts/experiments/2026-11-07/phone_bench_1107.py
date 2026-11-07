@@ -66,7 +66,11 @@ def run(serial, arm, ds, seq, seed, first, last, seq_s, dry):
     tag = f"ph1107_{arm}"
     info = OUT / f"{tag}_{seq}_viewer_seed{seed}_info.json"
     if info.exists():
-        log(f"skip {tag} {seq} seed{seed} (done)"); return True
+        if json.loads(info.read_text()).get("hidden_n", 0) == 0:
+            log(f"skip {tag} {seq} seed{seed} (done)"); return True
+        for f in OUT.glob(f"{tag}_{seq}_viewer_seed{seed}_*"):  # finished while the page was hidden: repeat it
+            f.unlink()
+        log(f"HIDDEN {tag} {seq} seed{seed}: saved while the page was hidden, files removed, repeated")
     q = (f"seq={ds}/{seq}&pacing=rt&seed={seed}&settings={settings(arm, ds, seq)}&viz=0&tag={tag}&save=1&cache=1&clearcache=1&build=phone"
          f"{'&gyro=1' if arm in GYRO else ''}{'&uncache=1' if last else ''}&autorun=1")
     url = f"http://localhost:8010/web/viewer.html?{q}"
