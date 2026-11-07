@@ -5,6 +5,7 @@ import { CONDITIONS, ORDERS, WEBVIO_PRESET, assignOrder, load, newParticipant, s
 const app = document.getElementById('app');
 let s = load();
 if (!s || new URLSearchParams(location.search).get('new') === '1') { s = newParticipant(); save(s); }
+if (new URLSearchParams(location.search).get('test') === '1' && !s.test) { s.test = true; save(s); }  // flow test: every row TEST-
 
 const DEV = location.pathname.startsWith('/web/');
 const ROOT = new URL('../', location.href);
@@ -130,7 +131,7 @@ async function check() {
     return;
   }
   if (!s.order) {
-    const o = await assignOrder();
+    const o = await assignOrder(!!s.test);
     s.order = ORDERS[o.row]; s.orderRow = o.row; s.orderSource = o.source;
   }
   await send(s, 'device', { ...r, orderRow: s.orderRow, orderSource: s.orderSource });

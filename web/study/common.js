@@ -2,7 +2,7 @@
 // condition pages (WebVIO = ../ar.js in study mode, AlvaAR = qm.html, WebXR = tz.html). The pages never show which
 // tracker runs; they are opened under neutral names and the order comes from the participant's Latin-square row.
 
-export const STORE_URL = '';  // Google Apps Script web app URL (apps_script.gs); empty: answers stay in this browser only
+export const STORE_URL = 'https://script.google.com/macros/s/AKfycby0X8_1nNfMOQZRwov2GnZAOAqexDkBV_Z_WuZBxbes9d2EguP-zbpJT_C7SfUMrRk/exec';  // apps_script.gs web app (user's sheet, 7 Nov)
 export const CONDITIONS = { webvio: 'kx.html', alvaar: 'qm.html', webxr: 'tz.html' };  // study/<page>
 export const ORDERS = [['webvio', 'alvaar', 'webxr'], ['alvaar', 'webxr', 'webvio'], ['webxr', 'webvio', 'alvaar'],
                        ['webvio', 'webxr', 'alvaar'], ['alvaar', 'webvio', 'webxr'], ['webxr', 'alvaar', 'webvio']];
@@ -23,7 +23,7 @@ export function newParticipant() {
 // Each stage is sent as soon as it is done (partial sessions count). Simple text/plain POST: no preflight, and the
 // Apps Script answer comes back with CORS, which the cross-origin-isolated pages accept.
 export async function send(s, stage, data) {
-  const row = { id: s.id, stage, t: new Date().toISOString(), ua: navigator.userAgent, data };
+  const row = { id: s.id, stage: (s.test ? 'TEST-' : '') + stage, t: new Date().toISOString(), ua: navigator.userAgent, data };
   s.sent = s.sent || [];
   s.sent.push({ stage, t: row.t, ok: false });
   save(s);
@@ -40,8 +40,8 @@ export async function send(s, stage, data) {
 }
 
 // Balanced order: the store hands out Latin-square rows in turn (6 orders); offline, a random row (logged as such).
-export async function assignOrder() {
-  if (STORE_URL) {
+export async function assignOrder(test = false) {
+  if (STORE_URL && !test) {  // test sessions do not use up the balanced order list
     try {
       const r = await fetch(`${STORE_URL}?action=order`, { mode: 'cors' });
       const j = await r.json();
