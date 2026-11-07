@@ -1,7 +1,8 @@
 """phone_bench_1107: the benchmark arms of main_1103 / ext_1103 in the Pixel 9's Chrome (web/viewer.html), user 7 Nov:
 "run the EuRoC and the synthetic sets on the phone, just like the desktop".
 
-Same frozen page module (web/build = snap-84c1f17, orbslam3.wasm md5 c4608c77...), same settings files as the PC batches
+Page module web/build-phone (md5 682eaccb...): the frozen 84c1f17 SLAM sources + one read-only binding entry, the
+current map id (build_phone_web_1107.sh; reverting it rebuilds the frozen module, md5 c4608c77..., byte for byte), same settings files as the PC batches
 (main_1103/settings, ext_1103/settings, ORB-SLAM3's EuRoC_mono.yaml / the synthetic settings.yaml for stock), same
 pacing as orbslam3_run --rt-wall (viewer pacing=rt: every frame, never before its time, no drops), the dataset gyro fed
 as orbslam3_run --gyro for next / beta, no drawing (viz=0; frames decoded on the page's main thread two ahead, as the
@@ -66,7 +67,7 @@ def run(serial, arm, ds, seq, seed, first, last, seq_s, dry):
     info = OUT / f"{tag}_{seq}_viewer_seed{seed}_info.json"
     if info.exists():
         log(f"skip {tag} {seq} seed{seed} (done)"); return True
-    q = (f"seq={ds}/{seq}&pacing=rt&seed={seed}&settings={settings(arm, ds, seq)}&viz=0&tag={tag}&save=1&cache=1&clearcache=1"
+    q = (f"seq={ds}/{seq}&pacing=rt&seed={seed}&settings={settings(arm, ds, seq)}&viz=0&tag={tag}&save=1&cache=1&clearcache=1&build=phone"
          f"{'&gyro=1' if arm in GYRO else ''}{'&uncache=1' if last else ''}&autorun=1")
     url = f"http://localhost:8010/web/viewer.html?{q}"
     if dry:

@@ -13,8 +13,10 @@
 //                {type:'finished', frames, keyframes}  (ORB-SLAM3 final trajectories, EuRoC format)
 // the module is loaded on 'init' / 'calibInit': ./build (release) or ./build-prof (profiling build, AR ?prof=1)
 let createOrbSlam3 = null;
-const loadModule = async (prof) => {
-  if (!createOrbSlam3) createOrbSlam3 = (await import(prof ? './build-prof/orbslam3.js' : './build/orbslam3.js')).default;
+// build 'phone' (viewer.js build=phone): ./build-phone = the frozen paper sources + a read-only binding that reports the
+// current map's id (scripts/experiments/2026-11-07/build_phone_web_1107.sh)
+const loadModule = async (prof, build) => {
+  if (!createOrbSlam3) createOrbSlam3 = (await import(prof ? './build-prof/orbslam3.js' : build === 'phone' ? './build-phone/orbslam3.js' : './build/orbslam3.js')).default;
 };
 
 let M = null;
@@ -199,7 +201,7 @@ self.onmessage = async (e) => {
       postMessage({ type: 'ready', ms: performance.now() - t0, vocabBytes: 0, heap: M.HEAPU8.length, mapLoaded: null });
     } else if (msg.type === 'init') {
       const t0 = performance.now();
-      await loadModule(!!msg.prof);
+      await loadModule(!!msg.prof, msg.build);
       M = await createOrbSlam3({ print: log, printErr: log });
       // download progress: bytes received (compressed, for .gz) vs Content-Length, posted ~10x per second
       const counted = (r) => {

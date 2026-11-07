@@ -11,7 +11,7 @@
 //   SLAM only, as the benchmark runner), tag=<name> (prefix of the saved result files; also saves <tag>_..._info.json), save=1,
 //   cache=1 (store the sequence's frames on the device first: Cache API; later runs read them from there),
 //   uncache=1 (after saving, delete this sequence's frames from the device again), clearcache=1 (before storing,
-//   delete every other sequence's frames)
+//   delete every other sequence's frames), build=phone (module from web/build-phone: reports the current map id)
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -459,7 +459,7 @@ async function start() {
   let wakeLock = null;
   try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* not granted: the screen may sleep */ }
   const ready = await request({ type: 'init', vocabUrl: vocabUrl(opts.desc, opts.voc), settingsText, clahe: info.clahe, seed,
-                                 cacheVocab: params.get('cache') === '1' });
+                                 cacheVocab: params.get('cache') === '1', build: params.get('build') });
   if (ready.type === 'error') return finishUi();
   log(`init ${ready.ms.toFixed(0)} ms, ${navigator.hardwareConcurrency} hardware threads`);
 
@@ -591,7 +591,7 @@ async function start() {
         await upload(`${base}_info.json`, JSON.stringify({ seq: `${dataset}/${name}`, seed, pacing, settings: settingsUrl || info.settings,
           gyro: !!imuRaw, viz, frames: frames.length, processed: trackMs.length, dropped, tracked, maps: lastMaps, wall_s: wallS,
           seq_s: seqS, effective_rate: seqS / wallS, stopped: run.stop, ua: navigator.userAgent,
-          threads: navigator.hardwareConcurrency, init_ms: ready.ms, wakeLock: !!wakeLock }) + '\n');
+          threads: navigator.hardwareConcurrency, init_ms: ready.ms, wakeLock: !!wakeLock, build: params.get('build') || 'build' }) + '\n');
         log(`saved results/browser/${base}_{final,live,timing,info}`);
         if (params.get('uncache') === '1') {  // last run on this sequence: free the device storage again
           const cache = await caches.open('webvio-frames-v1');
