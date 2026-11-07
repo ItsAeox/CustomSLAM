@@ -10,7 +10,8 @@
 //   first frame, every sample up to each later frame's time; the gyro prior uses it), viz=0 (no frame / map drawing:
 //   SLAM only, as the benchmark runner), tag=<name> (prefix of the saved result files; also saves <tag>_..._info.json), save=1,
 //   cache=1 (store the sequence's frames on the device first: Cache API; later runs read them from there),
-//   uncache=1 (after saving, delete this sequence's frames from the device again)
+//   uncache=1 (after saving, delete this sequence's frames from the device again), clearcache=1 (before storing,
+//   delete every other sequence's frames)
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -410,6 +411,15 @@ async function start() {
   }
   if (params.get('cache') === '1') {  // store every frame of the sequence on the device once (Cache API), then run from it
     const cache = await caches.open('webvio-frames-v1');
+    if (params.get('clearcache') === '1') {  // first run on a sequence: free every other sequence's frames (vocabulary kept)
+      const keep = new Set(frames.map((f) => new URL(f.url, location.href).pathname));
+      let n = 0;
+      for (const r of await cache.keys()) {
+        const pth = new URL(r.url).pathname;
+        if (pth.startsWith('/datasets/') && !keep.has(pth)) { await cache.delete(r); n++; }
+      }
+      log(`frame cache: ${n} frames of other sequences removed`);
+    }
     const have = new Set((await cache.keys()).map((r) => new URL(r.url).pathname));
     const todo = frames.filter((f) => !have.has(new URL(f.url, location.href).pathname));
     const tc = performance.now();
@@ -457,7 +467,7 @@ async function start() {
   const trackMs = [], ateHist = [];
   const live = [];          // { t (abs), p [3], R [9] } for tracked frames of the current map segment
   const liveAll = ['# t tx ty tz qx qy qz qw  (live poses, viewer)'];
-  const timing = ['idx,t,state,track_ms,decode_ms'];
+  const timing = ['idx,t,state,track_ms,decode_ms,map_id,maps'];
   let tracked = 0, dropped = 0, segment = 0, lastState = 0, lastMaps = 0, mapEvery = 5, align = null;
   const traj = new Float32Array(frames.length * 3);
   let trajN = 0;
@@ -501,7 +511,7 @@ async function start() {
     }
     lastState = r.state; lastMaps = st[3];
     trackMs.push(r.trackMs);
-    timing.push(`${f.idx},${f.t.toFixed(6)},${r.state},${r.trackMs.toFixed(3)},${r.decodeMs.toFixed(3)}`);
+    timing.push(`${f.idx},${f.t.toFixed(6)},${r.state},${r.trackMs.toFixed(3)},${r.decodeMs.toFixed(3)},${st[6]},${st[3]}`);
 
     if (viz) drawFrame(r.bmp, r.viz, r.state);
     $('infobar').textContent = infoText(r.state, st);

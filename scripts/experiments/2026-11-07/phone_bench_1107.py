@@ -5,8 +5,8 @@ Same frozen page module (web/build = snap-84c1f17, orbslam3.wasm md5 c4608c77...
 (main_1103/settings, ext_1103/settings, ORB-SLAM3's EuRoC_mono.yaml / the synthetic settings.yaml for stock), same
 pacing as orbslam3_run --rt-wall (viewer pacing=rt: every frame, never before its time, no drops), the dataset gyro fed
 as orbslam3_run --gyro for next / beta, no drawing (viz=0; frames decoded on the page's main thread two ahead, as the
-runner's reader thread). Frames are stored on the phone per sequence (Cache API, cache=1) and removed after the
-sequence's last run (uncache=1): the phone has ~6 GB free, EuRoC is ~9.7 GB.
+runner's reader thread). Frames are stored on the phone per sequence (Cache API, cache=1); every run first deletes
+other sequences' frames (clearcache=1) and the sequence's last run deletes its own (uncache=1): the phone has ~6 GB free, EuRoC is ~9.7 GB.
 
 Phases (each sequence block: fill the cache, every arm x seed in shuffled order, free the cache):
   1 EuRoC (11 sequences) seeds 1-2; 2 synthetic core set (42) seeds 1-2; 3 EuRoC seeds 3-5.
@@ -66,7 +66,7 @@ def run(serial, arm, ds, seq, seed, first, last, seq_s, dry):
     info = OUT / f"{tag}_{seq}_viewer_seed{seed}_info.json"
     if info.exists():
         log(f"skip {tag} {seq} seed{seed} (done)"); return True
-    q = (f"seq={ds}/{seq}&pacing=rt&seed={seed}&settings={settings(arm, ds, seq)}&viz=0&tag={tag}&save=1&cache=1"
+    q = (f"seq={ds}/{seq}&pacing=rt&seed={seed}&settings={settings(arm, ds, seq)}&viz=0&tag={tag}&save=1&cache=1&clearcache=1"
          f"{'&gyro=1' if arm in GYRO else ''}{'&uncache=1' if last else ''}&autorun=1")
     url = f"http://localhost:8010/web/viewer.html?{q}"
     if dry:
