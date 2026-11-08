@@ -26,6 +26,8 @@ EUROC = ["MH_01_easy", "MH_02_easy", "MH_03_medium", "MH_04_difficult", "MH_05_d
 SYNTH = [f"{k}{i}" for k in ("ar", "gesture", "orbit", "rotate", "shake", "slide", "walk") for i in range(6)]
 ARMS = ["stock", "fast", "next", "beta"]
 GYRO = {"next", "beta"}
+FRESH = True  # no run launched yet by this process
+DRY = False  # --dry: print the URLs, write nothing to the run log
 
 
 def settings(arm, ds, seq):
@@ -46,10 +48,38 @@ def battery(serial):
 
 
 def log(line):
+    if DRY:
+        print(line, flush=True); return
     LOG.parent.mkdir(parents=True, exist_ok=True)
     with LOG.open("a", encoding="utf-8") as f:
         f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + line + "\n")
     print(line, flush=True)
+
+
+PAGE_JS = """JSON.stringify({status: (document.getElementById('status') || {}).textContent,
+  frame: (document.getElementById('sFrame') || {}).textContent, hidden: document.hidden, isolated: self.crossOriginIsolated,
+  log: ((document.getElementById('log') || {}).textContent || '').slice(-800)})"""
+
+
+def page_state(serial):  # read-only look at the benchmark tab when a run times out (Chrome remote debugging over adb)
+    try:
+        import urllib.request, websocket
+        adb(serial, "forward", "tcp:9333", "localabstract:chrome_devtools_remote")
+        tabs = json.load(urllib.request.urlopen("http://localhost:9333/json", timeout=10))
+        tab = next((t for t in tabs if "localhost:8010/web/viewer.html" in t.get("url", "")), None)
+        if tab is None:
+            return "no viewer tab"
+        ws = websocket.create_connection(tab["webSocketDebuggerUrl"], timeout=15, suppress_origin=True)
+        ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate", "params": {"expression": PAGE_JS, "returnByValue": True}}))
+        r = json.loads(ws.recv()); ws.close()
+        return r.get("result", {}).get("result", {}).get("value") or json.dumps(r)[:500]
+    except Exception as e:
+        return f"page state unavailable: {e}"
+
+
+def mem_avail(serial):
+    m = re.search(r"MemAvailable:\s+(\d+)", adb(serial, "shell", "cat", "/proc/meminfo"))
+    return f"{int(m[1]) // 1024} MB" if m else "?"
 
 
 def wait_ok(serial):  # battery and temperature guard: pause, never kill a run
@@ -81,11 +111,17 @@ def run(serial, arm, ds, seq, seed, first, last, seq_s, dry):
     # fresh page per run (one tab, reused: application_id); the first run of a block also fills the frame cache
     adb(serial, "shell", f"am start -a android.intent.action.VIEW -n com.android.chrome/com.google.android.apps.chrome.Main "
                          f"--es com.android.browser.application_id webvio_bench -d '{url}'")
-    limit = 3 * seq_s + 1800  # a run may also fill the frame cache (EuRoC: up to 1.3 GB over Wi-Fi)
+    # the first run of a block (or of this driver process) may also fill the frame cache (EuRoC: up to 1.3 GB over
+    # Wi-Fi); later runs find the frames on the phone (8 Nov: two hung runs cost 32 min each with the long limit)
+    global FRESH
+    limit = 3 * seq_s + (1800 if first or FRESH else 300)
+    FRESH = False
     while time.time() - t0 < limit and not info.exists():
         time.sleep(5)
     ok = info.exists()
     extra, word = "", "ok" if ok else "TIMEOUT"
+    if not ok:
+        extra = f"page {page_state(serial)} | MemAvailable {mem_avail(serial)}"
     if ok:
         j = json.loads(info.read_text())
         extra = f"rate {j['effective_rate']:.3f} tracked {j['tracked']}/{j['processed']} maps {j['maps']}"
@@ -111,6 +147,8 @@ def main():
     ap.add_argument("--phases", default="1,2,3")
     ap.add_argument("--dry", action="store_true")
     a = ap.parse_args()
+    global DRY
+    DRY = a.dry
     rng = random.Random(11071)
     phases = {"1": ("euroc", EUROC, [1, 2]), "2": ("synth", SYNTH, [1, 2]), "3": ("euroc", EUROC, [3, 4, 5])}
     log(f"=== start phases {a.phases}")
