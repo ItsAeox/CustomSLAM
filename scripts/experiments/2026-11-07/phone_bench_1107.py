@@ -12,7 +12,8 @@ other sequences' frames (clearcache=1) and the sequence's last run deletes its o
 Phases (each sequence block: fill the cache, every arm x seed in shuffled order, free the cache):
   1 EuRoC (11 sequences) seeds 1-2; 2 synthetic core set (42) seeds 1-2; 3 EuRoC seeds 3-5.
 Results: results/browser/ph1107_<arm>_<seq>_viewer_seed<k>_{final.txt,live.txt,timing.csv,info.json};
-log: results/phone_1107/runs.log (one line per run + battery / temperature).
+log: results/phone_1107/runs.log (one line per run + battery / temperature). Before each run: pause while the battery
+is below 20 % (even when charging), and after such a pause until it is back to 35 %; pause at 45 C or hotter.
 Other phones (user 8 Nov: a mid-range Samsung, later maybe more): --dev <name> keeps every output separate:
 tag ph1107<name>_<arm>, log results/phone_1107_<name>/runs.log; the default --dev pixel9 keeps the Pixel 9 names above.
 Usage: python phone_bench_1107.py --serial 192.168.1.7:32781 [--dev pixel9] [--phases 1,2,3] [--dry]"""
@@ -86,11 +87,17 @@ def mem_avail(serial):
     return f"{int(m[1]) // 1024} MB" if m else "?"
 
 
-def wait_ok(serial):  # battery and temperature guard: pause, never kill a run
+LOW, RESUME = 20, 35  # battery %: no run starts below LOW, charging or not; after such a pause, none until RESUME
+
+
+def wait_ok(serial):  # battery and temperature guard, checked before each run: pause, never kill a run
+    # 8 Nov: the Samsung ran down to 19 % off a loosely seated plug, and a charger may not keep up with a run either,
+    # so a low battery pauses even while charging, and the pause lasts until the battery is back to RESUME
+    paused = False
     while True:
         b = battery(serial)
-        if b["level"] >= 0 and b["level"] < 20 and not b["charging"]:
-            log(f"PAUSE battery {b}"); time.sleep(300); continue
+        if b["level"] >= 0 and (b["level"] < LOW or (paused and b["level"] < RESUME)):
+            log(f"PAUSE battery {b} (runs resume at {RESUME} %)"); paused = True; time.sleep(300); continue
         if b["temp_c"] >= 45:
             log(f"PAUSE hot {b}"); time.sleep(180); continue
         return b
@@ -111,6 +118,14 @@ def run(serial, arm, ds, seq, seed, first, last, seq_s, dry):
     if dry:
         print(url); return True
     b = wait_ok(serial)
+    if info.exists():  # launched by the previous driver process (restarted mid-run) and saved while this one waited
+        j = json.loads(info.read_text())
+        if j.get("hidden_n", 0) == 0:
+            log(f"ok {tag} {seq} seed{seed} (launched by the previous driver process, saved while waiting) rate "
+                f"{j['effective_rate']:.3f} tracked {j['tracked']}/{j['processed']} maps {j['maps']}"); return True
+        for f in OUT.glob(f"{tag}_{seq}_viewer_seed{seed}_*"):
+            f.unlink()
+        log(f"HIDDEN {tag} {seq} seed{seed}: saved while the page was hidden, files removed, repeated")
     t0 = time.time()
     # fresh page per run (one tab, reused: application_id); the first run of a block also fills the frame cache
     adb(serial, "shell", f"am start -a android.intent.action.VIEW -n com.android.chrome/com.google.android.apps.chrome.Main "
