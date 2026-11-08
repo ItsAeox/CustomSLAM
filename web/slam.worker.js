@@ -366,7 +366,15 @@ self.onmessage = async (e) => {
       slam.setKeepMap(!!msg.on);
       postMessage({ type: 'keepMap', on: !!msg.on });
     } else if (msg.type === 'finish') {
-      slam.finishAndSave('/f.txt', '/kf.txt');
+      // ORB-SLAM3's savers read the first keyframe of the largest map, so a run that ends with no keyframe in any map
+      // (one map, reset just before the end) reads an unset pointer: the phone page hung there (8 Nov). Write empty
+      // files instead, as orbslam3_run does in that case (its anyKF guard); the SLAM module is not changed.
+      const st = slam.mapStats();
+      if (st[3] <= 1 && st[0] === 0) {
+        M.FS.writeFile('/f.txt', ''); M.FS.writeFile('/kf.txt', '');
+      } else {
+        slam.finishAndSave('/f.txt', '/kf.txt');
+      }
       const stats = {};
       for (const f of ['TrackingTimeStats.txt', 'LocalMapTimeStats.txt', 'LBA_Stats.txt', 'ExecMean.txt']) {
         try { stats[f] = M.FS.readFile('/' + f, { encoding: 'utf8' }); } catch { /* not a profiling build */ }
