@@ -13,14 +13,18 @@ Phases (each sequence block: fill the cache, every arm x seed in shuffled order,
   1 EuRoC (11 sequences) seeds 1-2; 2 synthetic core set (42) seeds 1-2; 3 EuRoC seeds 3-5.
 Results: results/browser/ph1107_<arm>_<seq>_viewer_seed<k>_{final.txt,live.txt,timing.csv,info.json};
 log: results/phone_1107/runs.log (one line per run + battery / temperature).
-Usage: python phone_bench_1107.py --serial 192.168.1.7:32781 [--phases 1,2,3] [--dry]"""
+Other phones (user 8 Nov: a mid-range Samsung, later maybe more): --dev <name> keeps every output separate:
+tag ph1107<name>_<arm>, log results/phone_1107_<name>/runs.log; the default --dev pixel9 keeps the Pixel 9 names above.
+Usage: python phone_bench_1107.py --serial 192.168.1.7:32781 [--dev pixel9] [--phases 1,2,3] [--dry]"""
 import argparse, json, random, re, subprocess, time
 from pathlib import Path
 
 ADB = r"C:\Users\Aeox\AppData\Local\Android\Sdk\platform-tools\adb.exe"
 R = Path("H:/Research")
 OUT = R / "results/browser"
-LOG = R / "results/phone_1107/runs.log"
+LOG = R / "results/phone_1107/runs.log"  # set per device in main()
+PREFIX = "ph1107"
+CDP_PORT = 9333
 EUROC = ["MH_01_easy", "MH_02_easy", "MH_03_medium", "MH_04_difficult", "MH_05_difficult", "V1_01_easy", "V1_02_medium",
          "V1_03_difficult", "V2_01_easy", "V2_02_medium", "V2_03_difficult"]
 SYNTH = [f"{k}{i}" for k in ("ar", "gesture", "orbit", "rotate", "shake", "slide", "walk") for i in range(6)]
@@ -64,8 +68,8 @@ PAGE_JS = """JSON.stringify({status: (document.getElementById('status') || {}).t
 def page_state(serial):  # read-only look at the benchmark tab when a run times out (Chrome remote debugging over adb)
     try:
         import urllib.request, websocket
-        adb(serial, "forward", "tcp:9333", "localabstract:chrome_devtools_remote")
-        tabs = json.load(urllib.request.urlopen("http://localhost:9333/json", timeout=10))
+        adb(serial, "forward", f"tcp:{CDP_PORT}", "localabstract:chrome_devtools_remote")
+        tabs = json.load(urllib.request.urlopen(f"http://localhost:{CDP_PORT}/json", timeout=10))
         tab = next((t for t in tabs if "localhost:8010/web/viewer.html" in t.get("url", "")), None)
         if tab is None:
             return "no viewer tab"
@@ -93,7 +97,7 @@ def wait_ok(serial):  # battery and temperature guard: pause, never kill a run
 
 
 def run(serial, arm, ds, seq, seed, first, last, seq_s, dry):
-    tag = f"ph1107_{arm}"
+    tag = f"{PREFIX}_{arm}"
     info = OUT / f"{tag}_{seq}_viewer_seed{seed}_info.json"
     if info.exists():
         if json.loads(info.read_text()).get("hidden_n", 0) == 0:
@@ -145,10 +149,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--serial", required=True)
     ap.add_argument("--phases", default="1,2,3")
+    ap.add_argument("--dev", default="pixel9")
     ap.add_argument("--dry", action="store_true")
     a = ap.parse_args()
-    global DRY
+    global DRY, LOG, PREFIX, CDP_PORT
     DRY = a.dry
+    if a.dev != "pixel9":  # separate names for every other phone
+        assert a.dev.isalnum() and a.dev.islower(), "--dev: lower-case letters and digits only (it goes into file names)"
+        PREFIX, LOG = f"ph1107{a.dev}", R / f"results/phone_1107_{a.dev}/runs.log"
+        CDP_PORT = 9334 + sum(map(ord, a.dev)) % 100  # two drivers (two phones) at once must not share a forward
     rng = random.Random(11071)
     phases = {"1": ("euroc", EUROC, [1, 2]), "2": ("synth", SYNTH, [1, 2]), "3": ("euroc", EUROC, [3, 4, 5])}
     log(f"=== start phases {a.phases}")

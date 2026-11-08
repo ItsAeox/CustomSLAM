@@ -10,7 +10,9 @@ Per run -> results/phone_1107/<arm>/<euroc_|synth_><seq>/web_seed<k>/:
   online_tum.txt, metrics_online.json, metrics.json (as the PC batches)
 Differences from the PC runs: no metrics_multimap.json (the page does not save each map's trajectory); maps per run
 here = distinct map ids that have tracked frames (column map_id).
-Usage: python phone_convert_1107.py [--only <substring>]"""
+Other phones: --dev <name> reads results/browser/ph1107<name>_* and writes results/phone_1107_<name>/ (default pixel9 =
+the names above).
+Usage: python phone_convert_1107.py [--dev pixel9] [--only <substring>]"""
 import argparse, json, subprocess
 from pathlib import Path
 
@@ -22,7 +24,7 @@ EUROC = {"MH_01_easy", "MH_02_easy", "MH_03_medium", "MH_04_difficult", "MH_05_d
          "V1_03_difficult", "V2_01_easy", "V2_02_medium", "V2_03_difficult"}
 
 
-def convert(info: Path):
+def convert(info: Path, OUT=OUT):
     base = info.name[: -len("_info.json")]
     tag, rest = base.split("_", 2)[0:2], base.split("_", 2)[2]  # ph1107, <arm>, <seq>_viewer_seed<k>
     arm = tag[1]
@@ -74,11 +76,13 @@ def convert(info: Path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default="")
+    ap.add_argument("--dev", default="pixel9")
     a = ap.parse_args()
-    for info in sorted(SRC.glob("ph1107_*_info.json")):
+    prefix, out = ("ph1107", OUT) if a.dev == "pixel9" else (f"ph1107{a.dev}", R / f"results/phone_1107_{a.dev}")
+    for info in sorted(SRC.glob(f"{prefix}_*_info.json")):
         if a.only and a.only not in info.name:
             continue
-        arm, seq, seed, on, nm, j = convert(info)
+        arm, seq, seed, on, nm, j = convert(info, out)
         ate = f"{on['ate_sim3']['rmse'] * 1000:.1f} mm cov {on['coverage']:.2f}" if on else "no online trajectory"
         print(f"{arm:6s} {seq:16s} seed{seed}: online ATE {ate}, maps with tracked frames {nm}, rate {j['effective_rate']:.3f}")
 
