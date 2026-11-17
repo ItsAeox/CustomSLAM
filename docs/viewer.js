@@ -4,7 +4,14 @@
 //  - the current image with ORB-SLAM3's frame overlay (tracked map points, init matches, status bar);
 //  - tracking time, throughput and live accuracy against ground truth.
 //
-// URL parameters (optional, for scripted runs): seq=<dataset>/<name>, seed, pacing=rt|live|half|fast, max, autorun=1
+// URL parameters (optional, for scripted runs): seq=<dataset>/<name>, seed, pacing=rt|live|half|fast, max, autorun=1,
+//   settings=<url> (use this settings file as is: no options applied; e.g. a benchmark batch's preset yaml),
+//   gyro=1 (feed the dataset IMU with each frame exactly as orbslam3_run --gyro: from the last sample at or before the
+//   first frame, every sample up to each later frame's time; the gyro prior uses it), viz=0 (no frame / map drawing:
+//   SLAM only, as the benchmark runner), tag=<name> (prefix of the saved result files; also saves <tag>_..._info.json), save=1,
+//   cache=1 (store the sequence's frames on the device first: Cache API; later runs read them from there),
+//   uncache=1 (after saving, delete this sequence's frames from the device again), clearcache=1 (before storing,
+//   delete every other sequence's frames), build=phone (module from web/build-phone: reports the current map id)
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -17,6 +24,13 @@ const params = new URLSearchParams(location.search);
 const STATE = { '-1': 'SYSTEM NOT READY', 0: 'NO IMAGES YET', 1: 'NOT INITIALIZED', 2: 'OK', 3: 'RECENTLY LOST', 4: 'LOST', 5: 'OK (KLT)' };
 const logEl = $('log');
 const opts = optionsFromParams(params);  // algorithm / settings variant (web/options.js)
+// time the page spent hidden (another app or tab in front: the browser throttles it); saved in info.json so a disturbed
+// benchmark run can be detected and repeated (phone_bench_1107.py)
+let hiddenMs = 0, hiddenAt = null, hiddenN = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { hiddenAt = performance.now(); hiddenN++; }
+  else if (hiddenAt != null) { hiddenMs += performance.now() - hiddenAt; hiddenAt = null; }
+});
 buildOptionsUI($('opts'), opts, () => history.replaceState(null, '', `?${optionsToParams(opts, new URLSearchParams(location.search))}`));
 const log = (s) => { logEl.textContent += s + '\n'; logEl.scrollTop = logEl.scrollHeight; };
 
@@ -213,6 +227,7 @@ async function loadSequences() {
   if (params.get('seq')) sel.value = params.get('seq');
   sel.onchange();
   if (params.get('seed')) $('seed').value = params.get('seed');
+  if (params.get('save') === '1') $('save').checked = true;  // scripted runs: upload results to the dev server
   if (params.get('pacing')) $('pacing').value = params.get('pacing');
 }
 
@@ -387,11 +402,71 @@ async function start() {
     if (pending) { const p = pending; pending = null; p(m); }
   };
   const request = (msg) => new Promise((res) => { pending = res; worker.postMessage(msg); });
+  const requestT = (msg, tr) => new Promise((res) => { pending = res; worker.postMessage(msg, tr); });
 
   setStatus('loading WASM + vocabulary…');
-  const settingsText = withTracker(await (await fetch(info.settings)).text());
-  log(`options: ${describeOptions(opts)}`);
-  const ready = await request({ type: 'init', vocabUrl: vocabUrl(opts.desc, opts.voc), settingsText, clahe: info.clahe, seed });
+  const settingsUrl = params.get('settings');  // a given settings file is used as is (no options applied)
+  const settingsText = settingsUrl ? await (await fetch(settingsUrl)).text() : withTracker(await (await fetch(info.settings)).text());
+  log(settingsUrl ? `settings ${settingsUrl} (as is)` : `options: ${describeOptions(opts)}`);
+  const viz = params.get('viz') !== '0';
+  let imuRaw = null, kImu = 0;  // gyro=1: the dataset IMU on the frame timeline (exact ns arithmetic, as the frames)
+  if (params.get('gyro') === '1') {
+    imuRaw = await (await fetch(`/api/imu?dataset=${dataset}&name=${encodeURIComponent(name)}&raw=1&exact=1`)).json();
+    while (kImu < imuRaw.t.length && imuRaw.t[kImu] <= frames[0].t) kImu++;
+    if (kImu > 0) kImu--;  // the last sample at or before the first frame (orbslam3_run, mono_inertial_tum_vi.cc)
+    log(`gyro: ${imuRaw.t.length} IMU samples fed with the frames`);
+  }
+  if (params.get('cache') === '1') {  // store every frame of the sequence on the device once (Cache API), then run from it
+    const cache = await caches.open('webvio-frames-v1');
+    if (params.get('clearcache') === '1') {  // first run on a sequence: free every other sequence's frames (vocabulary kept)
+      const keep = new Set(frames.map((f) => new URL(f.url, location.href).pathname));
+      let n = 0;
+      for (const r of await cache.keys()) {
+        const pth = new URL(r.url).pathname;
+        if (pth.startsWith('/datasets/') && !keep.has(pth)) { await cache.delete(r); n++; }
+      }
+      log(`frame cache: ${n} frames of other sequences removed`);
+    }
+    const have = new Set((await cache.keys()).map((r) => new URL(r.url).pathname));
+    const todo = frames.filter((f) => !have.has(new URL(f.url, location.href).pathname));
+    const tc = performance.now();
+    let done = 0, bytes = 0;
+    const one = async () => {
+      for (let f; (f = todo.shift());) {
+        const r = await fetch(f.url);
+        if (!r.ok) throw new Error(`frame ${f.url}: ${r.status}`);
+        const b = await r.blob(); bytes += b.size;
+        await cache.put(f.url, new Response(b, { headers: { 'Content-Type': r.headers.get('Content-Type') || 'image/png' } }));
+        if (++done % 50 === 0) setStatus(`storing frames on this device: ${done} more of ${done + todo.length}`);
+      }
+    };
+    const n0 = todo.length;
+    await Promise.all(Array.from({ length: 6 }, one));
+    log(`frame cache: ${frames.length - n0} stored before, ${n0} added (${(bytes / 1e6).toFixed(0)} MB, ${((performance.now() - tc) / 1000).toFixed(0)} s)`);
+  }
+  // viz=0: frames are read (Cache API first) and converted to grey here, two ahead of the tracker, so the SLAM worker
+  // only copies them in (as orbslam3_run's frame-reader thread); same conversion as slam.worker.js toGray.
+  let frameCache = null;
+  if (!viz) try { frameCache = await caches.open('webvio-frames-v1'); } catch { /* no Cache API */ }
+  let cv = null, cx = null;
+  const prep = async (f) => {
+    const hit = frameCache && await frameCache.match(f.url);
+    const blob = hit ? await hit.blob() : await (await fetch(f.url)).blob();
+    const bmp = await createImageBitmap(blob, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
+    if (!cv || cv.width !== bmp.width || cv.height !== bmp.height) {
+      cv = new OffscreenCanvas(bmp.width, bmp.height); cx = cv.getContext('2d', { willReadFrequently: true });
+    }
+    cx.drawImage(bmp, 0, 0); bmp.close();
+    const d = cx.getImageData(0, 0, cv.width, cv.height).data, g = new Uint8Array(cv.width * cv.height);
+    for (let k = 0, j = 0; k < g.length; k++, j += 4) g[k] = (d[j] * 4899 + d[j + 1] * 9617 + d[j + 2] * 1868 + 8192) >> 14;
+    return { gray: g.buffer, w: cv.width, h: cv.height };
+  };
+  const ahead = new Map();  // frame index -> Promise of its grey image
+  const prepAt = (k) => { if (!viz && k < frames.length && !ahead.has(k)) ahead.set(k, prep(frames[k])); };
+  let wakeLock = null;
+  try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* not granted: the screen may sleep */ }
+  const ready = await request({ type: 'init', vocabUrl: vocabUrl(opts.desc, opts.voc), settingsText, clahe: info.clahe, seed,
+                                 cacheVocab: params.get('cache') === '1', build: params.get('build') });
   if (ready.type === 'error') return finishUi();
   log(`init ${ready.ms.toFixed(0)} ms, ${navigator.hardwareConcurrency} hardware threads`);
 
@@ -399,7 +474,7 @@ async function start() {
   const trackMs = [], ateHist = [];
   const live = [];          // { t (abs), p [3], R [9] } for tracked frames of the current map segment
   const liveAll = ['# t tx ty tz qx qy qz qw  (live poses, viewer)'];
-  const timing = ['idx,t,state,track_ms,decode_ms'];
+  const timing = ['idx,t,state,track_ms,decode_ms,map_id,maps'];
   let tracked = 0, dropped = 0, segment = 0, lastState = 0, lastMaps = 0, mapEvery = 5, align = null;
   const traj = new Float32Array(frames.length * 3);
   let trajN = 0;
@@ -420,10 +495,22 @@ async function start() {
       await new Promise((res) => setTimeout(res, (frames[i].t - elapsed) / speed * 1000));
     }
     const f = frames[i];
-    const withMap = i % mapEvery === 0;
-    const r = await request({ type: 'frame', idx: f.idx, t: f.t, url: f.url, viz: true, withMap });
+    const withMap = viz && i % mapEvery === 0;
+    let imu;
+    if (imuRaw && i > 0) {  // every sample up to this frame's time (none with the first frame)
+      const a = [];
+      while (kImu < imuRaw.t.length && imuRaw.t[kImu] <= f.t) {
+        const g = imuRaw.gyro[kImu], c = imuRaw.acc[kImu];
+        a.push(imuRaw.t[kImu], c[0], c[1], c[2], g[0], g[1], g[2]); kImu++;
+      }
+      imu = new Float64Array(a);
+    }
+    let g = null;
+    if (!viz) { prepAt(i); g = await ahead.get(i); ahead.delete(i); prepAt(i + 1); prepAt(i + 2); }
+    const r = g ? await requestT({ type: 'frame', idx: f.idx, t: f.t, gray: g.gray, w: g.w, h: g.h, viz, withMap, imu }, [g.gray])
+      : await request({ type: 'frame', idx: f.idx, t: f.t, url: f.url, nextUrl: frames[i + 1]?.url, viz, withMap, imu });
     if (r.type !== 'pose') break;
-    const st = r.viz.stats;
+    const st = viz ? r.viz.stats : r.stats;
     // a new map segment starts after a reset or when the atlas gets a new map
     if ((lastState >= 2 && r.state === 1) || st[3] !== lastMaps) {
       if (live.length) { segment++; log(`map segment ${segment} (state ${STATE[r.state]}, maps ${st[3]})`); }
@@ -431,11 +518,11 @@ async function start() {
     }
     lastState = r.state; lastMaps = st[3];
     trackMs.push(r.trackMs);
-    timing.push(`${f.idx},${f.t.toFixed(6)},${r.state},${r.trackMs.toFixed(3)},${r.decodeMs.toFixed(3)}`);
+    timing.push(`${f.idx},${f.t.toFixed(6)},${r.state},${r.trackMs.toFixed(3)},${r.decodeMs.toFixed(3)},${st[6]},${st[3]}`);
 
-    drawFrame(r.bmp, r.viz, r.state);
+    if (viz) drawFrame(r.bmp, r.viz, r.state);
     $('infobar').textContent = infoText(r.state, st);
-    if (r.viz.mps) { updateMap(r.viz); if (r.viz.ms > 8 && mapEvery < 30) mapEvery += 5; }
+    if (viz && r.viz.mps) { updateMap(r.viz); if (r.viz.ms > 8 && mapEvery < 30) mapEvery += 5; }
 
     if (r.state === 2 || r.state === 5) {
       tracked++;
@@ -485,6 +572,7 @@ async function start() {
     }
   }
 
+  const loopWallS = (performance.now() - wall0 - pausedMs) / 1000;  // frame loop only (as orbslam3_run's wall_s)
   setStatus('finishing (final optimisation + save)…');
   const fin = await request({ type: 'finish' });
   if (fin.type === 'finished') {
@@ -501,12 +589,26 @@ async function start() {
       $('aFinal').textContent = a ? `${fmtLen(a.rmse)} (s = ${a.s.toFixed(3)}, ${est.length} poses)` : '—';
     }
     if ($('save').checked) {
-      const base = `${name}_viewer_seed${seed}`;
+      const base = `${params.get('tag') ? params.get('tag') + '_' : ''}${name}_viewer_seed${seed}`;
       try {
         await upload(`${base}_final.txt`, '# t tx ty tz qx qy qz qw\n' + finalTum);
         await upload(`${base}_live.txt`, liveAll.join('\n') + '\n');
         await upload(`${base}_timing.csv`, timing.join('\n') + '\n');
-        log(`saved results/browser/${base}_{final,live,timing}`);
+        const wallS = loopWallS, seqS = frames[frames.length - 1].t - frames[0].t;
+        await upload(`${base}_info.json`, JSON.stringify({ seq: `${dataset}/${name}`, seed, pacing, settings: settingsUrl || info.settings,
+          gyro: !!imuRaw, viz, frames: frames.length, processed: trackMs.length, dropped, tracked, maps: lastMaps, wall_s: wallS,
+          seq_s: seqS, effective_rate: seqS / wallS, stopped: run.stop, ua: navigator.userAgent,
+          threads: navigator.hardwareConcurrency, init_ms: ready.ms, wakeLock: !!wakeLock, build: params.get('build') || 'build',
+          hidden_n: hiddenN, hidden_s: (hiddenMs + (hiddenAt != null ? performance.now() - hiddenAt : 0)) / 1000 }) + '\n');
+        log(`saved results/browser/${base}_{final,live,timing,info}`);
+        if (params.get('uncache') === '1') {  // last run on this sequence: free the device storage again
+          const cache = await caches.open('webvio-frames-v1');
+          let n = 0;
+          for (const f of manifest.frames) if (await cache.delete(f.url)) n++;
+          log(`frame cache: ${n} frames of ${name} removed`);
+          await upload(`${base}_uncached.txt`, `${n}
+`);
+        }
       } catch (e) { log(`not saved (needs the dev server): ${e.message}`); }
     }
   }

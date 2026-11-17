@@ -13,8 +13,10 @@
 //                {type:'finished', frames, keyframes}  (ORB-SLAM3 final trajectories, EuRoC format)
 // the module is loaded on 'init' / 'calibInit': ./build (release) or ./build-prof (profiling build, AR ?prof=1)
 let createOrbSlam3 = null;
-const loadModule = async (prof) => {
-  if (!createOrbSlam3) createOrbSlam3 = (await import(prof ? './build-prof/orbslam3.js' : './build/orbslam3.js')).default;
+// build 'phone' (viewer.js build=phone): ./build-phone = the frozen paper sources + a read-only binding that reports the
+// current map's id (scripts/experiments/2026-11-07/build_phone_web_1107.sh)
+const loadModule = async (prof, build) => {
+  if (!createOrbSlam3) createOrbSlam3 = (await import(prof ? './build-prof/orbslam3.js' : build === 'phone' ? './build-phone/orbslam3.js' : './build/orbslam3.js')).default;
 };
 
 let M = null;
@@ -25,7 +27,8 @@ let cal = null;  // camera calibration (calib.html)
 // ./build/eqvio.js) instead of ORB-SLAM3. eqvioSlam() wraps its WebEqvio in the WebSlam calls this worker makes, so the
 // camera / bitmap / replay paths below stay the same. A filter has no map: tracking state 2 while it has features,
 // 3 (recently lost) when it runs on the IMU alone; a speed above EQVIO_MAX_SPEED = diverged -> a new filter, reported as
-// a new map (the AR page stashes its anchors). Map points = its landmarks + those it dropped in the last 10 s.
+// a new map (the AR page stashes its anchors). Map points = its landmarks + those it dropped in the last 30 s; keypoints =
+// its tracked features.
 let createEqvio = null;
 const EQVIO_MIN_FEATURES = 8, EQVIO_MAX_SPEED = 5;  // features for 'tracking'; m/s (hand-held motion stays well below)
 function eqvioSlam(settings, config) {
@@ -54,11 +57,12 @@ function eqvioSlam(settings, config) {
     poseTwc: () => vio.poseTwc(),
     lastTrackMs: () => ms,
     loadWait: () => -1,  // no room map
-    frameKeyPoints: empty, initMatches: empty, keyFrames: empty, graphEdges: empty,
+    frameKeyPoints: () => vio.frameKeyPoints(),
+    initMatches: empty, keyFrames: empty, graphEdges: empty,
     mapStats: () => [0, nPts, st[1], maps, 1, 1],  // [KFs, points, features, maps, IMU initialised, refined]
     scaleEstimate: () => [0],
     mapPoints: () => {  // x y z flag (flag 1: in the local map, as WebSlam::mapPoints)
-      const p = vio.points(10);
+      const p = vio.points(30);
       nPts = p.length / 3;
       const out = new Float32Array(4 * nPts);
       for (let i = 0; i < nPts; i++) out.set([p[3 * i], p[3 * i + 1], p[3 * i + 2], 1], 4 * i);
@@ -142,9 +146,26 @@ function toGray(rgba, gray) {
 }
 
 // keepBitmap: return the decoded ImageBitmap too (viewer display; transferred to the page, which closes it)
-async function decode(url, keepBitmap = false) {
-  const blob = await (await fetch(url)).blob();
-  const bmp = await createImageBitmap(blob, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
+// Dataset frames: from the Cache API when viewer.js filled it (cache=1: the sequence stored on the device once), else
+// from the network. The next frame's bitmap is started before tracking the current one (msg.nextUrl): the image
+// decoder runs on the browser's own threads while slam.track() runs here, as orbslam3_run's frame-reader thread.
+const FRAME_CACHE = 'webvio-frames-v1';
+let frameCacheP = null;
+async function frameBlob(url) {
+  if (self.caches) {
+    frameCacheP ??= caches.open(FRAME_CACHE);
+    const hit = await (await frameCacheP).match(url);
+    if (hit) return hit.blob();
+  }
+  return (await fetch(url)).blob();
+}
+const loadBitmap = async (url) => createImageBitmap(await frameBlob(url), { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
+let preload = null;  // { url, bmp: Promise<ImageBitmap> }
+async function decode(url, keepBitmap = false, nextUrl = null) {
+  const bmpP = preload && preload.url === url ? preload.bmp : loadBitmap(url);
+  preload = null;
+  const bmp = await bmpP;
+  if (nextUrl) { preload = { url: nextUrl, bmp: loadBitmap(nextUrl) }; preload.bmp.catch(() => {}); }
   if (!canvas || canvas.width !== bmp.width || canvas.height !== bmp.height) {
     canvas = new OffscreenCanvas(bmp.width, bmp.height);
     ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -180,7 +201,7 @@ self.onmessage = async (e) => {
       postMessage({ type: 'ready', ms: performance.now() - t0, vocabBytes: 0, heap: M.HEAPU8.length, mapLoaded: null });
     } else if (msg.type === 'init') {
       const t0 = performance.now();
-      await loadModule(!!msg.prof);
+      await loadModule(!!msg.prof, msg.build);
       M = await createOrbSlam3({ print: log, printErr: log });
       // download progress: bytes received (compressed, for .gz) vs Content-Length, posted ~10x per second
       const counted = (r) => {
@@ -197,7 +218,12 @@ self.onmessage = async (e) => {
         return msg.vocabUrl.endsWith('.gz') ? body.pipeThrough(new DecompressionStream('gzip')) : body;
       };
       const [voc, settings] = await Promise.all([
-        fetch(msg.vocabUrl).then((r) => new Response(counted(r)).arrayBuffer()),  // Pages ships ORBvoc.bin.gz
+        (async () => {  // msg.cacheVocab (viewer.js cache=1): the vocabulary file kept in the Cache API between runs
+          const vc = msg.cacheVocab && self.caches ? await caches.open(FRAME_CACHE) : null;
+          let r = vc && await vc.match(msg.vocabUrl);
+          if (!r) { r = await fetch(msg.vocabUrl); if (vc && r.ok) await vc.put(msg.vocabUrl, r.clone()); }
+          return new Response(counted(r)).arrayBuffer();
+        })(),  // Pages ships ORBvoc.bin.gz
         msg.settingsText ?? fetch(msg.settingsUrl).then((r) => r.text()),  // settingsText: generated (live camera)
       ]);
       postMessage({ type: 'progress', stage: 'build', loaded: voc.byteLength, total: voc.byteLength });
@@ -216,11 +242,18 @@ self.onmessage = async (e) => {
       postMessage({ type: 'ready', ms: performance.now() - t0, vocabBytes: voc.byteLength, heap: M.HEAPU8.length, mapLoaded });
     } else if (msg.type === 'frame') {
       const td = performance.now();
-      const { img, bmp } = await decode(msg.url, !!msg.viz);
-      const w = img.width, h = img.height;
-      const ptr = slam.frameBuffer(w, h);
-      toGray(img.data, M.HEAPU8.subarray(ptr, ptr + w * h));  // HEAPU8 re-read: memory may have grown
-      const decodeMs = performance.now() - td;
+      let bmp = null, decodeMs;
+      if (msg.gray) {  // decoded to grey on the page's main thread (viewer.js viz=0): copy only
+        const ptr = slam.frameBuffer(msg.w, msg.h);
+        M.HEAPU8.set(new Uint8Array(msg.gray), ptr);
+      } else {
+        const d = await decode(msg.url, !!msg.viz, msg.nextUrl);
+        const img = d.img, w = img.width, h = img.height;
+        bmp = d.bmp;
+        const ptr = slam.frameBuffer(w, h);
+        toGray(img.data, M.HEAPU8.subarray(ptr, ptr + w * h));  // HEAPU8 re-read: memory may have grown
+      }
+      decodeMs = performance.now() - td;
       feedImu(msg.imu, msg.t);  // inertial mode: IMU samples up to this frame
       const state = slam.track(msg.t);
       const out = { type: 'pose', idx: msg.idx, t: msg.t, state, twc: Array.from(slam.poseTwc()),
@@ -234,6 +267,7 @@ self.onmessage = async (e) => {
         if (out.viz.mps) transfer.push(out.viz.mps.buffer, out.viz.kfs.buffer, out.viz.edges.buffer);
         postMessage(out, transfer);
       } else {
+        out.stats = Array.from(slam.mapStats());  // viz off: the map counters only (viewer.js viz=0)
         postMessage(out);
       }
     } else if (msg.type === 'bitmap') {  // live camera: {bitmap, t[, viz, withMap]}; the bitmap is sent back for display
@@ -332,7 +366,15 @@ self.onmessage = async (e) => {
       slam.setKeepMap(!!msg.on);
       postMessage({ type: 'keepMap', on: !!msg.on });
     } else if (msg.type === 'finish') {
-      slam.finishAndSave('/f.txt', '/kf.txt');
+      // ORB-SLAM3's savers read the first keyframe of the largest map, so a run that ends with no keyframe in any map
+      // (one map, reset just before the end) reads an unset pointer: the phone page hung there (8 Nov). Write empty
+      // files instead, as orbslam3_run does in that case (its anyKF guard); the SLAM module is not changed.
+      const st = slam.mapStats();
+      if (st[3] <= 1 && st[0] === 0) {
+        M.FS.writeFile('/f.txt', ''); M.FS.writeFile('/kf.txt', '');
+      } else {
+        slam.finishAndSave('/f.txt', '/kf.txt');
+      }
       const stats = {};
       for (const f of ['TrackingTimeStats.txt', 'LocalMapTimeStats.txt', 'LBA_Stats.txt', 'ExecMean.txt']) {
         try { stats[f] = M.FS.readFile('/' + f, { encoding: 'utf8' }); } catch { /* not a profiling build */ }

@@ -23,6 +23,10 @@ if (params.get('res')) $('res').value = params.get('res');
 // results/hard10_rt), relocalise 10 s before a new map (stock 3 s), and keep the map while the tree is placed.
 const AR_DEFAULTS = { reloc: '10', tracker: 'klt' };
 const opts = optionsFromParams(params, AR_DEFAULTS, 'ar');
+// study=1 (blind user study, web/study): preset from the URL, then the address bar is cleared, panels / hints / keypoints
+// hidden, and the shared task overlay (study/common.js) gets every frame, the placement and the taps
+const STUDY = params.get('study') === '1';
+let studyOv = null;
 function ensureImuOffsetValue(v) {  // a measured offset (imucalib.js) need not be one of the listed 20 ms steps
   const d = OPTIONS.find((x) => x.key === 'imudt');
   if (d && !d.values.some(([k]) => k === String(v))) d.values.push([String(v), `${v >= 0 ? '+' : ''}${v} (measured)`]);
@@ -62,6 +66,13 @@ $('preset').onchange = () => {
   renderOpts(); saveOptsToUrl(); syncPreset();
 };
 renderOpts(); syncPreset();
+if (STUDY) {
+  const p = PRESETS.find((x) => x.key === params.get('preset'));
+  if (p) applyPreset(opts, p, AR_DEFAULTS, 'ar');
+  renderOpts(); syncPreset();
+  history.replaceState(null, '', location.pathname);
+  document.body.classList.add('study');
+}
 
 const bg = $('bg'), bgx = bg.getContext('2d');
 const renderer = new THREE.WebGLRenderer({ canvas: $('gl'), alpha: true, antialias: true });
@@ -85,6 +96,7 @@ let localPts = [];                  // local map points [[x,y,z]]
 let kps = null;
 let floor = null, floorMesh = null;  // plane {n (up), d, height}
 let cactusProto = null, cactus = null;  // the placed object (now a tree: assets/tree.glb)
+let tapRay = null;  // option refine: the placement ray {o, dir, depth} when the tree went on the floor plane
 let objBase = 1;                     // placement size (map units); the Size slider scales it
 const sizeFactor = () => 2 ** Number($('size').value);
 let downSum = [0, 0, 0], downN = 0;  // gravity direction in the SLAM world frame (sum of unit vectors)
@@ -116,6 +128,7 @@ const absClock = () => inertial || rec || gyroOn || eqvioOn;  // frame times on 
 let imuPending = [];
 let imuFlags = [0, 0];               // last logged IMU initialisation flags (map stats [4], [5])                 // live IMU samples not yet sent: [t abs s, ax, ay, az (m/s^2), gx, gy, gz (rad/s)] flat
 let lastMaps = 0, lastState = 0;
+let lastMapId = -1, lastMerges = 0;  // map stats [6] current map id, [7] visual merges so far (option stash, ISSUES G40)
 let replayTaps = [], replayT = -1;               // recording taps still to replay: { t (s, sequence clock), u, v (image px) }
 let stash = null;          // anchors of a map that went inactive (tracking lost -> new map); restored on map merge
 let resetRequested = false;  // Reset button: sent to the worker between frames (one request at a time)
@@ -243,6 +256,7 @@ function resetAnchors(reason) {
   floor = null;
   if (floorMesh) { scene.remove(floorMesh); floorMesh = null; }
   if (cactus) { scene.remove(cactus); cactus = null; }
+  tapRay = null;
   downSum = [0, 0, 0]; downN = 0;
   if (reason) hint(reason, 3000);
 }
@@ -250,21 +264,31 @@ function resetAnchors(reason) {
 // ORB-SLAM3 started a new map after losing tracking: the cactus/floor live in the old map's coordinates, so hide them
 // (not delete). If the user returns and ORB-SLAM3 merges the maps, the merged map uses the old map's coordinates
 // (LoopClosing::MergeLocal corrects the new map into it and makes it active again), so the anchors become valid again.
+// Option stash 'fixed' (ISSUES G40 / G41): the stash remembers its map's id; a further new map keeps a stashed tree
+// (the original replaced the stash with the map being left once that map had found a floor, and the tree was gone), and
+// the tree comes back only when the merge absorbed its own map (the original restored it at any merge, in another
+// map's coordinates when two other maps merged).
 function stashAnchors() {
   if (!cactus && !floor) return;
+  if (opts.stash !== 'old' && stash && stash.cactus && !cactus) {  // a new map again while the tree is stashed
+    if (floorMesh) scene.remove(floorMesh);
+    floor = null; floorMesh = null; downSum = [0, 0, 0]; downN = 0; tapRay = null;
+    tele(`new map again: the stashed tree (map ${stash.mapId}) is kept`);
+    return;
+  }
   if (stash) { if (stash.cactus) scene.remove(stash.cactus); if (stash.floorMesh) scene.remove(stash.floorMesh); }
-  stash = { cactus, floor, floorMesh, downSum, downN };
+  stash = { cactus, floor, floorMesh, downSum, downN, tapRay, mapId: lastMapId };
   if (cactus) cactus.visible = false;
   if (floorMesh) floorMesh.visible = false;
-  cactus = null; floor = null; floorMesh = null; downSum = [0, 0, 0]; downN = 0;
-  tele('anchors stashed (new map after tracking loss)');
+  cactus = null; floor = null; floorMesh = null; downSum = [0, 0, 0]; downN = 0; tapRay = null;
+  tele(`anchors stashed (new map after tracking loss; the tree's map ${lastMapId})`);
   hint('Tracking lost: new map started. Go back to where the tree was to recover it.', 4000);
 }
 function restoreAnchors() {
   if (!stash) return;
   if (cactus) scene.remove(cactus);
   if (floorMesh) scene.remove(floorMesh);
-  ({ cactus, floor, floorMesh, downSum, downN } = stash);
+  ({ cactus, floor, floorMesh, downSum, downN, tapRay } = stash);
   stash = null;
   if (cactus) cactus.visible = true;
   tele('anchors restored (maps merged)');
@@ -292,6 +316,21 @@ function detectFloor() {
   }
   floor = { n: pl.n, d: pl.d, height, inliers: pl.inliers.length, centroid: pl.centroid };
   placeFloorMesh();
+  refineTree();
+}
+// Option refine: a tree placed on the floor is re-placed where its tap ray meets the newest floor estimate (the map is
+// young at the tap: its depth there can be well off). It slides along the ray, so from the placing view it stays put.
+function refineTree() {
+  if (opts.refine !== 'on' || !cactus || !tapRay || !floor) return;
+  const h = rayPlane(tapRay.o, tapRay.dir, floor);
+  if (!h) return;
+  const depth = dot([h[0] - tapRay.o[0], h[1] - tapRay.o[1], h[2] - tapRay.o[2]], tapRay.dir);
+  if (depth < 0.5 * tapRay.depth || depth > 2 * tapRay.depth) return;  // not the same floor
+  const p = cactus.position;
+  if (Math.hypot(h[0] - p.x, h[1] - p.y, h[2] - p.z) < 1e-3 * tapRay.depth) return;
+  cactus.position.set(...h);
+  cactus.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(...floor.n));
+  tele(`tree refined: depth along the tap ray ${depth.toFixed(3)} (placed at ${tapRay.depth.toFixed(3)}), floor ${floor.inliers} points`);
 }
 function placeFloorMesh() {
   if (!floorMesh) {
@@ -495,6 +534,7 @@ function placeCactus(clientX, clientY) {
   if (cactus) scene.remove(cactus);
   cactus = cactusProto.clone();
   cactus.position.set(...hit);
+  tapRay = plane === floor ? { o, dir, depth: dot([hit[0] - o[0], hit[1] - o[1], hit[2] - o[2]], dir) } : null;
   cactus.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(...plane.n));
   objBase = size;
   cactus.scale.setScalar(CUBE ? size : size * sizeFactor());  // cactusProto is normalised to height 1, base at the origin
@@ -506,6 +546,7 @@ function placeCactus(clientX, clientY) {
        ` | at ${hit.map((x) => x.toFixed(4)).join(' ')} | camera ${o.map((x) => x.toFixed(4)).join(' ')}${floor ? ` | floor height ${floor.height.toFixed(4)}` : ''} | map ${stats[3]}` +
        (metresPerUnit() ? ` | tree ~ ${(size * sizeFactor() * metresPerUnit()).toFixed(2)} m tall (${scaleSource()})` : ''));
   hint('');
+  if (studyOv) studyOv.placed();
 }
 
 // ---------------------------------------------------------------- drawing
@@ -519,7 +560,7 @@ function hint(s, holdMs = 0) {  // holdMs: keep this message instead of the per-
 function drawFrame(bmp) {
   bgx.drawImage(bmp, 0, 0);
   bmp.close();
-  if (kps && tracking()) {
+  if (kps && tracking() && !STUDY) {
     bgx.fillStyle = '#22c55e';
     for (let i = 0; i < kps.length; i += 3) if (kps[i + 2] === 1) bgx.fillRect(kps[i] - 1.5, kps[i + 1] - 1.5, 3, 3);
   }
@@ -528,6 +569,7 @@ function drawFrame(bmp) {
   if (floorMesh) floorMesh.visible = !cactus && tracking();
   if (cactus) cactus.visible = tracking() || !!holdTwc;  // hidden while lost (stale pose), unless held by the gyro
   renderer.render(scene, cam3);
+  if (studyOv) studyOv.frame(tracking());
 }
 
 // ---------------------------------------------------------------- main loop
@@ -765,7 +807,7 @@ async function start() {
       }
     }
     const tInit = performance.now();
-    const ready = await slam.request({ type: 'init', vocabUrl: vocabUrl(opts.desc, opts.voc), clahe, seed: 1, prof: params.get('prof') === '1', inertial,
+    const ready = await slam.request({ type: 'init', vocabUrl: vocabUrl(opts.desc, opts.voc), clahe, seed: 1, cacheVocab: STUDY, prof: params.get('prof') === '1', inertial,
                                        vio: opts.vio, eqvioConfigUrl: new URL('./eqvio_phone.yaml', location.href).href,
                                        settingsText: withTracker(settingsText), mapBytes: room ? (room.gz ? await gzip(room.map, 'd') : room.map) : null });
     if (room) {
@@ -802,7 +844,7 @@ async function start() {
       if (cactus) cactus.scale.setScalar(objBase * sizeFactor());
       clearTimeout(sizeLog); sizeLog = setTimeout(() => tele(`tree size x${sizeFactor().toFixed(2)}`), 800);
     };
-    $('stage').addEventListener('pointerdown', (e) => placeCactus(e.clientX, e.clientY));
+    $('stage').addEventListener('pointerdown', (e) => { if (studyOv && studyOv.tap(e.clientX, e.clientY)) return; placeCactus(e.clientX, e.clientY); });
 
     const t0 = performance.now();
     const times = [], trackTimes = [];
@@ -904,13 +946,22 @@ async function start() {
       }
       state = r.state; stats = r.viz.stats; kps = r.viz.kps;
       if (lastMaps && stats[3] > lastMaps) stashAnchors();              // lost -> ORB-SLAM3 started a new map
-      else if (lastMaps && stats[3] < lastMaps) restoreAnchors();       // maps merged back into the old one
+      else if (lastMaps && stats[3] < lastMaps) {                       // maps merged
+        if (opts.stash === 'old' || stats.length < 9) restoreAnchors();  // original: back at any merge
+      }                                                                 // 'fixed': the merge record below decides
       else if (lastState >= 2 && state === 1 && !stash) resetAnchors('Tracking restarted. Move the phone slowly sideways.');
+      if (stats.length >= 9 && stats[7] !== lastMerges) {               // a visual merge finished: [8] = the absorbed map
+        if (opts.stash !== 'old' && stash) {
+          if (stats[8] === stash.mapId) restoreAnchors();
+          else tele(`maps merged (map ${stats[8]} into map ${stats[6]}), not the tree's map ${stash.mapId}: the tree stays stashed`);
+        }
+        lastMerges = stats[7];
+      }
       if (inertial && (stats[4] !== imuFlags[0] || stats[5] !== imuFlags[1])) {
         tele(`IMU: initialised ${stats[4] ? 'yes' : 'no'}, refined (VIBA2) ${stats[5] ? 'yes' : 'no'}`);
         imuFlags = [stats[4], stats[5]];
       }
-      lastState = state; lastMaps = stats[3];
+      lastState = state; lastMaps = stats[3]; lastMapId = stats.length >= 9 ? stats[6] : -1;
       holdTwc = null;
       if (holdOn && !tracking() && holdRef && performance.now() - holdRef.wall < HOLD_MS) holdTwc = heldPose();
       if (tracking()) {
@@ -1019,6 +1070,7 @@ async function start() {
       }
     }
   } catch (e) {
+    if (studyOv) studyOv.fail(String(e.message || e));
     $('start').hidden = false; $('go').disabled = false;
     $('err').textContent = String(e.message || e);
     tele(`ERROR ${e.stack || e}`);
@@ -1067,6 +1119,21 @@ function withTracker(yaml) {  // applies the selected options (web/options.js)
 }
 
 $('go').onclick = start;
+if (STUDY) {  // the study page already asked for consent: one Start tap (as every version), then the overlay and SLAM
+  import('./study/common.js').then(({ Overlay, finishCondition, canvasBrightness, startGate, versionIndex }) => {
+    startGate(versionIndex(), () => {
+      studyOv = new Overlay({
+        objectScreen: () => {
+          if (!cactus) return null;
+          const v = cactus.position.clone().project(cam3), r = $('gl').getBoundingClientRect();
+          return { x: r.left + (v.x + 1) / 2 * r.width, y: r.top + (1 - v.y) / 2 * r.height, visible: cactus.visible && v.z > -1 && v.z < 1 };
+        },
+        brightness: () => canvasBrightness(bg),
+      }, (log) => finishCondition('webvio', { ...log, preset: presetKey(), module: 'build' }));
+      return start();
+    });
+  });
+}
 function showImuCalib() {  // start screen: the last IMU offset / focal measured with "Record gyro + poses" at this resolution
   let c = null;
   try { c = JSON.parse(localStorage.getItem(`imucalib:${$('res').value}`) || 'null'); } catch { /* storage blocked */ }

@@ -109,7 +109,7 @@ Viewer.ViewpointF: 500.0
 // Vocabulary URL: the dev server (web/serve.py) serves /vocab/ORBvoc.bin; the static (GitHub Pages) build ships a
 // gzipped copy next to the pages (decompressed by the worker).
 const DEV_SERVER = location.pathname.startsWith('/web/');
-export const VOCAB_URL = DEV_SERVER ? '/vocab/ORBvoc.bin' : new URL('./vocab/ORBvoc.bin.gz', location.href).href;
+export const VOCAB_URL = DEV_SERVER ? '/vocab/ORBvoc.bin' : new URL('./vocab/ORBvoc.bin.gz', document.baseURI).href;
 
 // Vocabulary for a descriptor: 'orb' -> ORB-SLAM3's ORBvoc; 'teblid' -> our TEBLID vocabulary (scripts: vocab_train,
 // trained on KITTI + TUM-VIE images that are not used for evaluation).
@@ -117,9 +117,9 @@ export function vocabUrl(desc = 'orb', voc = 'full') {
   // 'small': our k10L5 ORB vocabulary (5 MB vs 48.7 MB; vocab_eval 2026-10-17: same robustness, some accuracy cost);
   // it needs Web.BoW.LevelsUp 3 (web/options.js)
   if (desc !== 'teblid' && voc === 'small')
-    return DEV_SERVER ? '/vocab/ORBvoc_own_k10L5.bin' : new URL('./vocab/ORBvoc_own_k10L5.bin.gz', location.href).href;
+    return DEV_SERVER ? '/vocab/ORBvoc_own_k10L5.bin' : new URL('./vocab/ORBvoc_own_k10L5.bin.gz', document.baseURI).href;
   if (desc !== 'teblid') return VOCAB_URL;
-  return DEV_SERVER ? '/vocab/TEBLIDvoc_own_k10L6.bin' : new URL('./vocab/TEBLIDvoc_own_k10L6.bin.gz', location.href).href;
+  return DEV_SERVER ? '/vocab/TEBLIDvoc_own_k10L6.bin' : new URL('./vocab/TEBLIDvoc_own_k10L6.bin.gz', document.baseURI).href;
 }
 
 export const STATE = { '-1': 'not ready', 0: 'no images', 1: 'initialising', 2: 'tracking', 3: 'recently lost', 4: 'lost', 5: 'tracking (KLT)' };

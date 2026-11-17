@@ -7,6 +7,10 @@ export const CONDITIONS = { webvio: 'kx.html', alvaar: 'qm.html', webxr: 'tz.htm
 export const ORDERS = [['webvio', 'alvaar', 'webxr'], ['alvaar', 'webxr', 'webvio'], ['webxr', 'webvio', 'alvaar'],
                        ['webvio', 'webxr', 'alvaar'], ['alvaar', 'webvio', 'webxr'], ['webxr', 'alvaar', 'webvio']];
 export const WEBVIO_PRESET = 'beta';
+// Filled in by the researcher before the study opens. While either is empty the consent page says the study is not
+// open and its Start button stays off (test sessions, ?test=1, are not blocked).
+export const CONTACT = '';  // researcher name and e-mail shown to participants, e.g. 'A. Researcher, a.researcher@example.com'
+export const ETHICS = '';   // ethics approval: committee and reference number
 const KEY = 'webvio-study-v1';
 
 export function load() {
@@ -65,6 +69,8 @@ export const STEPS = [
   { key: 'check', text: 'Tap exactly on your REAL object.' },
 ];
 
+export const SKIP_S = 90;  // a participant stuck on 'start' or 'place' this long can skip the version (recorded as failed)
+
 export class Overlay {
   constructor(adapter, onDone) {
     this.adapter = adapter; this.onDone = onDone;
@@ -78,6 +84,7 @@ export class Overlay {
       #studyOverlay { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; padding: 14px 16px max(16px, env(safe-area-inset-bottom));
         background: rgba(0,0,0,.62); color: #fff; font: 16px/1.4 system-ui, sans-serif; }
       #studyOverlay .row { display: flex; gap: 10px; align-items: center; justify-content: space-between; margin-top: 10px; }
+      #studyOverlay [hidden] { display: none !important; }
       #studyOverlay button { font: 600 16px system-ui; padding: 10px 18px; border-radius: 10px; border: 0; background: #22c55e; color: #000; }
       #studyOverlay button:disabled { background: #555; color: #aaa; }
       #studyOverlay .muted { color: rgba(255,255,255,.7); font-size: 13px; }
@@ -85,12 +92,19 @@ export class Overlay {
         padding: 6px 14px; border-radius: 16px; background: rgba(0,0,0,.6); color: #fff; font: 600 14px system-ui; }
     </style>
     <div id="studyText"></div>
-    <div class="row"><span class="muted" id="studyInfo"></span><button id="studyNext" disabled>Next</button></div>`;
+    <div class="row"><span class="muted" id="studyInfo"></span><button id="studyNext" disabled>Next</button></div>
+    <div class="row" id="studySkipRow" hidden><span class="muted">Not working after ${SKIP_S} seconds?</span>
+      <button id="studySkip" style="background:#666;color:#fff">Skip this version</button></div>`;
     document.body.append(this.el);
     this.badge = Object.assign(document.createElement('div'), { id: 'studyBadge' });
     document.body.append(this.badge);
     for (const ev of ['beforexrselect']) this.el.addEventListener(ev, (e) => e.preventDefault());  // WebXR: buttons are not taps
     this.el.querySelector('#studyNext').onclick = () => this.next();
+    this.el.querySelector('#studySkip').onclick = () => {
+      const st = STEPS[this.step];
+      this.log.steps.push({ key: st.key, s: +((performance.now() - this.stepT) / 1000).toFixed(2), skipped: true });
+      this.fail(`skipped at ${st.key}`, 'You skipped this version. Please continue.');
+    };
     this.show();
     this.timer = setInterval(() => this.tick(), 250);
     this.brightTimer = setInterval(() => {
@@ -114,6 +128,9 @@ export class Overlay {
     else if (s.key === 'check') { ok = false; info = this.log.check ? '' : 'Tap your real object'; }
     else { ok = el >= (s.early ?? s.seconds); info = `${Math.max(0, Math.ceil(s.seconds - el))} s`; }
     this.el.querySelector('#studyNext').disabled = !ok;
+    // the skip clock starts at the step or at the first camera frame, whichever is later (permission prompts do not count)
+    const skipEl = (performance.now() - Math.max(this.stepT, this.firstFrameT ?? this.stepT)) / 1000;
+    this.el.querySelector('#studySkipRow').hidden = ok || !(s.key === 'start' || s.key === 'place') || skipEl < SKIP_S;
     this.el.querySelector('#studyInfo').textContent = info;
     this.setBadge(s.key === 'start' && this.log.readyS != null ? 'Ready' : '');
   }
@@ -126,6 +143,7 @@ export class Overlay {
   // per processed frame
   frame(tracking) {
     const t = this.now();
+    if (this.log.frames === 0) this.firstFrameT = performance.now();
     this.log.frames++;
     if (tracking) {
       if (this.log.firstTrackS == null) this.log.firstTrackS = +t.toFixed(2);
@@ -166,10 +184,14 @@ export class Overlay {
     b.textContent = 'Continue'; b.disabled = false;
     b.onclick = () => this.onDone(this.log);
   }
-  fail(reason) {  // the tracker could not start: recorded as a failure of this condition
+  fail(reason, text = 'This version could not start on your phone. Please continue.') {  // recorded as a failure of this condition
+    if (this.log.lostSince != null) { this.log.losses.push([+this.log.lostSince.toFixed(2), +(this.now() - this.log.lostSince).toFixed(2), 'open']); this.log.lostSince = null; }
     this.log.failed = reason; this.log.totalS = +this.now().toFixed(2);
+    this.log.fps = this.log.totalS > 0 ? +(this.log.frames / this.log.totalS).toFixed(1) : null;
     clearInterval(this.timer); clearInterval(this.brightTimer);
-    this.el.querySelector('#studyText').textContent = 'This version could not start on your phone. Please continue.';
+    this.el.querySelector('#studySkipRow').hidden = true;
+    this.el.querySelector('#studyInfo').textContent = '';
+    this.el.querySelector('#studyText').textContent = text;
     const b = this.el.querySelector('#studyNext');
     b.textContent = 'Continue'; b.disabled = false;
     b.onclick = () => this.onDone(this.log);

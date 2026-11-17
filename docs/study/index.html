@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AR tracking study</title>
+<script src="../coi.js"></script>
+<style>
+  :root { --bg: #f7f7f5; --card: #ffffff; --text: #1d1d1b; --muted: #5f5f5a; --line: #deded8; --accent: #157f3b; --accent-text: #ffffff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151514; --card: #1f1f1d; --text: #ececea; --muted: #a5a59f; --line: #3a3a36; --accent: #3fbf6a; --accent-text: #0b0b0a; }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 20px 16px 48px; }
+  h1 { font-size: 22px; line-height: 1.25; margin: 8px 0 12px; }
+  h2 { font-size: 17px; margin: 22px 0 8px; }
+  p, li { color: var(--text); }
+  .muted { color: var(--muted); font-size: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 14px 10px; margin: 12px 0; }
+  .q { margin: 0 0 6px; font-weight: 600; }
+  .scale { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin: 8px 0 2px; }
+  .scale label { display: flex; flex-direction: column; align-items: center; font-size: 13px; color: var(--muted); padding: 4px 0; }
+  .scale input { width: 22px; height: 22px; margin: 0 0 2px; accent-color: var(--accent); }
+  .ends { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+  .opts label { display: flex; gap: 10px; align-items: center; padding: 7px 0; }
+  .opts input { width: 20px; height: 20px; accent-color: var(--accent); }
+  textarea { width: 100%; min-height: 80px; font: inherit; padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  button.primary { display: block; width: 100%; margin: 20px 0 0; padding: 14px; font: 600 17px system-ui; border: 0; border-radius: 12px;
+                   background: var(--accent); color: var(--accent-text); }
+  button.primary:disabled { opacity: .45; }
+  .err { color: #c0392b; font-size: 14px; }
+  .id { font: 600 20px ui-monospace, monospace; letter-spacing: .08em; }
+</style>
+</head>
+<body>
+<main id="app"><p class="muted">Loading…</p></main>
+<script type="module" src="./study.js"></script>
+</body>
+</html>

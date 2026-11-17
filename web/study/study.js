@@ -1,6 +1,6 @@
 // Study flow (claude/STUDY.md): consent -> background -> environment -> device check -> brief -> 3 x (version k, its
 // questionnaire) -> comparison -> thank you. State in localStorage (common.js), each stage sent when done.
-import { CONDITIONS, ORDERS, WEBVIO_PRESET, assignOrder, load, newParticipant, save, send } from './common.js';
+import { CONDITIONS, CONTACT, ETHICS, ORDERS, WEBVIO_PRESET, assignOrder, load, newParticipant, save, send } from './common.js';
 
 const app = document.getElementById('app');
 let s = load();
@@ -83,13 +83,15 @@ function consent() {
        code shown at the end; to have them deleted later, send that code to the researcher.</p>
     <h2>Safety</h2>
     <p>You will walk a few steps while looking at your phone. Use a clear space, away from stairs and traffic.</p>
-    <p class="muted">[Ethics approval: committee name and reference number, to be added before the study starts.]<br>
-       Contact: [researcher name, e-mail].</p>
+    ${CONTACT && ETHICS ? `<p class="muted">Ethics approval: ${esc(ETHICS)}<br>Contact: ${esc(CONTACT)}</p>`
+      : `<p class="card" style="border:2px solid #c33">This study is not open yet: the ethics reference and the researcher's contact
+         details are still to be added.${s.test ? ' (Test session: you can continue.)' : ''}</p>`}
     <form id="f"><div class="card opts">
       <label><input type="checkbox" id="adult">I am 18 years or older.</label>
       <label><input type="checkbox" id="agree">I have read the information above and agree to take part.</label>
     </div><button class="primary" id="b" disabled>Start</button></form>`;
-  const upd = () => { document.getElementById('b').disabled = !(document.getElementById('adult').checked && document.getElementById('agree').checked); };
+  const open = (CONTACT && ETHICS) || s.test;  // not open to participants until both are filled in (common.js)
+  const upd = () => { document.getElementById('b').disabled = !(open && document.getElementById('adult').checked && document.getElementById('agree').checked); };
   document.getElementById('adult').onchange = upd; document.getElementById('agree').onchange = upd;
   document.getElementById('f').onsubmit = async (e) => {
     e.preventDefault();
@@ -167,7 +169,8 @@ function questionnaire(k) {
   const run = s.runs[k];
   const failed = run && run.log && run.log.failed;
   form(`<h1>Version ${k + 1}: your impressions</h1>
-    ${failed ? '<p class="muted">This version did not start on your phone; please answer the questions you can, as you experienced it.</p>' : ''}
+    ${failed ? `<p class="muted">${String(failed).startsWith('skipped') ? 'You skipped this version' : 'This version did not start on your phone'};
+       please answer the questions you can, as you experienced it.</p>` : ''}
     <p class="muted">1 = strongly disagree, 7 = strongly agree.</p>
     ${T_ITEMS.slice(0, 6).map(([n, q, na]) => likert(n, q, undefined, undefined, na === 'na')).join('')}
     ${choice('T7', 'How often did the virtual object disappear, jump or slide away?', [['0', 'Never'], ['1', 'Once'], ['2-3', '2–3 times'], ['4+', '4 times or more']])}

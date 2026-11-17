@@ -19,6 +19,10 @@ export const OPTIONS = [
     values: [['off', 'off'], ['on', 'on (log for the camera–IMU time offset)']], def: 'off' },
   { key: 'anchor', label: 'Tracking lost with a tree placed', page: 'ar',
     values: [['keep', 'keep the map, relocalise only'], ['stock', 'stock (new map after the timeout)']], def: 'keep' },
+  // 2026-11-04 (claude/ISSUES.md G40, G41): the tree stashed at a new map, through further new maps and merges
+  { key: 'stash', label: 'Tree after a new map', page: 'ar', when: (o) => o.anchor === 'stock',
+    values: [['fixed', 'kept through further new maps, back when its own map merges'],
+             ['old', 'original (gone at a second new map once that map has a floor; back at any merge)']], def: 'fixed' },
   { key: 'map', label: 'Local mapping', values: [['stock', 'stock'], ['light', 'light (local BA 20/20, 15 neighbours)']], def: 'stock' },
   { key: 'kltmax', label: 'KLT frames between ORB', values: [['1', '1'], ['2', '2'], ['3', '3'], ['4', '4']], def: '2', when: (o) => o.tracker === 'klt' },
   { key: 'kltwin', label: 'KLT window', values: [['11', '11 px'], ['15', '15 px'], ['21', '21 px']], def: '15', when: (o) => o.tracker === 'klt' },
@@ -43,7 +47,15 @@ export const OPTIONS = [
   { key: 'lba', label: 'Local BA solver', values: [['g2o', 'g2o (original)'], ['fast', 'fast (same result, ~3-4x less time; the map keeps growing)']], def: 'g2o' },
   { key: 'kfq', label: 'Keyframes while mapping is busy', values: [['stock', 'refused (original; the map stops growing when mapping falls behind)'], ['2', 'queued, up to 2 waiting'], ['3', 'queued, up to 3 waiting']], def: 'stock' },
   { key: 'newarea', label: 'New areas when turning', values: [['stock', 'original (keyframes by tracked-point count)'], ['cov', 'extra keyframes for new textured areas'], ['cov2', 'extra keyframes + new points from smaller baselines']], def: 'stock' },
+  // 2026-11-02 (claude/ISSUES.md G22): Tracking::WebGlobalReloc, every map point instead of the keyframes found by words
+  { key: 'relocall', label: 'Relocalisation when lost', values: [['stock', 'original (keyframes that look like the view)'],
+    ['global', '+ whole-map search every 10 lost frames (back sooner from new angles; slower frames while lost)']], def: 'stock' },
+  { key: 'refine', label: 'Tree depth follows the floor estimate', page: 'ar',
+    values: [['off', 'off (original: fixed where tapped)'], ['on', 'on (re-placed along the tap ray as the floor improves)']], def: 'off' },
   { key: 'hold', label: 'Tree during brief tracking losses', page: 'ar', values: [['hide', 'hidden (original)'], ['gyro', 'held by the gyro for up to 0.4 s']], def: 'hide' },
+  // 2026-11-01 (claude/ISSUES.md G35): the gyro rotation in the pose solve, held to a gyro attitude (map collapse fix)
+  { key: 'gyropose', label: 'Gyro in the pose solve (map collapse fix)', when: (o) => o.gyro === 'on' && o.imu !== 'on',
+    values: [['off', 'off (original: the gyro only predicts)'], ['att', 'gyro attitude, strong (0.05°, 5 s)'], ['att02', 'gyro attitude, softer (0.2°, 5 s)']], def: 'off' },
   // 2026-10-30 (claude/ISSUES.md G28): the IMU start-up of the mono-inertial mode; defaults = original
   { key: 'imustart', label: 'IMU start-up (IMU on)', page: 'ar', when: (o) => o.imu === 'on',
     values: [['stock', 'original (a loss in the first ~15 s of motion resets the map)'],
@@ -93,6 +105,12 @@ export const PRESETS = [
   // 2026-10-30 (claude/PLAN.md 4d: full IMU, approaches B and A)
   { key: 'betascale', label: 'WebVIO beta + metric scale (filter)', set: { kltmax: '4', motion: 'time', map: 'light', pose: 'fast', gyro: 'on', recover: 'coast', hold: 'gyro', lba: 'fast', kltpar: 'parallel', scale: 'filter' },
     note: 'WebVIO beta with the accelerometer scale from the loosely coupled filter (Kalman filters over a scale grid; synthetic set, phone IMU: a scale in 4-10 of 12 runs per scenario, median error 0.5-9 %, none on fast turns; your brisk 1 m slides: within 0.5 % after 17 s). Tracking is the same as beta.' },
+  // 2026-11-01 (claude/ISSUES.md G35)
+  { key: 'betagyro', label: 'WebVIO beta + metric scale + gyro attitude (map collapse fix)', set: { kltmax: '4', motion: 'time', map: 'light', pose: 'fast', gyro: 'on', recover: 'coast', hold: 'gyro', lba: 'fast', kltpar: 'parallel', scale: 'filter', gyropose: 'att' },
+    note: 'WebVIO beta + metric scale with the gyro rotation held in the pose solve: on the synthetic set the map stopped collapsing while walking around the object (collapsed runs 5-11 → 1 of 12 per scene, orientation within 1°) and the metric scale settled far more often. Expect the same speed as beta.' },
+  // 2026-11-02 (claude/ISSUES.md G22, PLAN §0): the phone test of mapping the room before placing
+  { key: 'mapfirst', label: 'WebVIO beta + gyro attitude + cov2 + whole-map relocalisation + floor depth (map the room first)', set: { kltmax: '4', motion: 'time', map: 'light', pose: 'fast', gyro: 'on', recover: 'coast', hold: 'gyro', lba: 'fast', kltpar: 'parallel', scale: 'filter', gyropose: 'att', newarea: 'cov2', relocall: 'global', refine: 'on' },
+    note: 'For mapping the whole room before placing the tree: the beta + metric scale + gyro attitude preset, extra keyframes and points in new areas (cov2), the whole map searched when lost (back sooner from a new angle; frames are slower while lost) and the tree depth following the floor. Synthetic set vs beta + metric scale + gyro attitude (combo_1102): walking through the flat tracked 3 → 28 % (flatmap 23 → 81 %); while lost, more dropped frames (flat 118 → 311 per run, before the ~5x faster whole-map search of 2 Nov); the tree badly off in 13 of 168 runs vs 6 of 168.' },
   { key: 'imutol', label: 'IMU, tolerant start-up', set: { imu: 'on', tracker: 'stock', imustart: 'tolerant' },
     note: 'Visual-inertial mode whose start-up keeps the map on a loss and has no motion-check reset (synthetic set: resets ~0, start-up completed far more often, but tracking still well below WebVIO beta).' },
   { key: 'eqvio', label: 'EqVIO filter (experimental)', set: { vio: 'eqvio' },
@@ -153,6 +171,7 @@ export function applyOptions(yaml, o) {
   if (o.tracker === 'klt' && o.kltpar === 'parallel') extra.push('Web.KLT.Parallel: 1');  // LK points split over 4 threads
   if (o.newarea === 'cov' || o.newarea === 'cov2') extra.push('Web.KF.Coverage: 0.4');  // keyframes for new textured areas
   if (o.newarea === 'cov2') extra.push('Web.Map.MinBaseline: 0.005', 'Web.Map.MaxCosParallax: 0.99995');  // + points from smaller baselines
+  if (o.relocall === 'global') extra.push('Web.Reloc.Global: 10', 'Web.Reloc.GlobalDesc: 1');  // every 10th lost frame, all descriptors
   if (o.rot === 'far') extra.push('Web.Rot.FarPoints: 1');  // pure-rotation prototype (LocalMapping::WebCreateFarPoints)
   if (o.rot === 'inf') extra.push('Web.Rot.FarPoints: 2');  // the same far points as points at infinity in the pose solve
   if (o.rot === 'inf3') extra.push('Web.Rot.FarPoints: 3');  // + kept out of relocalisation, Sim3 and keyframe culling
@@ -167,6 +186,8 @@ export function applyOptions(yaml, o) {
   if ((o.scale === 'on' || o.scale === 'filter') && o.imu !== 'on') extra.push('Web.Scale.Online: 1');  // WebScale.h; an estimate, tracking unchanged
   if (o.scale === 'filter' && o.imu !== 'on') extra.push('Web.Scale.Method: 1');  // WebScaleFilter.h (2026-10-30, PLAN 4d approach B)
   if (o.kfq === '2' || o.kfq === '3') extra.push(`Web.KF.BusyQueue: ${o.kfq}`);  // map keeps growing when mapping is slow (G22)
+  if ((o.gyropose === 'att' || o.gyropose === 'att02') && o.gyro === 'on' && o.imu !== 'on')  // G35 (Tracking::WebSetRotPrior)
+    extra.push(`Web.Gyro.PoseSigma: ${o.gyropose === 'att' ? 0.05 : 0.2}`, 'Web.Gyro.PoseTau: 5');
   if (o.bridge === 'tv' && o.imu !== 'on') extra.push('Web.Turn.Bridge: 1');  // lost after turning: map the new view in this map
   if (o.bridge === 'gyro' && o.imu !== 'on') extra.push('Web.Turn.Bridge: 2');
   if (o.voc === 'small' && o.desc !== 'teblid') extra.push('Web.BoW.LevelsUp: 3');  // L5 tree: BoW index at the stock depth
