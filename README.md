@@ -15,14 +15,14 @@ ORB-SLAM3's:
 - an AR mode that keeps the map while a virtual object is placed.
 
 **Try it:** <https://itsaeox.github.io/CustomSLAM/>. Open the AR page (`ar.html`) on an Android phone in Chrome and
-allow camera and motion access. WebVIO has been evaluated on a Google Pixel 9 in Chrome; other phones and browsers are
-untested. iPhones are untested and may not work: Safari's limits on memory and threads apply.
+allow camera and motion access. WebVIO has been evaluated on a Google Pixel 9 in Chrome; other phones and browsers,
+including iPhones, are untested.
 
 ## Status
 
 This is research code. The evaluated build is the git tag `paper-batch-1103`. A paper describing WebVIO and its
 evaluation (EuRoC, TUM-VI, a synthetic phone-model set, phone recordings, an AR leave-and-return test, 556 runs in
-Chrome on a Pixel 9, and a user study) is in preparation; citation details will be added here.
+Chrome on a Pixel 9, and a planned user study) is in preparation; citation details will be added here.
 
 ## Repository layout
 
