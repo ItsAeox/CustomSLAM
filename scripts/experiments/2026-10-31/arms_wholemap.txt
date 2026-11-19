@@ -1,0 +1,3 @@
+# replay_arms.sh arms (2 Nov, ISSUES G22): do the new view's points exist anywhere in the map before a walk-out loss?
+# Diagnostic trace only (whole current map in the view, runner after df7b5b2); the baseline arm
+keep_g005t5|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.05;Web.Gyro.PoseTau: 5;--keep-map-at 5.8;--tap-at 5.8

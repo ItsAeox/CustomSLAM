@@ -1,0 +1,8 @@
+# replay_arms.sh arms for 2026-10-18 (name|page preset|extra settings separated by ;)
+fast|fast|
+fast_cov|fast|Web.KF.Coverage: 0.4
+fast_cov2|fast|Web.KF.Coverage: 0.4;Web.Map.MinBaseline: 0.005;Web.Map.MaxCosParallax: 0.99995
+grecover_dt|grecover|Web.Gyro.TimeOffset: -0.088
+grecover_dt_cov2|grecover|Web.Gyro.TimeOffset: -0.088;Web.KF.Coverage: 0.4;Web.Map.MinBaseline: 0.005;Web.Map.MaxCosParallax: 0.99995
+next_dt|next|Web.Gyro.TimeOffset: -0.088
+rot3|fast|Web.Rot.FarPoints: 3

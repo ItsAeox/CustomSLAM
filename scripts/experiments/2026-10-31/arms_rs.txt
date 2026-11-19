@@ -1,0 +1,6 @@
+# replay_arms.sh arms (31 Oct, ISSUES G31): rolling-shutter correction re-run after the grid fix (735b90a); beta + scale filter
+# as the same-batch control. The fastmotion_1031 RS arms made no map (bug), their results are void
+beta_scaleF|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1
+rs20|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.RS.Readout: 0.02
+rsneg20|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.RS.Readout: -0.02
+warp_rs20|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.KLT.GyroWarp: 1;Web.RS.Readout: 0.02

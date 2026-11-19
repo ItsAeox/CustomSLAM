@@ -1,0 +1,5 @@
+# replay_arms.sh arms: fast local BA (Web.LBA.Fast, ISSUES G22)
+grecover_dt_keep|grecover|Web.Gyro.TimeOffset: -0.088;Web.Track.KeepMap: 1
+grecover_dt_keep_lbafast|grecover|Web.Gyro.TimeOffset: -0.088;Web.Track.KeepMap: 1;Web.LBA.Fast: 1
+fast_keep|fast|Web.Track.KeepMap: 1
+fast_keep_lbafast|fast|Web.Track.KeepMap: 1;Web.LBA.Fast: 1

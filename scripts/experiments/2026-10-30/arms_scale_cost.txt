@@ -1,0 +1,3 @@
+# replay_arms.sh arms: cost of the scale filter, same batch (same machine load): window estimator vs filter
+beta_scale|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1
+beta_scaleF|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1

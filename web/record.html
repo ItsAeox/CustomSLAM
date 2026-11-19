@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>WebVIO Recorder</title>
+<style>
+  :root { --bg: #0e1116; --panel: #161b22; --ink: #e6e9ee; --muted: #8d97a5; --line: #2a313b; --accent: #22c55e; --rec: #ef4444; --err: #f87171; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding: max(12px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left)); }
+  .wrap { max-width: 720px; margin: 0 auto; display: grid; gap: 12px; }
+  h1 { font-size: 20px; margin: 0; }
+  .sub { color: var(--muted); font-size: 13.5px; margin: 0; }
+  .stage { position: relative; background: #000; border-radius: 10px; overflow: hidden; aspect-ratio: 3 / 4; max-height: 62vh; width: 100%; justify-self: center; touch-action: none; }
+  video { width: 100%; height: 100%; object-fit: contain; display: block; }
+  #tapdot { position: absolute; width: 34px; height: 34px; margin: -17px 0 0 -17px; border: 3px solid var(--accent); border-radius: 50%; pointer-events: none; }
+  #tapdot.pulse { animation: pulse 0.6s ease-out forwards; }
+  @keyframes pulse { from { transform: scale(0.4); opacity: 1; } to { transform: scale(1.4); opacity: 0; } }
+  #rec { position: absolute; top: 10px; left: 10px; background: var(--rec); color: #fff; font-weight: 600; font-size: 12px; padding: 4px 8px; border-radius: 999px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .row label { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13.5px; }
+  input, select, textarea { background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: inherit; }
+  input[type=checkbox] { padding: 0; width: 18px; height: 18px; }
+  #name { flex: 1; min-width: 180px; font-family: ui-monospace, Consolas, monospace; font-size: 14px; }
+  textarea { width: 100%; min-height: 54px; resize: vertical; }
+  .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  button { font: 600 17px/1 system-ui, sans-serif; padding: 15px; border-radius: 12px; border: 0; color: #08130b; background: var(--accent); }
+  button#stop { background: var(--rec); color: #fff; }
+  button:disabled { opacity: 0.35; }
+  .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+  .stats div { display: grid; gap: 2px; }
+  .stats b { font: 600 16px/1.1 ui-monospace, Consolas, monospace; font-variant-numeric: tabular-nums; }
+  .stats span { color: var(--muted); font-size: 11.5px; }
+  #status { font-size: 14px; } #status.err, #errors { color: var(--err); } #status.ok { color: var(--accent); }
+  #errors { font-size: 12.5px; }
+  a { color: var(--accent); }
+  details { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  summary { cursor: pointer; color: var(--muted); }
+  ul { margin: 8px 0 0; padding-left: 20px; } .dim { color: var(--muted); }
+  ol { margin: 6px 0 0; padding-left: 20px; color: var(--muted); font-size: 13.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>WebVIO Recorder</h1>
+  <p class="sub">Records camera frames, gyro + accelerometer and your taps as a test sequence. Every preset can then replay exactly the same movement, on the PC or on this phone.</p>
+
+  <div class="stage" id="preview-box">
+    <video id="preview" muted playsinline></video>
+    <div id="tapdot" hidden></div>
+    <div id="rec" hidden>● REC</div>
+  </div>
+
+  <div class="btns"><button id="go">Start recording</button><button id="stop" disabled>Stop</button></div>
+
+  <div class="stats">
+    <div><b id="time">0.0</b><span>seconds</span></div>
+    <div><b id="frames">0</b><span>frames</span></div>
+    <div><b id="fps">–</b><span>fps saved</span></div>
+    <div><b id="dropped">0</b><span>frames skipped</span></div>
+    <div><b id="gyro">–</b><span>gyro Hz</span></div>
+    <div><b id="gs">–</b><span>sensor API Hz</span></div>
+    <div><b id="taps">0</b><span>taps</span></div>
+    <div><b id="queue">0</b><span>to upload (<span id="mb">0.0</span> MB sent)</span></div>
+  </div>
+  <div id="status" class="sub">Press Start. Hold the phone upright (portrait) as in the AR page.</div>
+  <div id="errors"></div>
+  <a id="replay" hidden>Replay this recording in the AR page</a>
+
+  <div class="row">
+    <label for="name">Name</label><input id="name" autocomplete="off" spellcheck="false">
+  </div>
+  <textarea id="notes" placeholder="What you did, e.g. 'slide left-right 3 s, tap the floor centre, walk around the chair, back to start'"></textarea>
+  <div class="row">
+    <label>Resolution <select id="res"><option value="640x480" selected>640×480 (AR default)</option><option value="1280x720">1280×720</option></select></label>
+    <label>FOV° <input id="fov" type="number" value="69" step="0.5" style="width:72px"></label>
+    <label><input id="usecal" type="checkbox" checked> use saved calibration</label>
+    <label>JPEG <select id="quality"><option value="0.92" selected>0.92</option><option value="0.97">0.97</option><option value="0.85">0.85</option></select></label>
+    <span class="dim" style="font-size:13px">camera <span id="size">–</span></span>
+  </div>
+
+  <details>
+    <summary>How to record a good test sequence</summary>
+    <ol>
+      <li>Start and finish at the same spot, phone still for 2 s at both ends (gives a drift measurement).</li>
+      <li>Slide sideways slowly at the start, as you would to start tracking.</li>
+      <li>Tap the floor where a tree should go; tap the same spot again later (gives an anchor-drift measurement).</li>
+      <li>Then the movement you want to test: turning away and back, walking round, fast turns, bright to dim.</li>
+      <li>Write what you did in the notes box before pressing Stop.</li>
+    </ol>
+  </details>
+
+  <details open>
+    <summary>Recordings on this PC</summary>
+    <ul id="list"><li class="dim">Loading…</li></ul>
+  </details>
+</div>
+<script type="module" src="record.js"></script>
+</body>
+</html>

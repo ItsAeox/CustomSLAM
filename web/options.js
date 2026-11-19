@@ -1,0 +1,222 @@
+// Algorithm / settings variants selectable in the viewer and the AR page (and via URL parameters, so a test can be
+// reproduced exactly). They are applied on top of the ORB-SLAM3 settings text; the Web.* keys are read by
+// slam/orbslam3/include/WebConfig.h. Defaults = the hybrid tracker with otherwise stock ORB-SLAM3 settings.
+
+export const OPTIONS = [
+  { key: 'tracker', label: 'Tracker', values: [['klt', 'Hybrid ORB + KLT'], ['stock', 'ORB on every frame (baseline)']], def: 'klt' },
+  { key: 'desc', label: 'Descriptor', values: [['orb', 'ORB (rotated BRIEF)'], ['teblid', 'TEBLID-256 (own vocabulary)']], def: 'orb' },
+  { key: 'features', label: 'ORB features', values: [['0', 'settings default'], ['500', '500'], ['600', '600'], ['800', '800'], ['1000', '1000'], ['1500', '1500']], def: '0' },
+  { key: 'levels', label: 'Pyramid levels', values: [['0', 'settings default (8)'], ['4', '4'], ['5', '5'], ['6', '6'], ['8', '8']], def: '0' },
+  { key: 'reloc', label: 'Relocalise before new map', values: [['3', '3 s (stock)'], ['10', '10 s'], ['30', '30 s']], def: '3' },
+  { key: 'motion', label: 'Motion model', values: [['stock', 'stock (constant velocity per frame)'], ['time', 'time-scaled (dropped frames)']], def: 'stock' },
+  { key: 'imu', label: 'IMU (mono-inertial, experimental)', page: 'ar', values: [['off', 'off (visual only)'], ['on', 'on (DeviceMotion)']], def: 'off' },
+  { key: 'imudt', label: 'IMU time offset (ms, measured with "Record")', page: 'ar', device: true,  // a property of the phone: presets keep it
+    values: [['0', '0 (none)'], ['-40', '−40'], ['-20', '−20'], ['20', '+20'], ['40', '+40'], ['60', '+60'], ['80', '+80'],
+             ['100', '+100'], ['120', '+120']], def: '0' },
+  { key: 'gyro', label: 'Gyro rotation prior (visual-only tracking)', page: 'ar',
+    values: [['off', 'off'], ['on', 'on (predict rotation from the gyro)']], def: 'off' },
+  { key: 'rec', label: 'Record gyro + poses (diagnostic)', page: 'ar',
+    values: [['off', 'off'], ['on', 'on (log for the camera–IMU time offset)']], def: 'off' },
+  { key: 'anchor', label: 'Tracking lost with a tree placed', page: 'ar',
+    values: [['keep', 'keep the map, relocalise only'], ['stock', 'stock (new map after the timeout)']], def: 'keep' },
+  // 2026-11-04 (claude/ISSUES.md G40, G41): the tree stashed at a new map, through further new maps and merges
+  { key: 'stash', label: 'Tree after a new map', page: 'ar', when: (o) => o.anchor === 'stock',
+    values: [['fixed', 'kept through further new maps, back when its own map merges'],
+             ['old', 'original (gone at a second new map once that map has a floor; back at any merge)']], def: 'fixed' },
+  { key: 'map', label: 'Local mapping', values: [['stock', 'stock'], ['light', 'light (local BA 20/20, 15 neighbours)']], def: 'stock' },
+  { key: 'kltmax', label: 'KLT frames between ORB', values: [['1', '1'], ['2', '2'], ['3', '3'], ['4', '4']], def: '2', when: (o) => o.tracker === 'klt' },
+  { key: 'kltwin', label: 'KLT window', values: [['11', '11 px'], ['15', '15 px'], ['21', '21 px']], def: '15', when: (o) => o.tracker === 'klt' },
+  { key: 'kltlev', label: 'KLT pyramid levels', values: [['1', '1'], ['2', '2'], ['3', '3']], def: '2', when: (o) => o.tracker === 'klt' },
+  { key: 'kltflow', label: 'KLT motion gate (max predicted flow)', values: [['0', 'off'], ['10', '10 px'], ['20', '20 px'], ['30', '30 px']], def: '0', when: (o) => o.tracker === 'klt' },
+  { key: 'kltfrac', label: 'KLT quality gate (inliers vs last ORB frame)', values: [['0', 'off'], ['0.5', '50%'], ['0.7', '70%']], def: '0', when: (o) => o.tracker === 'klt' },
+  { key: 'kltfb', label: 'KLT forward-backward check', values: [['1', 'on'], ['0', 'off']], def: '1', when: (o) => o.tracker === 'klt' },
+  // round 2 (2026-10-17; claude/RESEARCH.md "Algorithm tracker"): defaults = previous behaviour
+  { key: 'kltpar', label: 'KLT optical flow', values: [['serial', 'one thread (original)'], ['parallel', '4 threads']], def: 'serial', when: (o) => o.tracker === 'klt' },
+  { key: 'kltnorm', label: 'KLT exposure normalisation', values: [['off', 'off'], ['on', 'on (cancels exposure changes)']], def: 'off', when: (o) => o.tracker === 'klt' },
+  { key: 'pose', label: 'Pose solver', values: [['g2o', 'g2o (original)'], ['fast', 'fast (same result, no g2o graph)']], def: 'g2o' },
+  { key: 'orbpar', label: 'ORB extraction', values: [['serial', 'one thread (original)'], ['parallel', 'pyramid levels in parallel']], def: 'serial' },
+  { key: 'orbspread', label: 'ORB keypoint spreading', values: [['octree', 'octree (original)'], ['ssc', 'square covering (SSC: strongest corners, evenly spaced)']], def: 'octree' },
+  { key: 'recover', label: 'Recovery when lost', values: [['bow', 'bag-of-words relocalisation (original)'], ['coast', 'local-map search first, then bag of words']], def: 'bow' },
+  { key: 'init', label: 'Map start', values: [['stock', 'original thresholds'], ['quick', 'quicker (60 matches, 0.5°, 40 points)'], ['gyro', 'gyro two-view (+ gyro prior)']], def: 'stock' },
+  { key: 'kf', label: 'Keyframes', values: [['stock', 'original'], ['fewer', 'fewer (ratio 0.8)']], def: 'stock' },
+  { key: 'voc', label: 'Vocabulary (download)', values: [['full', 'full (49 MB, original)'], ['small', 'small (5 MB, own k10L5)']], def: 'full', when: (o) => o.desc !== 'teblid' },
+  { key: 'rot', label: 'Turning on the spot', values: [['off', 'original (no new points without sideways motion)'], ['far', 'far points (prototype 1: made-up depth)'], ['inf', 'points at infinity (prototype 2)'], ['inf3', 'points at infinity, kept out of relocalisation (prototype 3)']], def: 'off' },
+  { key: 'bridge', label: 'After turning away (gyro)', values: [['off', 'original (relocalise until the timeout, then a new map)'], ['tv', 'continue this map: two-view start checked by the gyro'], ['gyro', 'continue this map: gyro two-view start']], def: 'off' },
+  { key: 'scale', label: 'Metric scale', values: [['off', 'off (original: tree size from the phone height guess)'], ['on', 'from the accelerometer (live estimate)'],
+                                                   ['filter', 'from the accelerometer, filter (Kalman filters over a scale grid)']], def: 'off' },
+  { key: 'lba', label: 'Local BA solver', values: [['g2o', 'g2o (original)'], ['fast', 'fast (same result, ~3-4x less time; the map keeps growing)']], def: 'g2o' },
+  { key: 'kfq', label: 'Keyframes while mapping is busy', values: [['stock', 'refused (original; the map stops growing when mapping falls behind)'], ['2', 'queued, up to 2 waiting'], ['3', 'queued, up to 3 waiting']], def: 'stock' },
+  { key: 'newarea', label: 'New areas when turning', values: [['stock', 'original (keyframes by tracked-point count)'], ['cov', 'extra keyframes for new textured areas'], ['cov2', 'extra keyframes + new points from smaller baselines']], def: 'stock' },
+  // 2026-11-02 (claude/ISSUES.md G22): Tracking::WebGlobalReloc, every map point instead of the keyframes found by words
+  { key: 'relocall', label: 'Relocalisation when lost', values: [['stock', 'original (keyframes that look like the view)'],
+    ['global', '+ whole-map search every 10 lost frames (back sooner from new angles; slower frames while lost)']], def: 'stock' },
+  { key: 'refine', label: 'Tree depth follows the floor estimate', page: 'ar',
+    values: [['off', 'off (original: fixed where tapped)'], ['on', 'on (re-placed along the tap ray as the floor improves)']], def: 'off' },
+  { key: 'hold', label: 'Tree during brief tracking losses', page: 'ar', values: [['hide', 'hidden (original)'], ['gyro', 'held by the gyro for up to 0.4 s']], def: 'hide' },
+  // 2026-11-01 (claude/ISSUES.md G35): the gyro rotation in the pose solve, held to a gyro attitude (map collapse fix)
+  { key: 'gyropose', label: 'Gyro in the pose solve (map collapse fix)', when: (o) => o.gyro === 'on' && o.imu !== 'on',
+    values: [['off', 'off (original: the gyro only predicts)'], ['att', 'gyro attitude, strong (0.05°, 5 s)'], ['att02', 'gyro attitude, softer (0.2°, 5 s)']], def: 'off' },
+  // 2026-10-30 (claude/ISSUES.md G28): the IMU start-up of the mono-inertial mode; defaults = original
+  { key: 'imustart', label: 'IMU start-up (IMU on)', page: 'ar', when: (o) => o.imu === 'on',
+    values: [['stock', 'original (a loss in the first ~15 s of motion resets the map)'],
+             ['tolerant', 'tolerant (keep the map and relocalise, no motion-check reset, 30 inliers)'],
+             ['tolerantgyro', 'tolerant + gyro prediction and coasting before the IMU starts']], def: 'stock' },
+  // 2026-10-30 (claude/PLAN.md 4d, approach D): the pose from EqVIO (equivariant filter VIO, slam/eqvio_web) instead of
+  // ORB-SLAM3; the ORB-SLAM3 options above then do nothing
+  { key: 'vio', label: 'Tracking engine', page: 'ar', values: [['webvio', 'WebVIO (ORB-SLAM3 parts; default)'],
+                                                             ['eqvio', 'EqVIO filter (experimental: metric, gravity-aligned, no map)']], def: 'webvio' },
+];
+
+// Named presets (AR page): each sets every option; keys it does not list take the page default. Phone test plans
+// (claude/PHONE.md) refer to them by name, and the session log records which one was active.
+export const PRESETS = [
+  { key: 'stock', label: 'Baseline (ORB every frame)', set: { tracker: 'stock', reloc: '3', anchor: 'stock' },
+    note: 'ORB features on every frame and the original ORB-SLAM3 behaviour (a new map after 3 s lost): the reference the other presets are compared with.' },
+  { key: 'hybrid', label: 'Hybrid ORB + KLT (default)', set: {},
+    note: 'Cheap KLT optical-flow frames between ORB frames (about 2× faster tracking); keeps the map when lost.' },
+  { key: 'fast', label: 'Hybrid, fastest', set: { kltmax: '4', motion: 'time', map: 'light' },
+    note: 'Up to 4 KLT frames, motion prediction scaled to the frame interval, lighter local mapping (best phone fps so far).' },
+  // round 2 (2026-10-17): "Hybrid, fastest" plus one new algorithm each (claude/RESEARCH.md tracker, PHONE.md round 2)
+  { key: 'fastq', label: 'Fastest + quick solver', set: { kltmax: '4', motion: 'time', map: 'light', pose: 'fast' },
+    note: 'Hybrid fastest with the pose solved without a g2o graph: the same result in less time (1.5-2.4x faster pose step).' },
+  { key: 'fastqp', label: 'Fastest + quick solver + parallel ORB', set: { kltmax: '4', motion: 'time', map: 'light', pose: 'fast', orbpar: 'parallel' },
+    note: 'As quick solver, plus the ORB pyramid levels extracted on 4 threads (may be slower if the phone puts them on its small cores).' },
+  { key: 'grecover', label: 'Fastest + gyro recovery', set: { kltmax: '4', motion: 'time', map: 'light', gyro: 'on', recover: 'coast', hold: 'gyro' },
+    note: 'When tracking is lost: search the map around the gyro-rotated last pose first (good when you look away and back), and keep the tree on screen through brief losses.' },
+  { key: 'small', label: 'Fastest + small vocabulary', set: { kltmax: '4', motion: 'time', map: 'light', voc: 'small' },
+    note: '5 MB vocabulary instead of 49 MB: faster first load and less memory; same robustness on datasets, slightly less accurate.' },
+  { key: 'next', label: 'WebVIO next (dataset winners)', set: { kltmax: '4', motion: 'time', map: 'light', pose: 'fast', gyro: 'on',
+    init: 'gyro', recover: 'coast', hold: 'gyro' },
+    note: 'Quick solver + gyro start + gyro recovery + holding the tree through blips: the additions that helped on datasets (2026-10-17).' },
+  // round 3 (2026-10-18)
+  { key: 'fastflow', label: 'Fastest + 4-thread optical flow', set: { kltmax: '4', motion: 'time', map: 'light', kltpar: 'parallel' },
+    note: 'The KLT optical flow split over 4 threads (the browser build of OpenCV runs it on one). Same tracks as one thread; less time per KLT frame.' },
+  // round 4 (2026-10-18 evening)
+  { key: 'gbridge', label: 'Fastest + gyro recovery + continue the map after turning', set: { kltmax: '4', motion: 'time', map: 'light', gyro: 'on', recover: 'coast', hold: 'gyro', bridge: 'gyro' },
+    note: 'Gyro recovery, plus: after turning away to an unmapped view (bed -> PC), the new view is added to the same map instead of waiting 10 s and starting a new map. Your recordings: fewer maps; with a tree placed no gain; worse on datasets.' },
+  { key: 'gfastba', label: 'Fastest + gyro recovery + fast local BA', set: { kltmax: '4', motion: 'time', map: 'light', gyro: 'on', recover: 'coast', hold: 'gyro', lba: 'fast' },
+    note: 'Gyro recovery with the local bundle adjustment solved by our own solver: the same result as g2o in about a quarter of the time, so mapping keeps up and the map keeps growing into new areas (walking around the tree, panning to the PC).' },
+  { key: 'beta', label: 'WebVIO beta: quick solver + gyro recovery + fast local BA + 4-thread flow', set: { kltmax: '4', motion: 'time', map: 'light', pose: 'fast', gyro: 'on', recover: 'coast', hold: 'gyro', lba: 'fast', kltpar: 'parallel' },
+    note: 'The parts that felt best on the phone together (18 Oct): quick pose solver, gyro recovery, our own local BA solver (the map keeps growing) and optical flow on 4 threads. Parallel ORB left out (slower on the Pixel 9), gyro start left out.' },
+  { key: 'imu', label: 'IMU (visual-inertial)', set: { imu: 'on', tracker: 'stock' },
+    note: 'Visual-inertial mode with the phone IMU: real-world scale and gravity. Experimental; ORB on every frame. Needs a calibrated camera and the IMU time offset.' },
+  { key: 'imufast', label: 'IMU, tuned for speed', set: { imu: 'on', tracker: 'stock', motion: 'time', features: '600', levels: '6', map: 'light' },
+    note: 'IMU plus time-scaled motion, light ORB and lighter local mapping (tests whether speed is what breaks IMU mode).' },
+  // 2026-10-30 (claude/PLAN.md 4d: full IMU, approaches B and A)
+  { key: 'betascale', label: 'WebVIO beta + metric scale (filter)', set: { kltmax: '4', motion: 'time', map: 'light', pose: 'fast', gyro: 'on', recover: 'coast', hold: 'gyro', lba: 'fast', kltpar: 'parallel', scale: 'filter' },
+    note: 'WebVIO beta with the accelerometer scale from the loosely coupled filter (Kalman filters over a scale grid; synthetic set, phone IMU: a scale in 4-10 of 12 runs per scenario, median error 0.5-9 %, none on fast turns; your brisk 1 m slides: within 0.5 % after 17 s). Tracking is the same as beta.' },
+  // 2026-11-01 (claude/ISSUES.md G35)
+  { key: 'betagyro', label: 'WebVIO beta + metric scale + gyro attitude (map collapse fix)', set: { kltmax: '4', motion: 'time', map: 'light', pose: 'fast', gyro: 'on', recover: 'coast', hold: 'gyro', lba: 'fast', kltpar: 'parallel', scale: 'filter', gyropose: 'att' },
+    note: 'WebVIO beta + metric scale with the gyro rotation held in the pose solve: on the synthetic set the map stopped collapsing while walking around the object (collapsed runs 5-11 → 1 of 12 per scene, orientation within 1°) and the metric scale settled far more often. Expect the same speed as beta.' },
+  // 2026-11-02 (claude/ISSUES.md G22, PLAN §0): the phone test of mapping the room before placing
+  { key: 'mapfirst', label: 'WebVIO beta + gyro attitude + cov2 + whole-map relocalisation + floor depth (map the room first)', set: { kltmax: '4', motion: 'time', map: 'light', pose: 'fast', gyro: 'on', recover: 'coast', hold: 'gyro', lba: 'fast', kltpar: 'parallel', scale: 'filter', gyropose: 'att', newarea: 'cov2', relocall: 'global', refine: 'on' },
+    note: 'For mapping the whole room before placing the tree: the beta + metric scale + gyro attitude preset, extra keyframes and points in new areas (cov2), the whole map searched when lost (back sooner from a new angle; frames are slower while lost) and the tree depth following the floor. Synthetic set vs beta + metric scale + gyro attitude (combo_1102): walking through the flat tracked 3 → 28 % (flatmap 23 → 81 %); while lost, more dropped frames (flat 118 → 311 per run, before the ~5x faster whole-map search of 2 Nov); the tree badly off in 13 of 168 runs vs 6 of 168.' },
+  { key: 'imutol', label: 'IMU, tolerant start-up', set: { imu: 'on', tracker: 'stock', imustart: 'tolerant' },
+    note: 'Visual-inertial mode whose start-up keeps the map on a loss and has no motion-check reset (synthetic set: resets ~0, start-up completed far more often, but tracking still well below WebVIO beta).' },
+  { key: 'eqvio', label: 'EqVIO filter (experimental)', set: { vio: 'eqvio' },
+    note: 'Experimental, a different engine: EqVIO, a filter that fuses camera and IMU tightly (metric size and gravity from the start; no map, so no relocalisation and slow drift). Synthetic set (phone IMU, 6 runs each): fast turns held in 4, orbit 6, AR 5; shake and walk diverged in 5. Your 17 recordings: it ran away on 16-17 whatever its start depth (1 / 1.5 / 2 / 3 m); the brisk 1 m slides came out 0.89 / 1.30 / 0.97 m / ran away, and only at the full 30 fps. Expect resets. Needs the IMU time offset (imudt).' },
+];
+
+// Sets every option of `page` from a preset (unlisted keys: page default, then option default)
+export function applyPreset(o, preset, pageDefaults = {}, page = '') {
+  for (const d of OPTIONS) if ((!d.page || d.page === page) && !(d.device && !(d.key in preset.set) && d.key in o)) o[d.key] = preset.set[d.key] ?? pageDefaults[d.key] ?? d.def;
+  return o;
+}
+
+// Key of the preset the options equal (options hidden by `when`, e.g. KLT knobs with stock tracking, are ignored), or 'custom'
+export function matchPreset(o, pageDefaults = {}, page = '') {
+  const p = PRESETS.find((pr) => OPTIONS.every((d) => (d.page && d.page !== page) || !(d.key in o) || (d.when && !d.when(o)) || (d.device && !(d.key in pr.set)) ||
+                                                      o[d.key] === (pr.set[d.key] ?? pageDefaults[d.key] ?? d.def)));
+  return p ? p.key : 'custom';
+}
+
+// pageDefaults: per-page defaults (e.g. the AR page relocalises longer); URL parameters override them.
+// page: options marked with a page (e.g. 'ar') exist only there; the returned object holds the page's options.
+export function optionsFromParams(params, pageDefaults = {}, page = '') {
+  const o = {};
+  for (const d of OPTIONS) if (!d.page || d.page === page) o[d.key] = params.get(d.key) ?? pageDefaults[d.key] ?? d.def;
+  return o;
+}
+
+// URL parameters for the options that differ from the page defaults (the same as optionsFromParams got)
+export function optionsToParams(o, params = new URLSearchParams(), pageDefaults = {}) {
+  for (const d of OPTIONS) {
+    if (!(d.key in o)) continue;
+    if (o[d.key] !== (pageDefaults[d.key] ?? d.def)) params.set(d.key, o[d.key]); else params.delete(d.key);
+  }
+  return params;
+}
+
+export function describeOptions(o) {
+  return OPTIONS.filter((d) => d.key in o && (!d.when || d.when(o))).map((d) => `${d.key}=${o[d.key]}`).join(' ');
+}
+
+// ORB-SLAM3 settings text + options -> settings text
+export function applyOptions(yaml, o) {
+  let y = yaml;
+  if (Number(o.features) > 0) y = y.replace(/(ORBextractor\.nFeatures:\s*)\d+/, `$1${Number(o.features)}`);
+  if (Number(o.levels) > 0) y = y.replace(/(ORBextractor\.nLevels:\s*)\d+/, `$1${Number(o.levels)}`);
+  const extra = [];
+  if (o.tracker === 'klt') {
+    extra.push('Web.KLT.Enable: 1', `Web.KLT.MaxConsecutive: ${Number(o.kltmax)}`, `Web.KLT.WinSize: ${Number(o.kltwin)}`,
+               `Web.KLT.Levels: ${Number(o.kltlev)}`, `Web.KLT.FBThreshold: ${o.kltfb === '0' ? 0 : 1.0}`,
+               `Web.KLT.MaxFlow: ${Number(o.kltflow)}`, `Web.KLT.MinInlierFrac: ${Number(o.kltfrac)}`);
+  }
+  if (Number(o.reloc) !== 3) extra.push(`Web.Track.RelocTimeout: ${Number(o.reloc)}`);
+  if (o.desc === 'teblid') extra.push('Web.Descriptor: 1');  // the page also loads the TEBLID vocabulary (vocabUrl)
+  if (o.motion === 'time') extra.push('Web.Track.TimeScaledMotion: 1');  // live camera: prediction scaled to the frame interval
+  if (o.map === 'light') extra.push('Web.LBA.MaxOptKFs: 20', 'Web.LBA.MaxFixedKFs: 20', 'Web.Mapping.Neighbors: 15');
+  if ((o.gyro === 'on' || o.init === 'gyro' || (o.bridge && o.bridge !== 'off')) && o.imu !== 'on') extra.push('Web.Gyro.Prior: 1');  // + IMU.T_b_c1 (ar.js adds the phone IMU block)
+  if (o.tracker === 'klt' && o.kltnorm === 'on') extra.push('Web.KLT.Normalize: 1');
+  if (o.tracker === 'klt' && o.kltpar === 'parallel') extra.push('Web.KLT.Parallel: 1');  // LK points split over 4 threads
+  if (o.newarea === 'cov' || o.newarea === 'cov2') extra.push('Web.KF.Coverage: 0.4');  // keyframes for new textured areas
+  if (o.newarea === 'cov2') extra.push('Web.Map.MinBaseline: 0.005', 'Web.Map.MaxCosParallax: 0.99995');  // + points from smaller baselines
+  if (o.relocall === 'global') extra.push('Web.Reloc.Global: 10', 'Web.Reloc.GlobalDesc: 1');  // every 10th lost frame, all descriptors
+  if (o.rot === 'far') extra.push('Web.Rot.FarPoints: 1');  // pure-rotation prototype (LocalMapping::WebCreateFarPoints)
+  if (o.rot === 'inf') extra.push('Web.Rot.FarPoints: 2');  // the same far points as points at infinity in the pose solve
+  if (o.rot === 'inf3') extra.push('Web.Rot.FarPoints: 3');  // + kept out of relocalisation, Sim3 and keyframe culling
+  if (o.pose === 'fast') extra.push('Web.Track.FastPose: 1');
+  if (o.orbpar === 'parallel') extra.push('Web.ORB.Parallel: 1');
+  if (o.orbspread === 'ssc') extra.push('Web.ORB.SSC: 1');  // ORBextractor.cc WebSSC instead of DistributeOctTree
+  if (o.recover === 'coast') extra.push('Web.Track.Coast: 2', 'Web.Track.CoastTime: 3');  // 3 s: looking away and back (gyro)
+  if (o.init === 'quick') extra.push('Web.Init.MinMatches: 60', 'Web.Init.MinParallax: 0.5', 'Web.Init.MinTriangulated: 40');
+  if (o.init === 'gyro' && o.imu !== 'on') extra.push('Web.Init.Gyro: 1');
+  if (o.kf === 'fewer') extra.push('Web.KF.RefRatio: 0.8');
+  if (o.lba === 'fast') extra.push('Web.LBA.Fast: 1');  // own local BA solver (Optimizer.cc WebBASolveLM, G22)
+  if ((o.scale === 'on' || o.scale === 'filter') && o.imu !== 'on') extra.push('Web.Scale.Online: 1');  // WebScale.h; an estimate, tracking unchanged
+  if (o.scale === 'filter' && o.imu !== 'on') extra.push('Web.Scale.Method: 1');  // WebScaleFilter.h (2026-10-30, PLAN 4d approach B)
+  if (o.kfq === '2' || o.kfq === '3') extra.push(`Web.KF.BusyQueue: ${o.kfq}`);  // map keeps growing when mapping is slow (G22)
+  if ((o.gyropose === 'att' || o.gyropose === 'att02') && o.gyro === 'on' && o.imu !== 'on')  // G35 (Tracking::WebSetRotPrior)
+    extra.push(`Web.Gyro.PoseSigma: ${o.gyropose === 'att' ? 0.05 : 0.2}`, 'Web.Gyro.PoseTau: 5');
+  if (o.bridge === 'tv' && o.imu !== 'on') extra.push('Web.Turn.Bridge: 1');  // lost after turning: map the new view in this map
+  if (o.bridge === 'gyro' && o.imu !== 'on') extra.push('Web.Turn.Bridge: 2');
+  if (o.voc === 'small' && o.desc !== 'teblid') extra.push('Web.BoW.LevelsUp: 3');  // L5 tree: BoW index at the stock depth
+  const add = (line) => { if (!extra.some((e) => e.split(':')[0] === line.split(':')[0])) extra.push(line); };  // no duplicate keys (OpenCV rejects them)
+  if (o.imu === 'on' && (o.imustart === 'tolerant' || o.imustart === 'tolerantgyro'))  // WebConfig.h Web.Imu.*
+    ['Web.Imu.KeepMap: 1', 'Web.Imu.MinInliersPreInit: 30', 'Web.Imu.MotionCheck: 0'].forEach(add);
+  if (o.imu === 'on' && o.imustart === 'tolerantgyro')  // the IMU samples also feed the gyro prior / coasting (stamps already shifted by imudt)
+    ['Web.Imu.WebGyro: 1', 'Web.Gyro.Prior: 1', 'Web.Track.Coast: 2', 'Web.Track.CoastTime: 3'].forEach(add);
+  return extra.length ? `${y.replace(/\s*$/, '\n')}\n# web options (web/options.js)\n${extra.join('\n')}\n` : y;
+}
+
+// Renders <label><select> controls into `container`; calls onChange(options) after every change.
+export function buildOptionsUI(container, o, onChange = () => {}) {
+  container.textContent = '';
+  const rows = [];
+  for (const d of OPTIONS) {
+    if (!(d.key in o)) continue;
+    const label = document.createElement('label');
+    label.className = 'opt';
+    label.append(`${d.label} `);
+    const sel = document.createElement('select');
+    for (const [v, text] of d.values) sel.append(new Option(text, v));
+    sel.value = o[d.key];
+    sel.onchange = () => { o[d.key] = sel.value; refresh(); onChange(o); };
+    label.append(sel);
+    container.append(label);
+    rows.push([d, label]);
+  }
+  const refresh = () => { for (const [d, label] of rows) label.hidden = !!d.when && !d.when(o); };
+  refresh();
+  return o;
+}

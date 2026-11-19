@@ -1,0 +1,7 @@
+# replay_arms.sh arms for the map-growth issue (ISSUES G22) on the 18 Oct evening recordings (walk around the tree, slow
+# pan bed -> PC -> back, roll). KeepMap = the page once a tree is placed. stockmap = without the "light" mapping lines.
+fast|fast|
+fast_keep|fast|Web.Track.KeepMap: 1
+grecover_dt_keep|grecover|Web.Gyro.TimeOffset: -0.088;Web.Track.KeepMap: 1
+next_dt_keep|next|Web.Gyro.TimeOffset: -0.088;Web.Track.KeepMap: 1
+grecover_dt_keep_stockmap|grecover|Web.Gyro.TimeOffset: -0.088;Web.Track.KeepMap: 1;-Web.LBA.MaxOptKFs;-Web.LBA.MaxFixedKFs;-Web.Mapping.Neighbors

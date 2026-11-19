@@ -1,0 +1,6 @@
+# replay_arms.sh arms: mono-inertial on the phone recordings (page presets IMU / IMU tuned for speed), with and without
+# the measured -88 ms IMU offset (runner --imu-dt, as the AR page's imudt); the visual WebVIO beta preset as reference
+beta_dt|beta|Web.Gyro.TimeOffset: -0.088
+imu_dt88|imu|--mode mono_inertial;--imu-dt -88
+imu_dt0|imu|--mode mono_inertial
+imufast_dt88|imufast|--mode mono_inertial;--imu-dt -88

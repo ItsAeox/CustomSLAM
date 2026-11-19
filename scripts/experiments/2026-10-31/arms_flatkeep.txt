@@ -1,0 +1,5 @@
+# replay_arms.sh arms (1 Nov, G22): the flat keep-map arms of arms_flat2.txt again with --keep-map-at from the first tracked frame
+# with the object placeable (848dfa4; before, keep went on at 5.8 s even with no map yet, so a map started later was kept from its first frame)
+keep|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;--keep-map-at 5.8;--tap-at 5.8
+keep_g005t5|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.05;Web.Gyro.PoseTau: 5;--keep-map-at 5.8;--tap-at 5.8
+keep_g02t5|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;Web.Gyro.PoseSigma: 0.2;Web.Gyro.PoseTau: 5;--keep-map-at 5.8;--tap-at 5.8

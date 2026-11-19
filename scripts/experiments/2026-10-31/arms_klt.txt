@@ -1,0 +1,5 @@
+# replay_arms.sh arms (31 Oct, ISSUES G31): WebVIO beta + the scale filter, and the same with EqVIO's KLT window / pyramid
+# (GIFT: 21 px, 4 levels; WebVIO's KLT levels option max 3), and that with up to 8 KLT frames between ORB frames (beta: 4)
+beta_scaleF|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1
+beta_scaleF_klt21L3|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;-Web.KLT.WinSize;-Web.KLT.Levels;Web.KLT.WinSize: 21;Web.KLT.Levels: 3
+beta_scaleF_klt21L3_max8|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1;Web.Scale.Method: 1;-Web.KLT.WinSize;-Web.KLT.Levels;-Web.KLT.MaxConsecutive;Web.KLT.WinSize: 21;Web.KLT.Levels: 3;Web.KLT.MaxConsecutive: 8

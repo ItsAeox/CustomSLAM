@@ -20,7 +20,45 @@ static int  GetHybridEveryN()      { return gSys.getHybridEveryN(); }
 static int      GetRanOrbThisFrame() { return gSys.getRanOrbThisFrame() ? 1 : 0; }
 static int      GetOrbKFCount()      { return gSys.getOrbKFCount(); }
 static uint32_t GetHybridFrameMod()  { int n = gSys.getHybridEveryN(); return (uint32_t)(gSys.getHybFrameIdx() % std::max(1,n)); }
+static int    GetEHModel()       { return gSys.getEHModel(); }
+static int    GetEHInliersE()    { return gSys.getEHInliersE(); }
+static int    GetEHInliersH()    { return gSys.getEHInliersH(); }
+static double GetEHParallaxDeg() { return gSys.getEHParallaxDeg(); }
+static int GetNumKFs() { return gSys.getNumKFs(); }
+static int GetNumMPs() { return gSys.getNumMPs(); }
+static double GetLastImuMS() { return gSys.getLastImuMS(); }
+static int    GetImuUsedThisFrame() { return gSys.getImuUsedThisFrame(); }
+static double GetImuHz()            { return gSys.getImuHz(); }
+static int    GetImuUsedCount()     { return gSys.getImuSamplesUsedThisFrame(); }
+static int    GetImuBufSize()       { return gSys.getImuBufSize(); }
+static int GetOrbDescInputPtsThisFrame() { return gSys.getOrbDescInputPtsThisFrame(); }
+static int GetOrbDescRowsThisFrame() { return gSys.getOrbDescRowsThisFrame(); }
+static int GetOrbFullDetectCountThisFrame() { return gSys.getOrbFullDetectCountThisFrame(); }
 
+static emscripten::val GetTwc() {
+  auto t = gSys.getTwc();
+  emscripten::val a = emscripten::val::array();
+  a.set(0, t[0]); a.set(1, t[1]); a.set(2, t[2]);
+  return a;
+}
+static emscripten::val GetRwc() {
+  auto R = gSys.getRwc();
+  emscripten::val a = emscripten::val::array();
+  for (int i = 0; i < 9; ++i) a.set(i, R[i]);
+  return a;
+}
+static emscripten::val GetYPR() {
+  auto r = gSys.getYPR();
+  emscripten::val a = emscripten::val::array();
+  a.set(0, r[0]); a.set(1, r[1]); a.set(2, r[2]);
+  return a;
+}
+
+static emscripten::val GetPathXZ() {
+  static std::vector<float> buf; // stable storage for typed view
+  buf = gSys.getPathXZ();
+  return emscripten::val(emscripten::typed_memory_view(buf.size(), buf.data()));
+}
 
 // init from JS
 void initSystem(int width, int height, double fx, double fy, double cx, double cy) {
@@ -54,6 +92,10 @@ val getPoints2D() {
   return jsArr;
 }
 
+bool setKittiCalibFromTexts(std::string cam2cam, std::string velo2cam, std::string imu2velo) {
+  return gSys.setKittiCalibFromTexts(cam2cam, velo2cam, imu2velo);
+}
+
 emscripten::val getPoints2D_Typed() {
   static std::vector<float> buf; // lifetime stable
   auto pts = gSys.getPoints2D(); // doubles
@@ -68,6 +110,40 @@ static emscripten::val GetLastProcWH() {
   out.set(0, a[0]); out.set(1, a[1]);
   return out;
 }
+
+void feedImuSample(double ts, double ax, double ay, double az, double gx, double gy, double gz) {
+  gSys.feedImu(ts, ax, ay, az, gx, gy, gz);
+}
+
+void setImuToCamQuat(double qx, double qy, double qz, double qw,
+  double px, double py, double pz) {
+gSys.setImuToCamQuat(qx,qy,qz,qw,px,py,pz);
+}
+
+static void SetKb4Distortion(double k1,double k2,double k3,double k4) {
+  gSys.setKb4Distortion(k1,k2,k3,k4);
+}
+static void SetUseFisheye(bool on) {
+  gSys.setUseFisheye(on);
+}
+
+static void SetAccelIsSpecificForce(bool on) {
+  gSys.setAccelIsSpecificForce(on);
+}
+
+static emscripten::val GetImuDeltaYPR() {
+  auto r = gSys.getImuDeltaYPR();
+  emscripten::val a = emscripten::val::array();
+  a.set(0, r[0]); a.set(1, r[1]); a.set(2, r[2]);
+  return a;
+}
+static emscripten::val GetImuDeltaRod() {
+  auto r = gSys.getImuDeltaRodrigues();
+  emscripten::val a = emscripten::val::array();
+  a.set(0, r[0]); a.set(1, r[1]); a.set(2, r[2]);
+  return a;
+}
+static double GetImuDeltaAngleDeg() { return gSys.getImuDeltaAngleDeg(); }
 
 EMSCRIPTEN_BINDINGS(vio_bindings_pointtrack) {
   function("initSystem",   &initSystem);
@@ -91,5 +167,32 @@ EMSCRIPTEN_BINDINGS(vio_bindings_pointtrack) {
   function("getRanOrbThisFrame", &GetRanOrbThisFrame);
   function("getOrbKFCount",      &GetOrbKFCount);
   function("getHybridFrameMod",  &GetHybridFrameMod);
+  function("getEHModel",        &GetEHModel);
+  function("getEHInliersE",     &GetEHInliersE);
+  function("getEHInliersH",     &GetEHInliersH);
+  function("getEHParallaxDeg",  &GetEHParallaxDeg);
+  function("getPathXZ", &GetPathXZ);
+  function("getNumKFs", &GetNumKFs);
+  function("getNumMPs", &GetNumMPs);  
+  function("getTwc", &GetTwc);
+  function("getRwc", &GetRwc);
+  function("getYPR", &GetYPR);
+  function("feedImuSample", &feedImuSample);
+  function("getLastImuMS", &GetLastImuMS);
+  function("getImuUsedThisFrame", &GetImuUsedThisFrame);
+  function("getImuHz",            &GetImuHz);
+  function("getImuUsedCount",     &GetImuUsedCount);
+  function("getImuBufSize",       &GetImuBufSize);
+  function("getImuDeltaYPR", &GetImuDeltaYPR);
+  function("getImuDeltaRod", &GetImuDeltaRod);
+  function("getImuDeltaAngleDeg", &GetImuDeltaAngleDeg);
+  function("setKittiCalibFromTexts", &setKittiCalibFromTexts);
+  function("setImuToCamQuat", &setImuToCamQuat);
+  function("setKb4Distortion", &SetKb4Distortion);
+  function("setUseFisheye",   &SetUseFisheye);
+  function("setAccelIsSpecificForce", &SetAccelIsSpecificForce);
+  function("getOrbDescInputPtsThisFrame", &GetOrbDescInputPtsThisFrame);
+  function("getOrbDescRowsThisFrame", &GetOrbDescRowsThisFrame);
+  function("getOrbFullDetectCountThisFrame", &GetOrbFullDetectCountThisFrame);
 
 }

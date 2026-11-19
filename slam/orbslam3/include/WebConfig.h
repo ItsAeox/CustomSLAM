@@ -1,0 +1,403 @@
+// ORBSLAM3_WEB (web port, not upstream): runtime knobs for the browser build, read from optional "Web.*" keys in the
+// settings file when the System starts. Every default reproduces stock ORB-SLAM3 exactly, so a settings file without
+// Web.* keys runs the unmodified algorithm (used as the baseline in every comparison).
+#ifndef ORBSLAM3_WEBCONFIG_H
+#define ORBSLAM3_WEBCONFIG_H
+
+#include <iostream>
+#include <string>
+
+#include <opencv2/core.hpp>
+#include <opencv2/core/persistence.hpp>
+
+namespace ORB_SLAM3
+{
+
+struct WebConfig
+{
+    int lbaMaxOptKFs = 0;      // Web.LBA.MaxOptKFs: optimised keyframes in local BA, best-covisible first (0 = all, stock)
+    int lbaMaxFixedKFs = 0;    // Web.LBA.MaxFixedKFs: fixed keyframes, most observations of local points first (0 = all, stock)
+    int lbaIterations = 10;    // Web.LBA.Iterations: Levenberg-Marquardt iterations of local BA (stock 10)
+    int lbaFast = 0;           // Web.LBA.Fast: local BA of monocular visual-only maps without a g2o graph (Optimizer.cc
+                               // WebBASolveLM): 1 = used, 2 = both solved, g2o kept, differences reported (check)
+    int mappingNeighbors = 0;  // Web.Mapping.Neighbors: covisible keyframes for triangulation / fusion (0 = stock: 30 mono)
+    int descriptor = 0;        // Web.Descriptor: 0 = ORB (rotated BRIEF, stock), 1 = TEBLID-256 (needs a TEBLID vocabulary)
+    int orbParallel = 0;       // Web.ORB.Parallel: the pyramid levels of ORB extraction (FAST + octree + orientation,
+                               // blur + descriptors) run on this many threads (1 = 4 threads; 0 = serial, stock); same
+                               // keypoints and descriptors. Own pool: OpenCV's WASM build has no parallel framework
+    int orbSSC = 0;            // Web.ORB.SSC: 1 = keypoints per level chosen by Suppression via Square Covering (Bailo et
+                               // al. 2018: strongest corners, homogeneous spread) instead of the octree (stock)
+    double relocTimeout = 3.0; // Web.Track.RelocTimeout: seconds of relocalisation in the current map before a new map (stock 3)
+    int rotFar = 0;            // Web.Rot.FarPoints: 1 = pure-rotation prototype (LocalMapping::WebCreateFarPoints): keyframe
+                               // pairs too close to triangulate give far points (on the ray at FarDepth x the scene median
+                               // depth), kept out of local BA, fusion and the AR plane fits. 2 = the same, but in the
+                               // pose solves (g2o + fast) a far point is a point at infinity: its mean viewing direction,
+                               // moved by the rotation only (mode 1 kept the made-up depth: rot_screen ATE x1.66). 3 = mode 2
+                               // and far points also kept out of relocalisation PnP, Sim3 (loop / merge) and keyframe-culling
+                               // counts (mode 2 still broke room1 / MH04 there). 0 = stock
+    double rotFarDepth = 10.0; // Web.Rot.FarDepth: far-point depth in scene median depths
+    int rotFarLife = 6;        // Web.Rot.FarLife: keyframes a far point lives (it constrains rotation only while the camera
+                               // stays near where it was made)
+    double kfCoverage = 0;     // Web.KF.Coverage: > 0 = also insert a keyframe (even while local mapping is busy, queue < 2)
+                               // when this share of the textured image cells (4x4 grid, >= 3 keypoints) holds no tracked map
+                               // point: new textured area coming into view (turning toward unmapped parts). 0 = stock
+    double triMinBaseline = 0.01;  // Web.Map.MinBaseline: monocular triangulation needs baseline / scene depth >= this (stock 0.01)
+    double triMaxCosParallax = 0.9998;  // Web.Map.MaxCosParallax: and the rays' cos(parallax) below this (stock 0.9998, ~1.1 deg)
+    double mapLoadWait = 20.0; // Web.Map.LoadWait: after a room map is loaded (System::WebLoadMap), seconds of relocalisation
+                               // into it before a new map is started; < 0 = wait until relocalised
+    int timeScaledMotion = 0;  // Web.Track.TimeScaledMotion: 1 = the constant-velocity prediction is rescaled to the
+                               // actual frame interval (live cameras drop frames when tracking is slow). 0 = stock
+    int keepMap = 0;           // Web.Track.KeepMap: 1 = a tracking loss never resets or replaces the active map; the tracker
+                               // relocalises in it until the camera returns (AR anchors stay valid). Also set at runtime
+                               // by the AR page while a cactus is placed (bindings: setKeepMap). 0 = stock.
+
+    // KLT tracking frames (monocular; see Tracking::TrackKLT). Off by default = stock ORB-SLAM3 (ORB on every frame).
+    int kltEnable = 0;         // Web.KLT.Enable: 1 = track some frames with pyramidal LK instead of ORB extraction
+    int kltMaxConsecutive = 2; // Web.KLT.MaxConsecutive: at most this many KLT frames between two ORB frames
+    int kltMinTracked = 60;    // Web.KLT.MinTracked: map-point tracks that must survive LK + forward-backward check
+    int kltMinInliers = 40;    // Web.KLT.MinInliers: pose-optimisation inliers to accept the KLT pose
+    int kltWinSize = 15;       // Web.KLT.WinSize: LK window (pixels). 15 vs 21: LK 2.2x cheaper in WASM, same ATE (MH01)
+    int kltLevels = 2;         // Web.KLT.Levels: LK pyramid levels above full resolution (flow is predicted, so 2 suffice)
+    double kltFBThreshold = 1.0;  // Web.KLT.FBThreshold: max forward-backward error (pixels); <= 0: no backward pass
+    int kltIterations = 30;    // Web.KLT.Iterations: max LK iterations per pyramid level
+    double kltMaxFlow = 0;     // Web.KLT.MaxFlow: use ORB when the predicted median image motion exceeds this (px; 0 = off)
+    double kltMinInlierFrac = 0;  // Web.KLT.MinInlierFrac: KLT pose inliers must reach this fraction of the last ORB
+                               // frame's inliers, else the frame is re-tracked with ORB (0 = off)
+    int kltParallel = 0;       // Web.KLT.Parallel: 1 = the LK points are split over the shared thread pool (WebPool.h; same
+                               // result: every point is tracked on its own); 2 = both, serial result kept, mismatches and
+                               // timings reported (check). OpenCV's WASM build runs LK on one thread
+    int kltNormalize = 0;      // Web.KLT.Normalize: 1 = the LK pyramid is built from the image with its global mean and
+                               // contrast normalised (128 / 48): cancels exposure (gain/offset) changes between frames,
+                               // which plain LK's brightness-constancy model does not handle. ORB frames are unaffected
+    double rsReadout = 0;      // Web.RS.Readout: rolling-shutter readout time (s; top to bottom row) for the gyro-based
+                               // keypoint correction (Frame::WebRollingShutter; needs gyro samples); 0 = off. A negative
+                               // value flips the correction (sign check). Synthetic set: 0.02
+    int kltGyroWarp = 0;       // Web.KLT.GyroWarp: 1 = under fast rotation, LK runs from the last image warped by the
+                               // rotation-only homography of the predicted pose (K R_cl K^-1; R_cl from the gyro with
+                               // Web.Gyro.Prior): patches then match this frame's appearance (roll, foreshortening) up to
+                               // the translation parallax (ISSUES G31, 31 Oct)
+    double kltGyroWarpDeg = 2.0;  // Web.KLT.GyroWarpDeg: only when the predicted rotation since the last frame exceeds
+                               // this (deg; the warp + its pyramid cost a few ms)
+
+    int bowLevelsUp = 4;       // Web.BoW.LevelsUp: tree levels above the leaves for the BoW direct index (FeatureVector)
+                               // used by SearchByBoW (Frame/KeyFrame::ComputeBoW; stock 4, made for L = 6 trees). A smaller
+                               // vocabulary needs L - 2 to index at the same depth (100 nodes for k = 10).
+
+    // Keyframe policy (monocular, visual-only). 0 = stock. Fewer keyframes -> less mapping work and memory (G12, G14).
+    int kfBusyQueue = 0;       // Web.KF.BusyQueue: monocular, N > 0 = a keyframe that is due is queued while local mapping is
+                               // busy (up to N waiting), as stock does for stereo; stock mono refuses it, so mapping that
+                               // cannot keep up (the phone) stops the map from growing (ISSUES G22). Queued keyframes get
+                               // their points triangulated; local BA, neighbour fusion and culling wait until mapping
+                               // catches up (LocalMapping skips them while keyframes are queued)
+    int mapFuseQueued = 0;     // Web.Mapping.FuseQueued: 1 = neighbour search / point fusion also while keyframes are queued
+                               // (stock skips it then, with local BA); only local BA waits for mapping to catch up
+    double kfRefRatio = 0;     // Web.KF.RefRatio: insert a keyframe when tracked map points < ratio x the reference
+                               // keyframe's (Tracking::NeedNewKeyFrame; stock mono 0.9: lower = fewer keyframes)
+    int mapPriorPoints = 0;    // Web.Map.PriorPoints: visual-only, N > 0 = at each new keyframe up to N unmatched keypoints per
+                               // empty 4x4 image cell (no tracked map point) become map points at the median depth of the
+                               // tracked points in the neighbouring cells (ISSUES G22: walking out, the map's points lag the
+                               // turn). Searched with a wider window, weighted down in the pose solves, kept out of BA /
+                               // fusion / loop Sim3 / relocalisation / keyframe culling / plane fits, triangulated once a
+                               // later keyframe sees them with parallax (else culled like any new point)
+    double mapPriorWeight = 0.25; // Web.Map.PriorWeight: their weight in the pose solves
+    double mapPriorRadius = 4;    // Web.Map.PriorRadius: their search window factor in the local-map search
+    int mapLocalRecent = 0;    // Web.Map.LocalRecent: visual-only, N > 0 = the N newest keyframes of the map (in time) are
+                               // always in the local map that tracking searches (the IMU modes add 20; ISSUES G22)
+    int kfAfterReloc = -1;     // Web.KF.AfterReloc: frames after a relocalisation or coast recovery before a keyframe may be
+                               // inserted (-1 = stock: the camera fps, ~1 s). Walking out (ISSUES G22, walk_loss.py): the
+                               // few recoveries on the way out were all lost again within 1.2 s with no keyframe added
+    double cullRedundancy = 0; // Web.Mapping.CullRedundancy: cull a keyframe whose points are seen by >= 3 other
+                               // keyframes for more than this fraction (LocalMapping::KeyFrameCulling; stock 0.9: lower
+                               // = more culling)
+
+    // Gyro-aided prediction (visual-only modes; see Tracking::WebMotionPrediction). Off by default = stock.
+    int scaleOnline = 0;       // Web.Scale.Online: 1 = metric scale + gravity of the current map from the accelerometer,
+                               // online (WebScale.h; needs the IMU samples — page gyro feed / runner --gyro — and
+                               // IMU.T_b_c1); an estimate only, tracking unchanged
+    double scaleWindow = 2.0;  // Web.Scale.Window: window length (s) of the scale estimator
+    int scaleMethod = 0;       // Web.Scale.Method: 0 = window least squares (WebScale.h), 1 = loosely coupled filter, a bank
+                               // of Kalman filters over a scale grid (WebScaleFilter.h, eval/vio_filter.py; PLAN 4d approach B)
+    int gyroPrior = 0;         // Web.Gyro.Prior: 1 = the rotation of the frame-to-frame prediction (motion model and
+                               // KLT initial flow) comes from the gyroscope integrated between the two frames
+    double gyroTimeOffset = 0; // Web.Gyro.TimeOffset: seconds added to frame times to get IMU times (> 0: IMU stamps late)
+    double gyroPoseSigma = 0;  // Web.Gyro.PoseSigma: > 0 = the gyro-predicted rotation (last frame's rotation and the gyro
+                               // rotation since) is also a prior of the pose solve, with this 1-sigma in degrees per frame
+                               // interval (x sqrt(dt / 33 ms) for longer gaps); needs Web.Gyro.Prior. Motion-model and KLT
+                               // frames only (not relocalisation, coasting, the reference-keyframe fallback). ISSUES G35: a
+                               // purely visual solve can explain walking around a floor spot as turning about the line
+                               // of sight, ignoring the gyro; then the map stops translating. 0 = off (stock)
+    double gyroPoseTau = 0;    // Web.Gyro.PoseTau: > 0 = the prior is a gyro attitude (Tracking::mWebAttRcw) integrated
+                               // across frames and pulled towards each good frame's pose with this time constant (s), so a
+                               // small per-frame visual bias cannot accumulate; 0 = relative to the last frame's pose
+    int gyroMinInliers = 0;    // Web.Gyro.MinInliers: > 0 = a monocular frame whose pose solve had the gyro rotation prior
+                               // (Web.Gyro.PoseSigma) stays tracked with this many local-map inliers instead of 30 (the
+                               // rotation is held, the points only fix the position; stock IMU mode accepts 15). G22:
+                               // walking through a doorway, tracked points fall below 30 before new ones are triangulated.
+                               // 0 = stock
+    float gyroRbc[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};  // camera -> IMU body rotation, row-major (from IMU.T_b_c1)
+
+    // Loss recovery by coasting (monocular, visual-only; see Tracking::WebCoastTrack). Off by default = stock.
+    int coast = 0;             // Web.Track.Coast: 1 = while recently lost, search the local map around the last good pose
+                               // (rotated by the gyro when Web.Gyro.Prior is on) before BoW relocalisation; 2 = also, if
+                               // that fails, match the frame against the whole local map by descriptor + MLPnP RANSAC
+    double coastMaxTime = 1.5; // Web.Track.CoastTime: seconds after the last good frame during which coasting is tried
+    int coastMinInliers = 50;  // Web.Track.CoastMinInliers: pose inliers to accept the coasted pose (relocalisation: 50)
+    // Whole-map relocalisation (monocular, visual-only; Tracking::WebGlobalReloc). Off by default = stock. ISSUES G22: coming
+    // back into a room from another side, no keyframe has a similar view, so BoW relocalisation finds no candidate; here,
+    // while lost (after coasting and BoW relocalisation failed), every Nth frame's keypoints are matched by descriptor
+    // against every point of the current map, then MLPnP RANSAC, the local map around the inliers and the stock 50-inlier
+    // check of a relocalisation (and of the frames after it).
+    int relocGlobal = 0;       // Web.Reloc.Global: N > 0 = try on every Nth frame while lost; 0 = off
+    int relocGlobalDesc = 0;   // Web.Reloc.GlobalDesc: 0 = each point's representative descriptor, 1 = the descriptors of all
+                               // its observations (the point as seen from each keyframe: more tolerant of a new viewpoint)
+    int loopMinCoincidences = 3;  // Web.Loop.MinCoincidences: keyframes that must see the same common region (the current
+                               // one and its covisible ones, or consecutive ones) before a loop closure / map merge is
+                               // accepted (LoopClosing::NewDetectCommonRegions); stock 3. G22: coming back, the place is
+                               // recognised a few keyframes before the loop closes and the object snaps back
+
+    // Turn bridge (monocular, visual-only, needs Web.Gyro.Prior; see Tracking::WebTurnBridge). Off by default = stock.
+    // While lost after turning away (gyro rotation from the last good pose >= MinAngle, coasting and relocalisation
+    // failing), a two-view reconstruction of the new view is added to the CURRENT map at the gyro-propagated pose
+    // (camera centre held), scaled to the last reference keyframe's median depth, hung off that keyframe in the
+    // spanning tree: tracking resumes in the same map instead of waiting for the relocalisation timeout.
+    int turnBridge = 0;          // Web.Turn.Bridge: 1 = stock two-view reconstruction, accepted only if its rotation agrees
+                                 // with the gyro's (MaxRotDiff); 2 = the gyro two-view solve (WebGyroTwoView, Web.Init.Gyro)
+    double turnMinAngle = 20;    // Web.Turn.MinAngle: degrees turned away from the last good pose before bridging
+    double turnMaxRotDiff = 3;   // Web.Turn.MaxRotDiff: mode 1, degrees between the reconstruction's and the gyro's rotation
+    int turnIniFeatures = 0;     // Web.Turn.IniFeatures: 1 = while lost with the bridge on, frames get the map start's ORB
+                                 // extractor (5x features); the bridge matches finest-level keypoints only and needs
+                                 // Web.Init.MinMatches (walkdiag_1102: all 27,924 tries on the flat failed there)
+
+    int fastPose = 0;          // Web.Track.FastPose: motion-only pose optimisation of monocular frames (Optimizer.cc)
+                               // 0 = g2o (stock), 1 = the same problem solved without a g2o graph (WebPoseOptimization),
+                               // 2 = both on every call, g2o's result kept, differences and timings reported (check)
+    int fastPoseWarm = 0;      // Web.Track.FastPoseWarm: 1 = rounds 2-4 start from the previous round's pose (stock and
+                               // FastPose 1 restart every round from the initial pose)
+
+    // Monocular initialisation (two-view map), stock values by default. Lower = earlier first map, maybe a worse one.
+    int initMinMatches = 100;     // Web.Init.MinMatches: matches between the reference and current frame (else restart)
+    double initMinParallax = 1.0; // Web.Init.MinParallax: degrees (TwoViewReconstruction)
+    int initMinTriangulated = 50; // Web.Init.MinTriangulated: triangulated points of the two-view solution
+    double initFeatures = 5.0;    // Web.Init.Features: ORB features of the frames until the first map (and the map's first
+                                  // ~fps frames) as a multiple of ORBextractor.nFeatures (stock 5). Fewer = cheaper frames
+                                  // while the map starts (phone: 9-12 fps for ~3 s, PLAN 0), maybe a later or worse start
+    int initGyro = 0;             // Web.Init.Gyro: 1 = two-view initialisation with the gyro rotation (2-point RANSAC on
+                                  // the translation direction; needs Web.Gyro.Prior), stock reconstruction as fallback;
+                                  // 2 = also refine rotation + translation (maps later in ginit_ab: not used)
+
+    // Visual-inertial mode (IMU_MONOCULAR: runner --mode mono_inertial, AR page IMU on). Stock by default: until the IMU
+    // start-up completes (initialisation, then the visual-inertial BA stages 1 and 2 after 5 and 15 s of motion) any
+    // tracking loss resets the whole map, and the pose has no recovery but the IMU prediction (claude/ISSUES.md G28).
+    int imuKeepMap = 0;           // Web.Imu.KeepMap: 1 = during the start-up a tracking loss does not reset the map: the
+                                  // tracker relocalises visually in it as in visual mode (Web.Track.Coast if on, then BoW
+                                  // relocalisation; after Web.Track.RelocTimeout a new map, if it has > 10 keyframes). The
+                                  // keyframe-to-keyframe IMU preintegration runs on across the gap. After the start-up: stock
+    int imuMinInliersPreInit = 50;  // Web.Imu.MinInliersPreInit: local-map inliers a frame needs before the IMU is
+                                  // initialised (stock 50 in IMU mode; visual mode needs 30)
+    int imuMotionCheck = 1;       // Web.Imu.MotionCheck: 0 = no "not enough motion" reset (stock 1: within 10 s of the IMU
+                                  // initialisation, < 2 cm between the last three keyframes resets the map)
+    double imuViba1Time = 5;      // Web.Imu.Viba1Time: seconds of motion (> 5 cm over two keyframes) after the IMU
+                                  // initialisation before visual-inertial BA stage 1 (stock 5)
+    double imuViba2Time = 15;     // Web.Imu.Viba2Time: ... before stage 2, which completes the start-up (stock 15)
+    int imuWebGyro = 0;           // Web.Imu.WebGyro: 1 = in IMU mode the IMU samples also feed the web gyro features
+                                  // (Web.Gyro.Prior before the IMU initialisation, Web.Track.Coast, Web.Init.Gyro); their
+                                  // stamps are already on the camera clock there, so Web.Gyro.TimeOffset must be 0
+};
+
+inline WebConfig& webConfig()
+{
+    static WebConfig cfg;
+    return cfg;
+}
+
+inline void loadWebConfig(const std::string& settingsFile)
+{
+    WebConfig& c = webConfig();
+    c = WebConfig();
+    cv::FileStorage fs(settingsFile, cv::FileStorage::READ);
+    if (!fs.isOpened()) return;
+    auto readInt = [&fs](const char* key, int& v) {
+        cv::FileNode n = fs[key];
+        if (!n.empty() && (n.isInt() || n.isReal())) v = (int)n.real();
+    };
+    readInt("Web.LBA.MaxOptKFs", c.lbaMaxOptKFs);
+    readInt("Web.LBA.MaxFixedKFs", c.lbaMaxFixedKFs);
+    readInt("Web.LBA.Iterations", c.lbaIterations);
+    readInt("Web.LBA.Fast", c.lbaFast);
+    readInt("Web.Mapping.Neighbors", c.mappingNeighbors);
+    readInt("Web.Descriptor", c.descriptor);
+    readInt("Web.ORB.Parallel", c.orbParallel);
+    readInt("Web.ORB.SSC", c.orbSSC);
+    readInt("Web.Track.KeepMap", c.keepMap);
+    readInt("Web.Track.TimeScaledMotion", c.timeScaledMotion);
+    readInt("Web.KLT.Enable", c.kltEnable);
+    readInt("Web.KLT.MaxConsecutive", c.kltMaxConsecutive);
+    readInt("Web.KLT.MinTracked", c.kltMinTracked);
+    readInt("Web.KLT.MinInliers", c.kltMinInliers);
+    readInt("Web.KLT.WinSize", c.kltWinSize);
+    readInt("Web.KLT.Levels", c.kltLevels);
+    readInt("Web.KLT.Iterations", c.kltIterations);
+    readInt("Web.KLT.Normalize", c.kltNormalize);
+    readInt("Web.KLT.Parallel", c.kltParallel);
+    readInt("Web.KLT.GyroWarp", c.kltGyroWarp);
+    cv::FileNode rsr = fs["Web.RS.Readout"];
+    if (!rsr.empty() && (rsr.isInt() || rsr.isReal())) c.rsReadout = rsr.real();
+    cv::FileNode gw = fs["Web.KLT.GyroWarpDeg"];
+    if (!gw.empty() && (gw.isInt() || gw.isReal())) c.kltGyroWarpDeg = gw.real();
+    cv::FileNode rt = fs["Web.Track.RelocTimeout"];
+    if (!rt.empty() && (rt.isInt() || rt.isReal())) c.relocTimeout = rt.real();
+    readInt("Web.Rot.FarPoints", c.rotFar);
+    readInt("Web.Rot.FarLife", c.rotFarLife);
+    cv::FileNode fd = fs["Web.Rot.FarDepth"];
+    if (!fd.empty() && (fd.isInt() || fd.isReal())) c.rotFarDepth = fd.real();
+    for (auto [key, v] : {std::pair<const char*, double*>{"Web.KF.Coverage", &c.kfCoverage}, {"Web.Map.MinBaseline", &c.triMinBaseline},
+                           {"Web.Map.MaxCosParallax", &c.triMaxCosParallax}}) {
+        cv::FileNode n = fs[key];
+        if (!n.empty() && (n.isInt() || n.isReal())) *v = n.real();
+    }
+    cv::FileNode lw = fs["Web.Map.LoadWait"];
+    if (!lw.empty() && (lw.isInt() || lw.isReal())) c.mapLoadWait = lw.real();
+    cv::FileNode mf = fs["Web.KLT.MaxFlow"];
+    if (!mf.empty() && (mf.isInt() || mf.isReal())) c.kltMaxFlow = mf.real();
+    cv::FileNode mi = fs["Web.KLT.MinInlierFrac"];
+    if (!mi.empty() && (mi.isInt() || mi.isReal())) c.kltMinInlierFrac = mi.real();
+    cv::FileNode fb = fs["Web.KLT.FBThreshold"];
+    if (!fb.empty() && (fb.isInt() || fb.isReal())) c.kltFBThreshold = fb.real();
+    readInt("Web.BoW.LevelsUp", c.bowLevelsUp);
+    cv::FileNode kr = fs["Web.KF.RefRatio"];
+    if (!kr.empty() && (kr.isInt() || kr.isReal())) c.kfRefRatio = kr.real();
+    cv::FileNode cr = fs["Web.Mapping.CullRedundancy"];
+    if (!cr.empty() && (cr.isInt() || cr.isReal())) c.cullRedundancy = cr.real();
+    readInt("Web.KF.BusyQueue", c.kfBusyQueue);
+    readInt("Web.KF.AfterReloc", c.kfAfterReloc);
+    readInt("Web.Map.LocalRecent", c.mapLocalRecent);
+    readInt("Web.Map.PriorPoints", c.mapPriorPoints);
+    for (auto [key, v] : {std::pair<const char*, double*>{"Web.Map.PriorWeight", &c.mapPriorWeight}, {"Web.Map.PriorRadius", &c.mapPriorRadius}}) {
+        cv::FileNode n = fs[key];
+        if (!n.empty() && (n.isInt() || n.isReal())) *v = n.real();
+    }
+    readInt("Web.Mapping.FuseQueued", c.mapFuseQueued);
+    readInt("Web.Gyro.Prior", c.gyroPrior);
+    cv::FileNode sw = fs["Web.Scale.Window"];
+    if (!sw.empty() && (sw.isInt() || sw.isReal())) c.scaleWindow = sw.real();
+    readInt("Web.Scale.Method", c.scaleMethod);
+    cv::FileNode go = fs["Web.Gyro.TimeOffset"];
+    if (!go.empty() && (go.isInt() || go.isReal())) c.gyroTimeOffset = go.real();
+    cv::FileNode gps = fs["Web.Gyro.PoseSigma"];
+    if (!gps.empty() && (gps.isInt() || gps.isReal())) c.gyroPoseSigma = gps.real();
+    cv::FileNode gpt = fs["Web.Gyro.PoseTau"];
+    if (!gpt.empty() && (gpt.isInt() || gpt.isReal())) c.gyroPoseTau = gpt.real();
+    readInt("Web.Gyro.MinInliers", c.gyroMinInliers);
+    readInt("Web.Scale.Online", c.scaleOnline);
+    if (c.gyroPrior || c.scaleOnline) {  // camera -> body rotation from the IMU extrinsics (same key as ORB-SLAM3's inertial settings)
+        cv::Mat Tbc;
+        fs["IMU.T_b_c1"] >> Tbc;
+        if (Tbc.rows >= 3 && Tbc.cols >= 3) {
+            Tbc.convertTo(Tbc, CV_32F);
+            for (int r = 0; r < 3; r++)
+                for (int k = 0; k < 3; k++) c.gyroRbc[3 * r + k] = Tbc.at<float>(r, k);
+        } else {
+            std::cout << "Web config: Web.Gyro.Prior / Web.Scale.Online need IMU.T_b_c1 (camera -> IMU extrinsics); both off" << std::endl;
+            c.gyroPrior = 0;
+            c.scaleOnline = 0;
+        }
+    }
+    readInt("Web.Track.Coast", c.coast);
+    cv::FileNode ct = fs["Web.Track.CoastTime"];
+    if (!ct.empty() && (ct.isInt() || ct.isReal())) c.coastMaxTime = ct.real();
+    readInt("Web.Track.CoastMinInliers", c.coastMinInliers);
+    readInt("Web.Reloc.Global", c.relocGlobal);
+    readInt("Web.Reloc.GlobalDesc", c.relocGlobalDesc);
+    readInt("Web.Loop.MinCoincidences", c.loopMinCoincidences);
+    readInt("Web.Turn.Bridge", c.turnBridge);
+    readInt("Web.Turn.IniFeatures", c.turnIniFeatures);
+    for (auto [key, v] : {std::pair<const char*, double*>{"Web.Turn.MinAngle", &c.turnMinAngle}, {"Web.Turn.MaxRotDiff", &c.turnMaxRotDiff}}) {
+        cv::FileNode n = fs[key];
+        if (!n.empty() && (n.isInt() || n.isReal())) *v = n.real();
+    }
+    if (c.turnBridge && !c.gyroPrior) {
+        std::cout << "Web config: Web.Turn.Bridge needs Web.Gyro.Prior; turn bridge off" << std::endl;
+        c.turnBridge = 0;
+    }
+    readInt("Web.Track.FastPose", c.fastPose);
+    readInt("Web.Track.FastPoseWarm", c.fastPoseWarm);
+    readInt("Web.Init.MinMatches", c.initMinMatches);
+    cv::FileNode ip = fs["Web.Init.MinParallax"];
+    if (!ip.empty() && (ip.isInt() || ip.isReal())) c.initMinParallax = ip.real();
+    readInt("Web.Init.MinTriangulated", c.initMinTriangulated);
+    readInt("Web.Init.Gyro", c.initGyro);
+    cv::FileNode inf = fs["Web.Init.Features"];
+    if (!inf.empty() && (inf.isInt() || inf.isReal())) c.initFeatures = inf.real();
+    readInt("Web.Imu.KeepMap", c.imuKeepMap);
+    readInt("Web.Imu.MinInliersPreInit", c.imuMinInliersPreInit);
+    readInt("Web.Imu.MotionCheck", c.imuMotionCheck);
+    cv::FileNode v1 = fs["Web.Imu.Viba1Time"];
+    if (!v1.empty() && (v1.isInt() || v1.isReal())) c.imuViba1Time = v1.real();
+    cv::FileNode v2 = fs["Web.Imu.Viba2Time"];
+    if (!v2.empty() && (v2.isInt() || v2.isReal())) c.imuViba2Time = v2.real();
+    readInt("Web.Imu.WebGyro", c.imuWebGyro);
+    std::cout << "Web config:LBA.MaxOptKFs " << c.lbaMaxOptKFs << ", LBA.MaxFixedKFs " << c.lbaMaxFixedKFs
+              << ", LBA.Iterations " << c.lbaIterations << ", Mapping.Neighbors " << c.mappingNeighbors
+              << " (0 = stock); descriptor " << (c.descriptor == 1 ? "TEBLID-256" : "ORB") << "; reloc timeout "
+              << c.relocTimeout << " s" << (c.keepMap ? " (keep map)" : "") << (c.timeScaledMotion ? "; time-scaled motion" : "")
+              << (c.gyroPrior ? "; gyro prior (IMU time offset " + std::to_string(c.gyroTimeOffset * 1000) + " ms)" : std::string())
+              << (c.gyroPrior && c.gyroPoseSigma > 0 ? "; gyro rotation in the pose solve (" + std::to_string(c.gyroPoseSigma) + " deg" +
+                  (c.gyroPoseTau > 0 ? ", attitude tau " + std::to_string(c.gyroPoseTau) + " s" : std::string()) +
+                  (c.gyroMinInliers > 0 ? ", tracked from " + std::to_string(c.gyroMinInliers) + " inliers)" : ")") : std::string())
+              << (c.rsReadout != 0 ? "; rolling-shutter correction (readout " + std::to_string(c.rsReadout * 1000) + " ms)" : std::string())
+              << (c.scaleOnline ? (c.scaleMethod == 1 ? std::string("; online metric scale (filter bank)")
+                                                      : "; online metric scale (" + std::to_string(c.scaleWindow) + " s windows)")
+                                : std::string())
+              << (c.bowLevelsUp != 4 ? "; BoW levels up " + std::to_string(c.bowLevelsUp) : std::string())
+              << (c.kfRefRatio > 0 ? "; KF ref ratio " + std::to_string(c.kfRefRatio) : std::string())
+              << (c.kfAfterReloc >= 0 ? "; keyframes " + std::to_string(c.kfAfterReloc) + " frames after a recovery" : std::string())
+              << (c.mapLocalRecent > 0 ? "; local map + the " + std::to_string(c.mapLocalRecent) + " newest keyframes" : std::string())
+              << (c.mapPriorPoints > 0 ? "; prior-depth points (" + std::to_string(c.mapPriorPoints) + " per empty cell, weight " +
+                                             std::to_string(c.mapPriorWeight) + ", window x" + std::to_string(c.mapPriorRadius) + ")"
+                                       : std::string())
+              << (c.kfBusyQueue > 0 ? "; keyframes queued while mapping is busy (up to " + std::to_string(c.kfBusyQueue) + ")" : std::string())
+              << (c.mapFuseQueued ? "; fusion also for queued keyframes" : "")
+              << (c.lbaFast ? (c.lbaFast == 1 ? "; fast local BA" : "; fast local BA (compare with g2o)") : "")
+              << (c.cullRedundancy > 0 ? "; KF cull redundancy " + std::to_string(c.cullRedundancy) : std::string())
+              << (c.coast ? "; coast " + std::to_string(c.coastMaxTime) + " s, " + std::to_string(c.coastMinInliers) + " inliers"
+                          : std::string())
+              << (c.relocGlobal > 0 ? "; whole-map relocalisation every " + std::to_string(c.relocGlobal) + " lost frames" +
+                  std::string(c.relocGlobalDesc ? " (all observation descriptors)" : "") : std::string())
+              << (c.loopMinCoincidences != 3 ? "; loop / merge after " + std::to_string(c.loopMinCoincidences) + " coinciding keyframes"
+                                             : std::string())
+              << (c.fastPose ? (c.fastPose == 1 ? "; fast pose solver" : "; fast pose solver (compare with g2o)") : "")
+              << (c.fastPose && c.fastPoseWarm ? " (warm start)" : "")
+              << (c.orbSSC ? "; SSC keypoint selection" : "")
+              << (c.orbParallel ? "; parallel ORB levels (" + std::to_string(c.orbParallel == 1 ? 4 : c.orbParallel) + " threads)" : "")
+              << (c.initMinMatches != 100 || c.initMinParallax != 1.0 || c.initMinTriangulated != 50
+                      ? "; init " + std::to_string(c.initMinMatches) + " matches, " + std::to_string(c.initMinParallax) +
+                            " deg, " + std::to_string(c.initMinTriangulated) + " points"
+                      : std::string())
+              << (c.initGyro ? "; gyro two-view init" : "")
+              << (c.initFeatures != 5.0 ? "; map start with " + std::to_string(c.initFeatures) + "x features" : std::string())
+              << (c.turnBridge ? std::string("; turn bridge (") + (c.turnBridge == 1 ? "two-view + gyro check " + std::to_string(c.turnMaxRotDiff) + " deg"
+                                                                                     : std::string("gyro two-view")) +
+                                     ", after " + std::to_string(c.turnMinAngle) + " deg" +
+                                     (c.turnIniFeatures ? ", 5x features while lost)" : ")")
+                               : std::string())
+              << (c.imuKeepMap ? "; IMU start-up keeps the map on losses" : "")
+              << (c.imuMinInliersPreInit != 50 ? "; IMU pre-init inliers " + std::to_string(c.imuMinInliersPreInit) : std::string())
+              << (c.imuMotionCheck ? "" : "; no IMU motion-check reset")
+              << (c.imuViba1Time != 5 || c.imuViba2Time != 15
+                      ? "; VI-BA after " + std::to_string(c.imuViba1Time) + " / " + std::to_string(c.imuViba2Time) + " s"
+                      : std::string())
+              << (c.imuWebGyro ? "; IMU feeds the web gyro features" : "")
+              << "; KLT " << (c.kltEnable ? "on" : "off");
+    if (c.kltEnable)
+        std::cout << " (max consecutive " << c.kltMaxConsecutive << ", min tracked " << c.kltMinTracked
+                  << ", min inliers " << c.kltMinInliers << ", win " << c.kltWinSize << ", levels " << c.kltLevels
+                  << ", FB " << c.kltFBThreshold << " px, iterations " << c.kltIterations << ", max flow " << c.kltMaxFlow
+                  << " px, min inlier frac " << c.kltMinInlierFrac << (c.kltNormalize ? ", exposure-normalised" : "")
+                  << (c.kltParallel ? (c.kltParallel == 1 ? ", LK on 4 threads" : ", LK serial vs 4 threads (compare)") : "")
+                  << (c.kltGyroWarp ? ", gyro-warped from " + std::to_string(c.kltGyroWarpDeg) + " deg" : "") << ")";
+    std::cout << std::endl;
+}
+
+}  // namespace ORB_SLAM3
+
+#endif

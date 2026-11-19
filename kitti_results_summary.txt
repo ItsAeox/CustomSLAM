@@ -1,0 +1,230 @@
+=== KITTI Results Summary ===
+
+Sequence: 2011_09_26_drive_0009_sync
+  Frames:              447
+  Duration [s]:        46.167
+  GT path length [m]:  331.465
+  Est path length [m]: 340.200
+  ATE RMSE [m]:        21.327
+  XY RMSE [m]:         19.902
+  ATE / GT path [%]:   6.434
+  XY / GT path [%]:    6.004
+  Mean FPS:            33.359
+  Mean total ms:       29.977
+  Mean KLT ms:         9.743
+  Mean IMU ms:         0.004
+  Mean seed ms:        10.912
+  Mean keypoints:      222.192
+  Final keyframes:     540
+  Final map points:    410
+  Mean IMU Hz:         9.444
+
+Sequence: 2011_09_26_drive_0018_sync
+  Frames:              270
+  Duration [s]:        27.873
+  GT path length [m]:  50.511
+  Est path length [m]: 46.800
+  ATE RMSE [m]:        2.241
+  XY RMSE [m]:         2.236
+  ATE / GT path [%]:   4.437
+  XY / GT path [%]:    4.426
+  Mean FPS:            40.361
+  Mean total ms:       24.777
+  Mean KLT ms:         7.598
+  Mean IMU ms:         0.003
+  Mean seed ms:        11.072
+  Mean keypoints:      223.630
+  Final keyframes:     112
+  Final map points:    168
+  Mean IMU Hz:         9.294
+
+Sequence: 2011_09_26_drive_0022_sync
+  Frames:              800
+  Duration [s]:        82.778
+  GT path length [m]:  514.263
+  Est path length [m]: 468.600
+  ATE RMSE [m]:        25.946
+  XY RMSE [m]:         24.412
+  ATE / GT path [%]:   5.045
+  XY / GT path [%]:    4.747
+  Mean FPS:            34.855
+  Mean total ms:       28.690
+  Mean KLT ms:         9.382
+  Mean IMU ms:         0.005
+  Mean seed ms:        10.767
+  Mean keypoints:      221.225
+  Final keyframes:     810
+  Final map points:    856
+  Mean IMU Hz:         9.532
+
+Sequence: 2011_09_26_drive_0023_sync
+  Frames:              474
+  Duration [s]:        49.017
+  GT path length [m]:  413.758
+  Est path length [m]: 473.000
+  ATE RMSE [m]:        43.420
+  XY RMSE [m]:         43.397
+  ATE / GT path [%]:   10.494
+  XY / GT path [%]:    10.488
+  Mean FPS:            37.183
+  Mean total ms:       26.894
+  Mean KLT ms:         9.692
+  Mean IMU ms:         0.026
+  Mean seed ms:        10.708
+  Mean keypoints:      222.068
+  Final keyframes:     14
+  Final map points:    35
+  Mean IMU Hz:         9.446
+
+Sequence: 2011_09_26_drive_0028_sync
+  Frames:              430
+  Duration [s]:        44.429
+  GT path length [m]:  779.916
+  Est path length [m]: 429.000
+  ATE RMSE [m]:        199.433
+  XY RMSE [m]:         199.153
+  ATE / GT path [%]:   25.571
+  XY / GT path [%]:    25.535
+  Mean FPS:            33.580
+  Mean total ms:       29.779
+  Mean KLT ms:         12.577
+  Mean IMU ms:         0.025
+  Mean seed ms:        11.019
+  Mean keypoints:      222.279
+  Final keyframes:     0
+  Final map points:    0
+  Mean IMU Hz:         9.430
+
+Sequence: 2011_09_26_drive_0029_sync
+  Frames:              430
+  Duration [s]:        44.463
+  GT path length [m]:  349.109
+  Est path length [m]: 340.000
+  ATE RMSE [m]:        36.812
+  XY RMSE [m]:         36.776
+  ATE / GT path [%]:   10.545
+  XY / GT path [%]:    10.534
+  Mean FPS:            36.108
+  Mean total ms:       27.695
+  Mean KLT ms:         9.567
+  Mean IMU ms:         0.026
+  Mean seed ms:        10.944
+  Mean keypoints:      222.279
+  Final keyframes:     184
+  Final map points:    228
+  Mean IMU Hz:         9.426
+
+Sequence: 2011_09_26_drive_0084_sync
+  Frames:              383
+  Duration [s]:        39.582
+  GT path length [m]:  239.460
+  Est path length [m]: 307.000
+  ATE RMSE [m]:        34.548
+  XY RMSE [m]:         33.750
+  ATE / GT path [%]:   14.427
+  XY / GT path [%]:    14.094
+  Mean FPS:            38.771
+  Mean total ms:       25.792
+  Mean KLT ms:         8.865
+  Mean IMU ms:         0.026
+  Mean seed ms:        10.719
+  Mean keypoints:      222.559
+  Final keyframes:     32
+  Final map points:    18
+  Mean IMU Hz:         9.399
+
+Sequence: 2011_09_26_drive_0086_sync
+  Frames:              706
+  Duration [s]:        72.955
+  GT path length [m]:  267.602
+  Est path length [m]: 655.000
+  ATE RMSE [m]:        207.686
+  XY RMSE [m]:         205.152
+  ATE / GT path [%]:   77.610
+  XY / GT path [%]:    76.663
+  Mean FPS:            34.268
+  Mean total ms:       29.181
+  Mean KLT ms:         9.740
+  Mean IMU ms:         0.005
+  Mean seed ms:        10.537
+  Mean keypoints:      221.388
+  Final keyframes:     894
+  Final map points:    834
+  Mean IMU Hz:         9.528
+
+Sequence: 2011_09_26_drive_0087_sync
+  Frames:              729
+  Duration [s]:        75.385
+  GT path length [m]:  287.891
+  Est path length [m]: 717.000
+  ATE RMSE [m]:        255.313
+  XY RMSE [m]:         255.205
+  ATE / GT path [%]:   88.684
+  XY / GT path [%]:    88.646
+  Mean FPS:            38.476
+  Mean total ms:       25.990
+  Mean KLT ms:         9.251
+  Mean IMU ms:         0.026
+  Mean seed ms:        10.636
+  Mean keypoints:      221.344
+  Final keyframes:     42
+  Final map points:    71
+  Mean IMU Hz:         9.526
+
+Sequence: 2011_09_26_drive_0101_sync
+  Frames:              936
+  Duration [s]:        96.626
+  GT path length [m]:  1297.480
+  Est path length [m]: 847.000
+  ATE RMSE [m]:        247.390
+  XY RMSE [m]:         246.369
+  ATE / GT path [%]:   19.067
+  XY / GT path [%]:    18.988
+  Mean FPS:            36.086
+  Mean total ms:       27.712
+  Mean KLT ms:         10.300
+  Mean IMU ms:         0.005
+  Mean seed ms:        10.773
+  Mean keypoints:      221.047
+  Final keyframes:     48
+  Final map points:    46
+  Mean IMU Hz:         9.574
+
+Sequence: 2011_09_29_drive_0071_sync
+  Frames:              1059
+  Duration [s]:        109.883
+  GT path length [m]:  239.438
+  Est path length [m]: 682.000
+  ATE RMSE [m]:        295.830
+  XY RMSE [m]:         295.171
+  ATE / GT path [%]:   123.552
+  XY / GT path [%]:    123.277
+  Mean FPS:            38.423
+  Mean total ms:       26.026
+  Mean KLT ms:         7.918
+  Mean IMU ms:         0.027
+  Mean seed ms:        12.462
+  Mean keypoints:      220.925
+  Final keyframes:     2
+  Final map points:    0
+  Mean IMU Hz:         9.537
+
+Sequence: 2011_10_03_drive_0047_sync
+  Frames:              837
+  Duration [s]:        86.632
+  GT path length [m]:  712.501
+  Est path length [m]: 667.250
+  ATE RMSE [m]:        58.551
+  XY RMSE [m]:         57.401
+  ATE / GT path [%]:   8.218
+  XY / GT path [%]:    8.056
+  Mean FPS:            35.012
+  Mean total ms:       28.562
+  Mean KLT ms:         10.049
+  Mean IMU ms:         0.004
+  Mean seed ms:        10.608
+  Mean keypoints:      221.171
+  Final keyframes:     514
+  Final map points:    253
+  Mean IMU Hz:         9.535
+

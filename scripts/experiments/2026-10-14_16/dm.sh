@@ -1,0 +1,1 @@
+dmesg | tail -5

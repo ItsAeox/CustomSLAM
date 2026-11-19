@@ -1,0 +1,17 @@
+# msceqf_run (msceqf_run.cpp) against an MSCEqF source tree (add_subdirectory: its library with its own Release flags,
+# -O3 -flto -march=native; dependencies from FetchContent, pinned via FETCHCONTENT_SOURCE_DIR_* in build_msceqf.sh).
+cmake_minimum_required(VERSION 3.13)
+project(msceqf_run CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+if (NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+set(MSCEQF_SRC "" CACHE PATH "MSCEqF source tree")
+add_subdirectory(${MSCEQF_SRC} msceqf EXCLUDE_FROM_ALL)
+find_package(Boost REQUIRED)
+add_executable(msceqf_run msceqf_run.cpp)
+target_include_directories(msceqf_run PRIVATE ${MSCEQF_SRC}/include ${Boost_INCLUDE_DIRS})
+target_compile_options(msceqf_run PRIVATE -O3 -flto -march=native)
+target_link_options(msceqf_run PRIVATE -flto)
+target_link_libraries(msceqf_run msceqf_lib pthread)

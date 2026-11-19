@@ -1,0 +1,310 @@
+=== TUM-VI Results Summary ===
+
+Sequence: bike-easy
+  Frames:                5765
+  Duration [s]:          288.208
+  Mocap rows:            6482
+  Mocap segments:        3
+  Valid queries:         1079
+  Valid query ratio:     0.187
+  Camera time source:    dataset/bike-easy/left_images/image_timestamps_left.txt
+  Query time source:     camera_timestamps_by_frame_index
+  Small time shift [s]:  0.014993790
+  RPE delta=1:
+    Count:              1077
+    Trans RMSE [m]:     0.033903
+    Rot RMSE [deg]:     1.779558
+    Trans mean [m]:     0.026464
+    Rot mean [deg]:     1.218362
+  RPE delta=10:
+    Count:              1059
+    Trans RMSE [m]:     0.324685
+    Rot RMSE [deg]:     14.709443
+    Trans mean [m]:     0.253284
+    Rot mean [deg]:     10.055899
+  RPE delta=20:
+    Count:              1039
+    Trans RMSE [m]:     0.627184
+    Rot RMSE [deg]:     26.035499
+    Trans mean [m]:     0.489145
+    Rot mean [deg]:     18.032717
+  RPE delta=50:
+    Count:              979
+    Trans RMSE [m]:     1.362681
+    Rot RMSE [deg]:     48.554679
+    Trans mean [m]:     1.066379
+    Rot mean [deg]:     37.129715
+  Mean FPS:             48.312
+  Mean total ms:        20.699
+  Mean KLT ms:          7.614
+  Mean IMU ms:          0.018
+  Mean seed ms:         3.188
+  Mean keypoints:       220.000
+  Final keyframes:      5266
+  Final map points:     1649
+  Mean IMU Hz:          200.194
+
+Sequence: loop-floor1
+  Frames:                5151
+  Duration [s]:          257.495
+  Mocap rows:            5649
+  Mocap segments:        2
+  Valid queries:         941
+  Valid query ratio:     0.183
+  Camera time source:    dataset/loop-floor1/left_images/image_timestamps_left.txt
+  Query time source:     camera_timestamps_by_frame_index
+  Small time shift [s]:  0.009432876
+  RPE delta=1:
+    Count:              939
+    Trans RMSE [m]:     0.041995
+    Rot RMSE [deg]:     4.279290
+    Trans mean [m]:     0.035260
+    Rot mean [deg]:     2.982328
+  RPE delta=10:
+    Count:              921
+    Trans RMSE [m]:     0.403668
+    Rot RMSE [deg]:     36.443173
+    Trans mean [m]:     0.339921
+    Rot mean [deg]:     25.314636
+  RPE delta=20:
+    Count:              901
+    Trans RMSE [m]:     0.771619
+    Rot RMSE [deg]:     64.366599
+    Trans mean [m]:     0.652818
+    Rot mean [deg]:     45.499047
+  RPE delta=50:
+    Count:              841
+    Trans RMSE [m]:     1.628506
+    Rot RMSE [deg]:     97.756161
+    Trans mean [m]:     1.388231
+    Rot mean [deg]:     80.973898
+  Mean FPS:             44.633
+  Mean total ms:        22.405
+  Mean KLT ms:          7.816
+  Mean IMU ms:          0.019
+  Mean seed ms:         3.312
+  Mean keypoints:       220.000
+  Final keyframes:      3886
+  Final map points:     2651
+  Mean IMU Hz:          200.057
+
+Sequence: mocap-desk
+  Frames:                749
+  Duration [s]:          37.394
+  Mocap rows:            4497
+  Mocap segments:        1
+  Valid queries:         749
+  Valid query ratio:     1.000
+  Camera time source:    dataset/mocap-desk/left_images/image_timestamps_left.txt
+  Query time source:     camera_timestamps_by_frame_index
+  Small time shift [s]:  0.009432876
+  RPE delta=1:
+    Count:              748
+    Trans RMSE [m]:     0.014645
+    Rot RMSE [deg]:     1.431898
+    Trans mean [m]:     0.013109
+    Rot mean [deg]:     1.189580
+  RPE delta=10:
+    Count:              739
+    Trans RMSE [m]:     0.084178
+    Rot RMSE [deg]:     9.422981
+    Trans mean [m]:     0.075896
+    Rot mean [deg]:     8.061284
+  RPE delta=20:
+    Count:              729
+    Trans RMSE [m]:     0.128746
+    Rot RMSE [deg]:     14.507796
+    Trans mean [m]:     0.115493
+    Rot mean [deg]:     12.517691
+  RPE delta=50:
+    Count:              699
+    Trans RMSE [m]:     0.123280
+    Rot RMSE [deg]:     11.520269
+    Trans mean [m]:     0.110581
+    Rot mean [deg]:     10.112774
+  Mean FPS:             49.114
+  Mean total ms:        20.361
+  Mean KLT ms:          7.456
+  Mean IMU ms:          0.012
+  Mean seed ms:         3.376
+  Mean keypoints:       220.000
+  Final keyframes:      678
+  Final map points:     911
+  Mean IMU Hz:          195.365
+
+Sequence: mocap-desk2
+  Frames:                429
+  Duration [s]:          21.393
+  Mocap rows:            2569
+  Mocap segments:        1
+  Valid queries:         428
+  Valid query ratio:     0.998
+  Camera time source:    dataset/mocap-desk2/left_images/image_timestamps_left.txt
+  Query time source:     camera_timestamps_by_frame_index
+  Small time shift [s]:  0.009432876
+  RPE delta=1:
+    Count:              427
+    Trans RMSE [m]:     0.014133
+    Rot RMSE [deg]:     0.986366
+    Trans mean [m]:     0.012962
+    Rot mean [deg]:     0.849145
+  RPE delta=10:
+    Count:              418
+    Trans RMSE [m]:     0.102286
+    Rot RMSE [deg]:     7.237602
+    Trans mean [m]:     0.095005
+    Rot mean [deg]:     6.294622
+  RPE delta=20:
+    Count:              408
+    Trans RMSE [m]:     0.168068
+    Rot RMSE [deg]:     11.937106
+    Trans mean [m]:     0.155347
+    Rot mean [deg]:     10.709891
+  RPE delta=50:
+    Count:              378
+    Trans RMSE [m]:     0.153659
+    Rot RMSE [deg]:     11.490484
+    Trans mean [m]:     0.141392
+    Rot mean [deg]:     10.565246
+  Mean FPS:             50.011
+  Mean total ms:        19.996
+  Mean KLT ms:          7.233
+  Mean IMU ms:          0.014
+  Mean seed ms:         3.440
+  Mean keypoints:       220.000
+  Final keyframes:      248
+  Final map points:     448
+  Mean IMU Hz:          191.138
+
+Sequence: office-maze
+  Frames:                3204
+  Duration [s]:          160.143
+  Mocap rows:            5104
+  Mocap segments:        2
+  Valid queries:         853
+  Valid query ratio:     0.266
+  Camera time source:    dataset/office-maze/left_images/image_timestamps_left.txt
+  Query time source:     camera_timestamps_by_frame_index
+  Small time shift [s]:  0.014993790
+  RPE delta=1:
+    Count:              851
+    Trans RMSE [m]:     0.045017
+    Rot RMSE [deg]:     2.397978
+    Trans mean [m]:     0.036084
+    Rot mean [deg]:     1.757608
+  RPE delta=10:
+    Count:              833
+    Trans RMSE [m]:     0.436669
+    Rot RMSE [deg]:     20.849258
+    Trans mean [m]:     0.351525
+    Rot mean [deg]:     15.329799
+  RPE delta=20:
+    Count:              813
+    Trans RMSE [m]:     0.842012
+    Rot RMSE [deg]:     37.007924
+    Trans mean [m]:     0.682995
+    Rot mean [deg]:     27.366755
+  RPE delta=50:
+    Count:              753
+    Trans RMSE [m]:     1.817200
+    Rot RMSE [deg]:     65.549034
+    Trans mean [m]:     1.495270
+    Rot mean [deg]:     52.123590
+  Mean FPS:             35.316
+  Mean total ms:        28.316
+  Mean KLT ms:          8.290
+  Mean IMU ms:          0.018
+  Mean seed ms:         3.377
+  Mean keypoints:       220.000
+  Final keyframes:      5390
+  Final map points:     3601
+  Mean IMU Hz:          199.595
+
+Sequence: running-easy
+  Frames:                1464
+  Duration [s]:          73.143
+  Mocap rows:            5771
+  Mocap segments:        2
+  Valid queries:         961
+  Valid query ratio:     0.656
+  Camera time source:    dataset/running-easy/left_images/image_timestamps_left.txt
+  Query time source:     camera_timestamps_by_frame_index
+  Small time shift [s]:  0.014993790
+  RPE delta=1:
+    Count:              959
+    Trans RMSE [m]:     0.048172
+    Rot RMSE [deg]:     2.675532
+    Trans mean [m]:     0.039254
+    Rot mean [deg]:     1.876974
+  RPE delta=10:
+    Count:              941
+    Trans RMSE [m]:     0.465478
+    Rot RMSE [deg]:     21.025006
+    Trans mean [m]:     0.382203
+    Rot mean [deg]:     15.763798
+  RPE delta=20:
+    Count:              921
+    Trans RMSE [m]:     0.906079
+    Rot RMSE [deg]:     37.960503
+    Trans mean [m]:     0.747138
+    Rot mean [deg]:     28.640180
+  RPE delta=50:
+    Count:              861
+    Trans RMSE [m]:     1.962023
+    Rot RMSE [deg]:     70.480517
+    Trans mean [m]:     1.640025
+    Rot mean [deg]:     57.993775
+  Mean FPS:             33.390
+  Mean total ms:        29.949
+  Mean KLT ms:          8.354
+  Mean IMU ms:          0.014
+  Mean seed ms:         3.329
+  Mean keypoints:       220.000
+  Final keyframes:      2170
+  Final map points:     1744
+  Mean IMU Hz:          198.052
+
+Sequence: skate-easy
+  Frames:                1586
+  Duration [s]:          79.243
+  Mocap rows:            5881
+  Mocap segments:        2
+  Valid queries:         981
+  Valid query ratio:     0.619
+  Camera time source:    dataset/skate-easy/left_images/image_timestamps_left.txt
+  Query time source:     camera_timestamps_by_frame_index
+  Small time shift [s]:  0.009432876
+  RPE delta=1:
+    Count:              979
+    Trans RMSE [m]:     0.047480
+    Rot RMSE [deg]:     3.048746
+    Trans mean [m]:     0.039564
+    Rot mean [deg]:     2.348366
+  RPE delta=10:
+    Count:              961
+    Trans RMSE [m]:     0.459581
+    Rot RMSE [deg]:     27.661606
+    Trans mean [m]:     0.382908
+    Rot mean [deg]:     21.139985
+  RPE delta=20:
+    Count:              941
+    Trans RMSE [m]:     0.882506
+    Rot RMSE [deg]:     49.788184
+    Trans mean [m]:     0.735244
+    Rot mean [deg]:     38.337869
+  RPE delta=50:
+    Count:              881
+    Trans RMSE [m]:     1.878255
+    Rot RMSE [deg]:     92.597247
+    Trans mean [m]:     1.576456
+    Rot mean [deg]:     77.176871
+  Mean FPS:             35.782
+  Mean total ms:        27.947
+  Mean KLT ms:          8.194
+  Mean IMU ms:          0.016
+  Mean seed ms:         3.323
+  Mean keypoints:       220.000
+  Final keyframes:      2404
+  Final map points:     1906
+  Mean IMU Hz:          198.335
+

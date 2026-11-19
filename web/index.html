@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WebVIO</title>
+<script src="./coi.js"></script>
+<style>
+  :root { --bg: #0f1115; --fg: #e6e6e6; --muted: #9aa0a6; --accent: #5bd18b; --card: #171a20; --line: #262b33; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 20px 16px 40px; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, -apple-system, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; display: grid; gap: 14px; }
+  h1 { margin: 0; font-size: 26px; }
+  h2 { margin: 12px 0 0; font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  p { margin: 0; color: var(--muted); }
+  a.card { display: block; padding: 14px 16px; background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+           color: var(--fg); text-decoration: none; }
+  a.card:hover, a.card:focus-visible { border-color: var(--accent); outline: none; }
+  a.card b { color: var(--accent); font-size: 16px; }
+  a.card span { display: block; color: var(--muted); font-size: 14px; margin-top: 2px; }
+  .recs { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+  .recs a.card { padding: 10px 12px; }
+  .note { font-size: 13px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>WebVIO</h1>
+  <p>Markerless SLAM in the web browser</p>
+
+  <h2>On the phone</h2>
+  <a class="card" href="ar.html"><b>AR test</b></a>
+  <a class="card" href="calib.html"><b>Camera calibration</b></a>
+  <a class="card dev" href="record.html" hidden><b>Recorder</b></a>
+
+  <section hidden>
+    <h2>Recordings</h2>
+    <div class="recs" id="recs"></div>
+  </section>
+
+  <h2>Viewer and tests</h2>
+  <a class="card" href="viewer.html"><b>SLAM viewer</b></a>
+  <a class="card" href="selftest.html"><b>Device self-test</b></a>
+
+  <h2>Developer</h2>
+  <a class="card" href="xfeat.html"><b>XFeat benchmark</b></a>
+  <a class="card" href="gpubench.html"><b>WebGPU ORB benchmark</b></a>
+  <a class="card dev" href="gpuorb.html" hidden><b>WebGPU ORB check</b></a>
+  <a class="card dev" href="camtest.html" hidden><b>Camera exposure check</b></a>
+</main>
+<script>
+  const DEV = location.pathname.startsWith('/web/');  // web/serve.py on this PC (GitHub Pages serves docs/ at the root)
+  const REC_OPTS = 'kltmax=4&motion=time&map=light&gyro=on&recover=coast&hold=gyro';  // "Fastest + gyro recovery"
+  const box = document.getElementById('recs');
+  const addRec = (name, label) => {
+    const a = document.createElement('a');
+    a.className = 'card';
+    a.href = `ar.html?seq=phone/${encodeURIComponent(name)}&${REC_OPTS}`;
+    a.innerHTML = `<b>${label}</b><span>${name.replace('rec_', '')}</span>`;
+    box.append(a);
+    box.closest('section').hidden = false;
+  };
+  if (DEV) {
+    for (const el of document.querySelectorAll('.dev')) el.hidden = false;
+    (async () => {  // recordings (datasets/phone) with their level from labels.txt (name level scenario ...)
+      const seqs = await (await fetch('/api/sequences')).json();
+      const level = {};
+      try {
+        for (const l of (await (await fetch('/datasets/phone/labels.txt')).text()).split('\n'))
+          if (l.trim() && !l.startsWith('#')) { const f = l.trim().split(/\s+/); level[f[0]] = f[1]; }
+      } catch { /* no labels */ }
+      for (const s of seqs.filter((x) => x.dataset === 'phone' && x.name.startsWith('rec_'))) addRec(s.name, level[s.name] || 'recording');
+    })();
+  } else {
+    (async () => {  // GitHub Pages: recordings exported as static files (scripts/export_recordings.py)
+      const r = await fetch('recordings/index.json').catch(() => null);
+      if (r && r.ok) for (const s of await r.json()) addRec(s.name, s.label.split(':')[0]);
+    })();
+  }
+</script>
+</body>
+</html>

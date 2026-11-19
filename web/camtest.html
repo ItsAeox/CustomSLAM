@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera Exposure Check</title>
+<style>
+  :root { --bg: #ffffff; --fg: #1d1d1f; --muted: #6e6e73; --line: #d2d2d7; --acc: #0a66c2; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111214; --fg: #f2f2f4; --muted: #a1a1a6; --line: #2c2c30; --acc: #5aa2ff; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  p { color: var(--muted); margin: 0 0 12px; max-width: 46em; }
+  button { font: inherit; padding: 9px 14px; margin: 0 6px 6px 0; border-radius: 8px; border: 1px solid var(--acc); background: var(--acc); color: #fff; }
+  video { width: 100%; max-width: 360px; border-radius: 8px; background: #000; display: block; margin: 8px 0; }
+  pre { white-space: pre-wrap; word-break: break-word; border: 1px solid var(--line); border-radius: 8px; padding: 12px; font-size: 13px; }
+  a { color: var(--acc); }
+</style>
+</head>
+<body>
+<a href="./">← index</a>
+<h1>Camera exposure check</h1>
+<p>Can this browser shorten the camera's exposure (less motion blur)? Shows what the rear camera allows, applies an
+exposure setting, and measures sharpness and brightness while you pan the phone left and right at the speed of a fast
+turn (about one second each way, the same each time).</p>
+<div id="buttons"><button id="start">Start camera</button></div>
+<video id="v" playsinline muted></video>
+<pre id="out">Not started.</pre>
+<script type="module">
+const out = document.getElementById('out'), v = document.getElementById('v');
+const name = `camtest_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.log`;
+const lines = [];
+const log = (s) => {
+  lines.push(s);
+  out.textContent = lines.join('\n');
+  if (location.hostname === 'localhost') fetch(`/api/result?name=${name}`, { method: 'POST', body: lines.join('\n') + '\n' }).catch(() => {});
+};
+let track = null;
+const W = 160, H = 120;  // sharpness / brightness on a small grey copy of each frame
+const cv = new OffscreenCanvas(W, H), cx = cv.getContext('2d', { willReadFrequently: true });
+function measure() {  // variance of the 4-neighbour Laplacian, mean brightness
+  cx.drawImage(v, 0, 0, W, H);
+  const d = cx.getImageData(0, 0, W, H).data, g = new Float32Array(W * H);
+  let mean = 0;
+  for (let i = 0; i < W * H; i++) { g[i] = 0.299 * d[4 * i] + 0.587 * d[4 * i + 1] + 0.114 * d[4 * i + 2]; mean += g[i]; }
+  mean /= W * H;
+  let s = 0, s2 = 0, n = 0;
+  for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+    const i = y * W + x, l = g[i - 1] + g[i + 1] + g[i - W] + g[i + W] - 4 * g[i];
+    s += l; s2 += l * l; n++;
+  }
+  return { sharp: s2 / n - (s / n) ** 2, mean };
+}
+async function sample(label, ms = 6000) {  // pan during this time
+  const vals = [];
+  const t0 = performance.now();
+  log(`${label}: pan left-right now (${ms / 1000} s)`);
+  while (performance.now() - t0 < ms) {
+    await new Promise((r) => (v.requestVideoFrameCallback ? v.requestVideoFrameCallback(r) : setTimeout(r, 33)));
+    vals.push(measure());
+  }
+  const sh = vals.map((x) => x.sharp).sort((a, b) => a - b), q = (p) => sh[Math.floor(p * (sh.length - 1))];
+  const st = track.getSettings();
+  log(`  ${label}: ${vals.length} frames; sharpness median ${q(0.5).toFixed(0)}, worst 10 % ${q(0.1).toFixed(0)}, ` +
+      `brightness ${(vals.reduce((a, b) => a + b.mean, 0) / vals.length).toFixed(0)}; settings now: exposureMode ${st.exposureMode}, ` +
+      `exposureTime ${st.exposureTime}, iso ${st.iso}, exposureCompensation ${st.exposureCompensation}, frameRate ${st.frameRate}`);
+}
+async function apply(label, c) {
+  try {
+    await track.applyConstraints({ advanced: [c] });
+    await new Promise((r) => setTimeout(r, 800));  // let the camera settle
+    log(`applied ${label}: ${JSON.stringify(c)}`);
+    await sample(label);
+  } catch (e) { log(`${label}: not accepted (${e.name}: ${e.message})`); }
+}
+document.getElementById('start').onclick = async () => {
+  lines.length = 0;
+  log(`${new Date().toString()} | ${navigator.userAgent}`);
+  const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } }, audio: false });
+  v.srcObject = stream;
+  await v.play();
+  track = stream.getVideoTracks()[0];
+  const caps = track.getCapabilities ? track.getCapabilities() : {};
+  log(`track: ${track.label} | ${v.videoWidth}x${v.videoHeight}`);
+  log(`capabilities: ${JSON.stringify(caps)}`);
+  log(`settings: ${JSON.stringify(track.getSettings())}`);
+  const b = document.getElementById('buttons');
+  const add = (label, fn) => { const x = document.createElement('button'); x.textContent = label; x.onclick = fn; b.append(x); };
+  add('Auto (baseline)', () => apply('auto', { exposureMode: 'continuous' }));
+  if (caps.exposureTime) {
+    const { min, max } = caps.exposureTime;  // units per the spec: 100 microseconds
+    for (const ms of [8, 4, 2]) {
+      const et = Math.max(min, Math.min(max, ms * 10));
+      add(`Manual ${ms} ms`, () => apply(`manual ${ms} ms`, { exposureMode: 'manual', exposureTime: et }));
+    }
+  }
+  if (caps.exposureCompensation) {
+    const { min } = caps.exposureCompensation;
+    add('Compensation -1', () => apply('compensation -1', { exposureMode: 'continuous', exposureCompensation: Math.max(min, -1) }));
+    add('Compensation min', () => apply('compensation min', { exposureMode: 'continuous', exposureCompensation: min }));
+  }
+  if (!caps.exposureTime && !caps.exposureCompensation) log('no exposure control in this browser / camera');
+  await sample('as opened (auto)');
+};
+</script>
+</body>
+</html>

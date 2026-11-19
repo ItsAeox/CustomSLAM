@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>WebVIO AR</title>
+<script src="./coi.js"></script>
+<style>
+  :root { --bg: #000; --text: #fff; --muted: rgba(255,255,255,.75); --accent: #22c55e; --panel: rgba(0,0,0,.55); }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); overflow: hidden;
+               font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; touch-action: none; }
+  #stage { position: fixed; inset: 0; overflow: hidden; }
+  #bg, #gl { position: absolute; left: 0; top: 0; }
+  #hud { position: fixed; left: 0; right: 0; top: 0; padding: max(10px, env(safe-area-inset-top)) 66px 10px 16px;
+         background: linear-gradient(var(--panel), transparent); font-size: 12px; color: var(--muted);
+         font-variant-numeric: tabular-nums; pointer-events: none; }
+  #hud b { color: var(--text); }
+  #ghost { position: fixed; width: 44px; height: 44px; margin: -22px 0 0 -22px; border: 2px dashed #5bd18b; border-radius: 50%;
+           pointer-events: none; z-index: 3; }
+  #ghost span { position: absolute; top: 48px; left: 50%; transform: translateX(-50%); white-space: nowrap; font: 12px system-ui;
+                color: #e6e6e6; background: rgba(0,0,0,.55); padding: 2px 6px; border-radius: 4px; }
+  #hint { position: fixed; left: 16px; right: 16px; top: max(96px, calc(env(safe-area-inset-top) + 86px));
+          text-align: center; font-size: 15px; text-shadow: 0 1px 3px #000; pointer-events: none; }
+  #cubeInfo { position: fixed; left: 16px; right: 16px; top: max(150px, calc(env(safe-area-inset-top) + 140px));
+              padding: 6px 10px; border-radius: 8px; background: var(--panel); font-size: 12px; text-align: center;
+              font-variant-numeric: tabular-nums; pointer-events: none; }
+  /* collapsed controls: menu (bottom right) opens the action buttons; info (top right) opens the status panels */
+  .round { width: 44px; height: 44px; padding: 0; border-radius: 50%; font-size: 18px; line-height: 1; }
+  #menuBtn { position: fixed; right: 14px; bottom: max(14px, env(safe-area-inset-bottom)); z-index: 4; }
+  #infoBtn { position: fixed; right: 14px; top: max(10px, env(safe-area-inset-top)); z-index: 4; }
+  #bar { position: fixed; right: 14px; bottom: calc(max(14px, env(safe-area-inset-bottom)) + 54px); display: flex;
+         flex-direction: column; align-items: flex-end; gap: 8px; z-index: 4; }
+  /* 3D map view, bottom left: its own touch controls (rotate, pinch zoom); taps there never place the tree */
+  #miniWrap { position: fixed; left: 12px; bottom: max(12px, env(safe-area-inset-bottom)); z-index: 4; display: flex;
+              flex-direction: column; align-items: flex-start; gap: 6px; }
+  #mini { width: min(44vw, 38vh, 260px); height: min(44vw, 38vh, 260px); background: #fff; border-radius: 10px; overflow: hidden;
+          border: 1px solid rgba(255,255,255,.6); box-shadow: 0 2px 10px rgba(0,0,0,.4); touch-action: none; }
+  #mini canvas { display: block; width: 100%; height: 100%; }
+  #miniTab { padding: 4px 12px; font-size: 13px; }
+  #miniOpts { background: rgba(0,0,0,.72); border-radius: 10px; padding: 8px 12px; display: grid; gap: 4px; font-size: 13px; }
+  #miniOpts label { display: flex; gap: 8px; align-items: center; }
+  #miniOpts input { accent-color: var(--accent); width: 18px; height: 18px; }
+  button { background: rgba(255,255,255,.15); color: var(--text); border: 1px solid rgba(255,255,255,.35);
+           border-radius: 999px; padding: 10px 16px; font: inherit; font-weight: 600; backdrop-filter: blur(6px); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #04130a; }
+  #start { position: fixed; inset: 0; display: flex; flex-direction: column; gap: 14px; align-items: center;
+           justify-content: center; text-align: center; padding: 24px; background: #0b0d10; }
+  #start h1 { margin: 0; font-size: 22px; }
+  #start p { margin: 0; color: var(--muted); max-width: 420px; }
+  #start label { color: var(--muted); }
+  #optsWrap { max-width: 420px; text-align: left; color: var(--muted); }
+  #optsWrap summary { cursor: pointer; text-align: center; }
+  #opts { display: grid; gap: 8px; padding-top: 10px; }
+  .opt { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
+  #start select { font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid #444; background: #15181d; color: #fff; }
+  #topRow { position: fixed; left: 16px; right: 16px; top: max(46px, calc(env(safe-area-inset-top) + 36px));
+            display: flex; gap: 12px; align-items: center; text-shadow: 0 1px 3px #000; pointer-events: none; }
+  #sizeRow { flex: 1 1 50%; display: flex; gap: 8px; align-items: center; font-weight: 600; pointer-events: auto; }
+  #sizeRow input { flex: 1; min-width: 0; accent-color: var(--accent); }
+  #usage { flex: 1 1 50%; margin-right: 54px; font-size: 11px; line-height: 1.35; color: var(--muted); text-align: right;
+         font-variant-numeric: tabular-nums; }
+  #log { position: fixed; inset: 0; display: flex; flex-direction: column; gap: 10px; padding: max(12px, env(safe-area-inset-top)) 16px
+         max(14px, env(safe-area-inset-bottom)); background: rgba(8,10,13,.94); touch-action: pan-y; z-index: 5; }
+  #log pre { flex: 1; margin: 0; overflow: auto; font: 11px/1.35 ui-monospace, monospace; color: #cbd5e1; white-space: pre-wrap;
+             word-break: break-word; }
+  #log div { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  #start input { width: 64px; font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid #444; background: #15181d; color: #fff; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="stage"><canvas id="bg"></canvas><canvas id="gl"></canvas></div>
+<div id="hud" hidden></div>
+<div id="hint" hidden></div>
+<div id="ghost" hidden><span>tree goes here</span></div>
+<div id="cubeInfo" hidden></div>
+<button id="menuBtn" class="round" hidden aria-label="Actions" aria-expanded="false">☰</button>
+<button id="infoBtn" class="round" hidden aria-label="Status panels" aria-expanded="false">ⓘ</button>
+<div id="bar" hidden>
+  <button id="btnReset">Reset map</button>
+  <button id="btnClear">Remove tree</button>
+  <button id="btnSaveRoom">Save room</button>
+  <button id="btnLog">Log</button>
+  <button id="btnOpts">Options</button>
+</div>
+<div id="miniWrap" hidden>
+  <div id="miniOpts" hidden>
+    <label><input type="checkbox" id="mvShow" checked> 3D view</label>
+    <label><input type="checkbox" id="mvPoints" checked> Map points</label>
+    <label><input type="checkbox" id="mvKF" checked> Keyframes</label>
+    <label><input type="checkbox" id="mvGraph"> Graph</label>
+    <label><input type="checkbox" id="mvTraj" checked> Trajectory</label>
+    <label><input type="checkbox" id="mvGrid" checked> Floor grid</label>
+    <label><input type="checkbox" id="mvTree" checked> Tree</label>
+    <label><input type="checkbox" id="mvFollow" checked> Follow camera</label>
+  </div>
+  <button id="miniTab" aria-expanded="false">3D view ▴</button>
+  <div id="mini"></div>
+</div>
+<div id="topRow" hidden>
+  <div id="sizeRow" style="visibility:hidden">Size <input id="size" type="range" min="-2" max="2" step="0.05" value="0"> <span id="sizeVal">1.00×</span></div>
+  <div id="usage"></div>
+</div>
+<section id="log" hidden>
+  <pre id="logText"></pre>
+  <div><button id="logCopy">Copy</button><button id="logSave">Download</button><button id="logClose" class="primary">Close</button></div>
+</section>
+<section id="start">
+  <h1>WebVIO AR</h1>
+  <p>Point the rear camera at a textured floor and move the phone slowly sideways to start tracking.
+     Then tap the floor to place a tree (resize it with the slider).</p>
+  <label>Camera horizontal FOV° <input id="fov" type="number" value="69" min="30" max="120"></label>
+  <label>Resolution <select id="res"><option value="640x480">640×480</option><option value="960x720">960×720</option>
+    <option value="1280x720">1280×720</option></select></label>
+  <p id="calibNote"></p>
+  <p id="imuNote"></p>
+  <label>Preset <select id="preset"></select></label>
+  <p id="presetNote"></p>
+  <label>Room <select id="room"><option value="new">New room</option></select></label>
+  <p id="roomNote"></p>
+  <details id="optsWrap"><summary>Algorithm options</summary><div id="opts"></div></details>
+  <button id="go" class="primary">Start camera</button>
+  <p id="err" style="color:#f87171"></p>
+</section>
+<script type="module" src="./ar.js"></script>
+</body>
+</html>

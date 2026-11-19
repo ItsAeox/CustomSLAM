@@ -1,0 +1,2 @@
+# replay_arms.sh arms: WebVIO beta + the online metric scale (Web.Scale.Online, PLAN 4d b2) on the phone recordings
+beta_scale|beta|Web.Gyro.TimeOffset: -0.088;Web.Scale.Online: 1

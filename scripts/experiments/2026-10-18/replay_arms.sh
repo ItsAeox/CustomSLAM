@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Phone recordings (datasets/phone/labels.txt) through settings variants made from a page preset plus extra lines, WASM
+# runner, live@1.0, seeds 1-2, 4 at a time; then summary_presets.py. Each arm: name|preset|extra lines separated by ';'.
+# Usage: [TRACE=1] [PAR=4] replay_arms.sh <snapshot tag> <out dir> <arms file>   (one arm per line; # comments; PAR runs at a time)
+#   TRACE=1: per-frame trace (--trace), eval/loss_anatomy.py and eval/map_growth.py per run (anatomy.txt, growth.txt)
+#   RECS="rec_a rec_b": only these recordings (default: all in labels.txt)
+#   e.g. "fast_cov|fast|Web.KF.Coverage: 0.4"   "grecover_dt|grecover|Web.Gyro.TimeOffset: -0.088"
+#   items starting with "--" are runner arguments for that arm (later ones win), e.g. "imu|imu|--mode mono_inertial;--imu-dt -88"
+set -uo pipefail
+cd /mnt/h/Research/CustomSLAM
+TAG=$1 O=$2 ARMSFILE=$3
+NODE=/opt/slam/emsdk/node/24.19.0_64bit/bin/node; JS=/root/build/snap-$TAG/wasm/orbslam3_run.js
+PH=${PH:-/mnt/h/Research/datasets/phone}; V=/mnt/h/Research/vocab  # PH=.../datasets/synth for the synthetic set (RECS needed)
+RECS=${RECS:-$(awk '!/^#/ && NF {print $1}' $PH/labels.txt)}
+mkdir -p $O
+echo "=== start $(date +%T) binary $JS"
+ARMS=()
+while IFS= read -r spec; do
+  [[ -z "$spec" || "$spec" == \#* ]] && continue
+  IFS='|' read -r name preset extra <<< "$spec"; ARMS+=("$name")
+  for r in $RECS; do
+    mkdir -p $O/$r/settings
+    [ -s $O/$r/settings/${r}_page-$preset.yaml ] || $NODE scripts/page_presets.mjs --base $PH/$r/settings.yaml --name $r $O/$r/settings $preset > /dev/null
+    # extra items: "Key: value" lines are appended; "-Key" removes the preset's Key line (OpenCV rejects duplicate keys)
+    drop=$(echo "$extra" | tr ';' '\n' | sed 's/^ *//' | grep '^-[^-]' | sed 's/^-//; s/[.]/\\./g' | paste -sd'|')
+    { if [ -n "$drop" ]; then grep -Ev "^($drop):" $O/$r/settings/${r}_page-$preset.yaml; else cat $O/$r/settings/${r}_page-$preset.yaml; fi
+      echo; echo "# replay_arms.sh: $name"; echo "$extra" | tr ';' '\n' | sed 's/^ *//' | grep -v '^-'; } > $O/$r/settings/${r}_arm-$name.yaml
+    echo "$extra" | tr ';' '\n' | sed 's/^ *//' | grep '^--' | tr '\n' ' ' > $O/$r/settings/${r}_arm-$name.args
+  done
+done < $ARMSFILE
+jobs_list=()
+for r in $RECS; do for a in "${ARMS[@]}"; do for s in ${SEEDS:-1 2}; do jobs_list+=("$r $a $s"); done; done; done
+run_one() {
+  local r=$1 a=$2 s=$3 o=$O/$1/$2/seed$3
+  [ -s $o/run_info.txt ] && return
+  mkdir -p $o
+  local st=$O/$r/settings/${r}_arm-$a.yaml voc=$V/ORBvoc.bin g=""
+  grep -q "Web.BoW.LevelsUp: 3" $st && voc=$V/ORBvoc_own_k10L5.bin
+  grep -qE "Web.Gyro.Prior: 1|Web.Scale.Online: 1" $st && g="--gyro"  # IMU samples for the gyro prior / online scale
+  local aa=$(cat $O/$r/settings/${r}_arm-$a.args 2>/dev/null)
+  # G23/G33 (a run hangs at ~0 % CPU, ~1 in 1,700): no growth of run.log + trace.txt for 120 s -> a Node report
+  # (SIGUSR2 -> $o/report.*.json: the stack of the threads waiting in a JS call; hang_stacks.py names the frames), then stop
+  timeout 1800 $NODE --report-on-signal --report-directory=$o $JS --dataset euroc --mode mono --seq $PH/$r --vocab $voc \
+    --settings $st --seed $s ${MODE:---live --rate-scale 1.0} $g ${TRACE:+--trace} $aa --out $o > $o/run.log 2>&1 &
+  local pid=$! last=-1 still=0 sz
+  while kill -0 $pid 2>/dev/null; do
+    sleep 5
+    sz=$(stat -c %s $o/run.log $o/trace.txt 2>/dev/null | tr '\n' +)
+    if [ "$sz" = "$last" ]; then still=$((still + 5)); else still=0; last=$sz; fi
+    if [ $still -eq 120 ]; then
+      echo "  $r $a seed $s: STALL (no output for 120 s), Node report"; pkill -USR2 -P $pid; sleep 20; kill $pid
+    fi
+  done
+  wait $pid || echo "  $r $a seed $s: exit $?"
+  if [ -n "${TRACE:-}" ]; then /opt/slam/venv/bin/python eval/loss_anatomy.py $o $PH/$r > $o/anatomy.txt 2>&1; fi
+  if [ -n "${TRACE:-}" ]; then /opt/slam/venv/bin/python eval/map_growth.py $o $PH/$r > $o/growth.txt 2>&1; fi
+}
+export -f run_one; export O PH V NODE JS TRACE MODE
+printf '%s\n' "${jobs_list[@]}" | xargs -P ${PAR:-4} -L 1 bash -c 'run_one $0 $1 $2'
+echo "=== runs done $(date +%T)"
+[ -f $PH/labels.txt ] && /opt/slam/venv/bin/python scripts/experiments/2026-10-18/summary_presets.py $O $PH/labels.txt
+for a in "${ARMS[@]}"; do echo "$a: turn bridges $(grep -h BRIDGE-STATS $O/*/$a/*/run.log 2>/dev/null | sed 's/.*bridges=\([0-9]*\).*/\1/' | awk '{s+=$1; n++} END{printf "%.1f per run", n ? s/n : 0}')"; done
+for a in "${ARMS[@]}"; do echo "$a: coverage keyframes $(grep -h COV-STATS $O/*/$a/*/run.log 2>/dev/null | sed 's/.*=//' | awk '{s+=$1; n++} END{printf "%.1f per run", n ? s/n : 0}')"; done
+echo "=== done $(date +%T)"

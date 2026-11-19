@@ -1,0 +1,5 @@
+# replay_arms.sh arms: keyframe culling vs map growth (ISSUES G22); CullRedundancy = share of a keyframe's points seen by >= 3 others that makes it redundant (stock 0.9; 1.0 = never culled)
+grecover_dt_keep|grecover|Web.Gyro.TimeOffset: -0.088;Web.Track.KeepMap: 1
+grecover_dt_keep_cull95|grecover|Web.Gyro.TimeOffset: -0.088;Web.Track.KeepMap: 1;Web.Mapping.CullRedundancy: 0.95
+grecover_dt_keep_cull99|grecover|Web.Gyro.TimeOffset: -0.088;Web.Track.KeepMap: 1;Web.Mapping.CullRedundancy: 0.99
+grecover_dt_keep_nocull|grecover|Web.Gyro.TimeOffset: -0.088;Web.Track.KeepMap: 1;Web.Mapping.CullRedundancy: 1.0

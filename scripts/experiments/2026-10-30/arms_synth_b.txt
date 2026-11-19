@@ -1,0 +1,4 @@
+# replay_arms.sh arms: the ideal-IMU variants (<seq>__imuideal, synth/variant.py --imu ideal: the true signal at the 100 Hz
+# sensor times, exact stamps, no offset / rounding / noise / bias): the same two arms with offset 0 and IMU.Frequency 100
+beta_scale_ideal|beta|Web.Scale.Online: 1;-IMU.Frequency;IMU.Frequency: 100.0
+imu_ideal|imu|--mode mono_inertial;-IMU.Frequency;IMU.Frequency: 100.0

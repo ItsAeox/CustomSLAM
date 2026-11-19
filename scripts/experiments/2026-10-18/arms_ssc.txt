@@ -1,0 +1,3 @@
+# replay_arms.sh arms: SSC keypoint selection (Web.ORB.SSC) against the octree, beta preset, tree placed (KeepMap)
+beta_keep|beta|Web.Gyro.TimeOffset: -0.088;Web.Track.KeepMap: 1
+beta_keep_ssc|beta|Web.Gyro.TimeOffset: -0.088;Web.Track.KeepMap: 1;Web.ORB.SSC: 1

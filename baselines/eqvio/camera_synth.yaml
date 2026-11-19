@@ -1,0 +1,12 @@
+# EqVIO camera file for the synthetic set (eqvio_opt -c): EuRoC sensor.yaml layout. Pinhole, no distortion, 480 x 640,
+# T_BS = camera -> body (IMU.T_b_c1 of the synthetic settings.yaml)
+resolution: [480, 640]
+intrinsics: [465.602889, 465.602889, 240.0, 320.0]
+distortion_coefficients: [0.0, 0.0, 0.0, 0.0]
+T_BS:
+  rows: 4
+  cols: 4
+  data: [1.0, 0.0, 0.0, 0.0,
+         0.0, -1.0, 0.0, 0.0,
+         0.0, 0.0, -1.0, 0.0,
+         0.0, 0.0, 0.0, 1.0]
