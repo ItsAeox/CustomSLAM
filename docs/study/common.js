@@ -9,7 +9,7 @@ export const ORDERS = [['webvio', 'alvaar', 'webxr'], ['alvaar', 'webxr', 'webvi
 export const WEBVIO_PRESET = 'beta';
 // Filled in by the researcher before the study opens. While either is empty the consent page says the study is not
 // open and its Start button stays off (test sessions, ?test=1, are not blocked).
-export const CONTACT = '';  // researcher name and e-mail shown to participants, e.g. 'A. Researcher, a.researcher@example.com'
+export const CONTACT = 'Gayathra Dissanayake, gayathradissanayake@gmail.com';  // researcher name and e-mail shown to participants
 export const ETHICS = '';   // ethics approval: committee and reference number
 const KEY = 'webvio-study-v1';
 

@@ -70,6 +70,7 @@ function render() {
 }
 
 function consent() {
+  const missing = [!ETHICS && 'the ethics reference', !CONTACT && "the researcher's contact details"].filter(Boolean);
   app.innerHTML = `<h1>Comparing ways of placing virtual objects in the camera view</h1>
     <p>This study is part of a research project at the University of Colombo School of Computing, Sri Lanka. You will try
        three versions of a web page that places a small virtual plant in your camera view, and answer a few questions
@@ -80,12 +81,15 @@ function consent() {
        location, name or e-mail are recorded or sent.</b> The camera image is processed on your phone only.</p>
     <h2>Your rights</h2>
     <p>Taking part is voluntary. You can stop at any time by closing the page. Your answers are stored under a random
-       code shown at the end; to have them deleted later, send that code to the researcher.</p>
+       code shown at the end; to have them deleted, send that code to the researcher before the results are published.
+       The answers are kept for five years after the results are published and then deleted. The anonymous answers
+       (without anything that identifies you) will be shared with the published research, so that others can check
+       the analysis.</p>
     <h2>Safety</h2>
     <p>You will walk a few steps while looking at your phone. Use a clear space, away from stairs and traffic.</p>
     ${CONTACT && ETHICS ? `<p class="muted">Ethics approval: ${esc(ETHICS)}<br>Contact: ${esc(CONTACT)}</p>`
-      : `<p class="card" style="border:2px solid #c33">This study is not open yet: the ethics reference and the researcher's contact
-         details are still to be added.${s.test ? ' (Test session: you can continue.)' : ''}</p>`}
+      : `<p class="card" style="border:2px solid #c33">This study is not open yet: ${missing.join(' and ')}
+         ${missing.length > 1 ? 'are' : 'is'} still to be added.${s.test ? ' (Test session: you can continue.)' : ''}</p>`}
     <form id="f"><div class="card opts">
       <label><input type="checkbox" id="adult">I am 18 years or older.</label>
       <label><input type="checkbox" id="agree">I have read the information above and agree to take part.</label>
